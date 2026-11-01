@@ -1,0 +1,43 @@
+{
+	admin off
+	auto_https off
+	servers {
+		# Tailscale Serve terminates TLS on the host and forwards from loopback/docker gateway.
+		trusted_proxies static private_ranges 100.64.0.0/10
+	}
+}
+
+:80 {
+	encode zstd gzip
+	request_body {
+		max_size 4GB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		# same-origin PDF previews only; other sites cannot frame the hub
+		X-Frame-Options "SAMEORIGIN"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(), microphone=(self), geolocation=()"
+		-Server
+	}
+	handle /healthz {
+		respond "ok" 200
+	}
+	@api path /api/* /v1/* /mcp /mcp/*
+	handle @api {
+		reverse_proxy backend:8000 {
+			flush_interval -1
+			transport http {
+				read_timeout 2h
+			}
+		}
+	}
+	handle {
+		reverse_proxy frontend:3000
+	}
+	log {
+		output stdout
+		format json
+	}
+}

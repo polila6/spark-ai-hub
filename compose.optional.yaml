@@ -1,0 +1,11 @@
+# Build definitions for on-demand GPU engines. Containers are started/stopped by engine-manager,
+# never by `compose up`. Build with: docker compose -f compose.yaml -f compose.optional.yaml --profile engines build
+services:
+  comfyui:
+    profiles: ["engines"]
+    build: {context: ./engines/comfyui, args: {COMFYUI_VERSION: v0.42.5}}
+    image: spark-ai-hub/comfyui:0.42.5
+  mlworker:
+    profiles: ["engines"]
+    build: ./engines/mlworker
+    image: spark-ai-hub/mlworker:${SAH_VERSION:-0.1.0}

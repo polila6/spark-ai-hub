@@ -1,0 +1,241 @@
+# Spark AI Hub — core services.
+# Only the reverse proxy publishes a port, and only on 127.0.0.1 (consumed by Tailscale Serve).
+# GPU engines (vLLM, ComfyUI, ML worker) are created on demand by engine-manager, not here.
+name: spark-ai-hub
+
+x-backend-common: &backend-common
+  image: spark-ai-hub/backend:${SAH_VERSION:-0.1.0}
+  user: "1000:1000"
+  restart: unless-stopped
+  environment: &backend-env
+    SAH_ENV: production
+    SAH_VERSION: ${SAH_VERSION:-0.1.0}
+    SAH_LOG_LEVEL: ${SAH_LOG_LEVEL:-INFO}
+    SAH_HOST_DATA_ROOT: ${SAH_DATA_ROOT:-/srv/spark-ai-hub}
+    SAH_PUBLIC_BASE_URL: ${SAH_PUBLIC_BASE_URL:-http://localhost:8080}
+    SAH_ORG_NAME: ${SAH_ORG_NAME:-}
+    SAH_COOKIE_SECURE: ${SAH_COOKIE_SECURE:-true}
+    SAH_HOST_PROC: /host/proc
+    HF_HUB_DISABLE_TELEMETRY: "1"
+    HF_XET_CHUNK_CACHE_SIZE_BYTES: "0"   # avoid duplicating downloaded chunks on the same disk
+    HF_HOME: /data/cache/hf-home
+    HF_HUB_CACHE: /data/models/hf
+  secrets: [postgres_password, session_secret, encryption_key, orchestrator_token, admin_password]
+  volumes:
+    - ${SAH_DATA_ROOT:-/srv/spark-ai-hub}:/data
+    - /proc/meminfo:/host/proc/meminfo:ro
+    - /proc/pressure:/host/proc/pressure:ro
+    - ${SAH_IMPORT_HF_CACHE:-${HOME}/.cache/huggingface}:/import/hf-cache:ro
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  logging: &logging
+    driver: json-file
+    options: {max-size: "20m", max-file: "5"}
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg16-trixie   # postgres 16 + pgvector (knowledge base embeddings)
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sah
+      POSTGRES_DB: sah
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    secrets: [postgres_password]
+    volumes:
+      - ${SAH_DATA_ROOT:-/srv/spark-ai-hub}/database:/var/lib/postgresql/data
+    networks: [data]
+    shm_size: 256m
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sah -d sah"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    logging: *logging
+
+  redis:
+    image: redis:8.6.8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    networks: [data]
+    mem_limit: 512m
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: *logging
+
+  engine-manager:
+    build: ./engine-manager
+    image: spark-ai-hub/engine-manager:${SAH_VERSION:-0.1.0}
+    restart: unless-stopped
+    environment:
+      SAH_HOST_DATA_ROOT: ${SAH_DATA_ROOT:-/srv/spark-ai-hub}
+      SAH_COMPOSE_PROJECT: spark-ai-hub
+      SAH_ENGINE_NETWORK: spark-ai-hub_engines
+      SAH_VLLM_IMAGE: ${SAH_VLLM_IMAGE:-nvcr.io/nvidia/vllm:26.09-py3}
+      SAH_COMFYUI_IMAGE: spark-ai-hub/comfyui:0.42.5
+      SAH_MLWORKER_IMAGE: spark-ai-hub/mlworker:${SAH_VERSION:-0.1.0}
+    secrets: [orchestrator_token]
+    # Non-root; only the docker group (host gid ${SAH_DOCKER_GID:-988}) to reach the socket.
+    user: "1000:1000"
+    group_add: ["${SAH_DOCKER_GID:-988}"]
+    volumes:
+      # Narrowly scoped privileged component: allow-listed typed operations only (see engine-manager/app/main.py).
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [control]
+    mem_limit: 256m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    logging: *logging
+
+  ollama:
+    image: ollama/ollama:0.34.4
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      HOME: /models/home
+      OLLAMA_MODELS: /models
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: 60m          # safety net; the hub scheduler unloads idle models earlier
+      OLLAMA_MAX_LOADED_MODELS: "3"
+      OLLAMA_NUM_PARALLEL: "4"
+      OLLAMA_CONTEXT_LENGTH: "32768"   # coding agents (OpenCode) send ~10k-token system prompts; 8k truncated them
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0        # halves KV memory at 32k context x 4 parallel slots
+      OLLAMA_NOHISTORY: "1"
+    volumes:
+      - ${SAH_DATA_ROOT:-/srv/spark-ai-hub}/models/ollama:/models
+    networks: [engines, egress]
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "ollama", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging: *logging
+
+  searxng:
+    # Metasearch for the chat's web_search tool. No published port; only the backend reaches it.
+    image: searxng/searxng:2026.10.13-22c64b8d3
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      FORCE_OWNERSHIP: "false"
+      GRANIAN_WORKERS: "2"
+    volumes:
+      - ${SAH_DATA_ROOT:-/srv/spark-ai-hub}/config/searxng:/etc/searxng
+    tmpfs: ["/var/cache/searxng:uid=1000,gid=1000"]
+    networks: [egress]
+    mem_limit: 512m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *logging
+
+  backend:
+    <<: *backend-common
+    build: ./backend
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    networks: [frontnet, data, control, engines, egress]
+    mem_limit: 3g
+
+  worker:
+    <<: *backend-common
+    command: ["python", "-m", "app.worker.main"]
+    depends_on:
+      backend: {condition: service_healthy}
+    networks: [data, control, engines, egress]
+    mem_limit: 6g
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import time,sys;sys.exit(0 if time.time()-float(open('/tmp/worker-alive').read())<60 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  monitor:
+    <<: *backend-common
+    command: ["python", "-m", "app.monitor"]
+    depends_on:
+      backend: {condition: service_healthy}
+    environment:
+      <<: *backend-env
+      NVIDIA_DRIVER_CAPABILITIES: utility
+    volumes:
+      - ${SAH_DATA_ROOT:-/srv/spark-ai-hub}:/data:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [utility]}]
+    networks: [data, control]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import time,sys;sys.exit(0 if time.time()-float(open('/tmp/monitor-alive').read())<60 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build: ./frontend
+    image: spark-ai-hub/frontend:${SAH_VERSION:-0.1.0}
+    restart: unless-stopped
+    user: "1000:1000"
+    networks: [frontnet]
+    mem_limit: 512m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *logging
+
+  proxy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    depends_on: [backend, frontend]
+    ports:
+      - "127.0.0.1:${SAH_PROXY_PORT:-8080}:80"
+    volumes:
+      - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks: [frontnet]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:80/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *logging
+
+networks:
+  frontnet: {}
+  egress: {}                       # internet access (Hugging Face, Ollama registry)
+  data: {internal: true}           # postgres, redis — no egress, no published ports
+  control: {internal: true}        # engine-manager API
+  engines: {internal: true}        # inference engines — no egress
+
+secrets:
+  postgres_password: {file: "${SAH_DATA_ROOT:-/srv/spark-ai-hub}/config/secrets/postgres_password"}
+  session_secret: {file: "${SAH_DATA_ROOT:-/srv/spark-ai-hub}/config/secrets/session_secret"}
+  encryption_key: {file: "${SAH_DATA_ROOT:-/srv/spark-ai-hub}/config/secrets/encryption_key"}
+  orchestrator_token: {file: "${SAH_DATA_ROOT:-/srv/spark-ai-hub}/config/secrets/orchestrator_token"}
+  admin_password: {file: "${SAH_DATA_ROOT:-/srv/spark-ai-hub}/config/secrets/admin_password"}

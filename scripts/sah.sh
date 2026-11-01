@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Spark AI Hub operations helper.  Usage: scripts/sah.sh <command>
+#   status | up | down | restart [svc] | logs [svc] | build | build-engines | backup | reset-link <user> | update | test | unit
+set -euo pipefail
+cd "$(dirname "$0")/.."
+DC="docker compose"
+case "${1:-status}" in
+  status)   $DC ps --format 'table {{.Service}}\t{{.Status}}'; docker ps -a --filter name=sah- --format 'table {{.Names}}\t{{.Status}}';
+            curl -s https://"$(tailscale status --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"/api/v1/system/health; echo ;;
+  up)       $DC up -d ;;
+  down)     # Stops the hub. On-demand engine containers (sah-*) are stopped too. Data is kept.
+            docker ps -q --filter label=sah.managed=true | xargs -r docker stop; $DC down ;;
+  restart)  shift; $DC restart "$@" ;;
+  logs)     shift; $DC logs -f --tail 200 "$@" ;;
+  build)    $DC build ;;
+  build-engines) $DC -f compose.yaml -f compose.optional.yaml --profile engines build comfyui mlworker ;;
+  backup)   $DC exec -T backend python - <<'PY'
+from app.db import SessionLocal
+from app.models import Role, SchedClass, User
+from app.services.jobs import create_job
+with SessionLocal() as db:
+    admin = db.query(User).filter(User.role == Role.admin, User.is_active.is_(True)).first()
+    j = create_job(db, admin, "backup", {"include_user_data": True}, title="CLI backup", sched_class=SchedClass.maintenance)
+    print("backup job", j.id)
+PY
+            ;;
+  reset-link)  # Emergency one-time password reset link for a user (e.g. lost admin password). Requires host shell access.
+            $DC exec -T -e U="${2:?usage: sah.sh reset-link <username>}" backend python - <<'PY'
+import os
+from datetime import datetime, timedelta, timezone
+from app.config import get_settings
+from app.db import SessionLocal
+from app.models import Invitation, User
+from app.security import new_token, token_digest
+with SessionLocal() as db:
+    u = db.query(User).filter(User.username == os.environ["U"]).one()
+    t = new_token()
+    db.add(Invitation(token_hash=token_digest(t), kind="reset", user_id=u.id,
+                      expires_at=datetime.now(timezone.utc) + timedelta(hours=1)))
+    u.locked_until = None; u.failed_logins = 0
+    db.commit()
+    print(f"{get_settings().public_base_url}/invite/{t}  (valid 1 h)")
+PY
+            ;;
+  update)   git pull --ff-only && $DC build && $DC up -d ;;   # migrations run automatically on backend start
+  unit)     docker run --rm --user 1000:1000 -e HOME=/tmp -v "$PWD/backend:/app" -w /app spark-ai-hub/backend:"${SAH_VERSION:-0.1.0}" \
+              sh -c "pip install -q --user pytest==9.2.0 && python -m pytest -q tests" ;;
+  test)     .venv-tests/bin/pytest -v tests/acceptance ;;
+  *) echo "unknown command"; exit 1 ;;
+esac

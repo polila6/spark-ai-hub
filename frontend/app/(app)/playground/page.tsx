@@ -1,0 +1,444 @@
+"use client";
+import {
+  Bookmark, Bot, Brain, ChevronDown, Globe, Download, FileText, FolderKanban, Image as ImageIcon, Loader2, MessageSquarePlus, MessagesSquare,
+  Paintbrush, Paperclip, Search, Send, Sparkles, Square, Table2, Trash2, Wrench, X,
+} from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import useSWR from "swr";
+import { AgentReport, ContextMeter, SkillNote, TOOL_ICONS, WebSources } from "@/components/assistant";
+import { Guide } from "@/components/guide";
+import { LoadConfirm, MemoryPill } from "@/components/memory";
+import { Badge, Button, Card, ErrorBox, Field, Input, Notice, Select, Switch, Textarea, Tip, cx } from "@/components/ui";
+import { api, streamGet, streamPost, upload } from "@/lib/api";
+import { bytes, num } from "@/lib/format";
+import { useI18n, useL } from "@/lib/i18n";
+import { useToast } from "@/lib/providers";
+
+type Att = { file_id: string; name: string; mime: string; kind: string; size_bytes?: number; url: string };
+type ToolRun = { id: string; name: string; label?: string; args?: any; progress?: number; message?: string; status?: string; done?: boolean; ok?: boolean; summary?: string; image?: any; sources?: any[]; table?: string; memory?: any; sql?: string; remediation?: string; agent?: any; skill?: any; log?: string[] };
+type Msg = { id?: number; role: string; content: string; reasoning?: string; metrics?: any; model_alias?: string; pending?: boolean; attachments?: Att[]; tools?: ToolRun[]; warnings?: string[] };
+
+function Metrics({ m }: { m: any }) {
+  if (!m) return null;
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-subtle">
+      {m.ttft_ms != null && <span>TTFT {num(m.ttft_ms, 0)} ms</span>}
+      {m.tokens_per_s != null && <span>· {num(m.tokens_per_s, 1)} tok/s</span>}
+      {m.completion_tokens != null && <span>· {m.completion_tokens} tok</span>}
+      {m.latency_ms != null && <span>· {num(m.latency_ms / 1000, 1)} s</span>}
+      {m.tools?.length > 0 && <span>· {m.tools.join(", ")}</span>}
+    </div>
+  );
+}
+
+// Generated images are shown by the tool cards; models sometimes also emit markdown images with invented URLs.
+const MD_COMPONENTS = {
+  img: ({ src, alt }: any) => (typeof src === "string" && src.startsWith("/api/") ? <img src={src} alt={alt ?? ""} className="max-h-80 rounded-lg" /> : null),
+};
+
+function partsToTools(parts: any[] | null | undefined): ToolRun[] {
+  return (parts ?? []).filter((p) => p.type === "tool").map((p, i) => ({ id: `p${i}`, done: true, ...p }));
+}
+
+function ToolCard({ t, onEdit }: { t: ToolRun; onEdit: (ref: string) => void }) {
+  const L = useL();
+  const Extra = TOOL_ICONS[t.name];
+  const icon = Extra ? <Extra className="h-3.5 w-3.5" /> : t.name?.includes("image") ? <ImageIcon className="h-3.5 w-3.5" /> : t.name?.includes("data") ? <Table2 className="h-3.5 w-3.5" /> : t.name === "save_memory" ? <Brain className="h-3.5 w-3.5" /> : t.name?.includes("knowledge") || t.name === "read_document" ? <FileText className="h-3.5 w-3.5" /> : <Wrench className="h-3.5 w-3.5" />;
+  const webSources = (t.sources ?? []).filter((s: any) => s.url);
+  const docSources = (t.sources ?? []).filter((s: any) => !s.url);
+  return (
+    <div className="my-2 rounded-xl border border-border bg-bg/60 text-xs">
+      <div className="flex items-center gap-2 px-3 py-2">
+        <span className={cx("grid h-6 w-6 place-items-center rounded-md", t.done ? (t.ok === false ? "bg-warn/15 text-warn" : "bg-accent/15 text-accent") : "bg-info/15 text-info")}>{t.done ? icon : <Loader2 className="h-3.5 w-3.5 animate-spin" />}</span>
+        <span className="font-medium text-fg">{t.label || t.name}</span>
+        {!t.done && t.message && <span className="truncate text-muted">· {t.message}</span>}
+        {t.done && t.summary && !t.image && <span className="truncate text-muted">· {t.summary}</span>}
+        {!t.done && t.name === "delegate_task" && t.args?.agent && <Badge tone="info">{t.args.agent}</Badge>}
+      </div>
+      {!t.done && t.name === "delegate_task" && (t.log?.length ?? 0) > 0 && <ul className="mx-3 mb-2 space-y-0.5 text-[11px] text-subtle">{t.log!.slice(-4).map((x, i) => <li key={i} className="truncate">· {x}</li>)}</ul>}
+      {t.done && t.agent && <AgentReport agent={t.agent} />}
+      {t.done && t.skill && <SkillNote skill={t.skill} installed={t.name === "install_skill"} />}
+      {t.done && webSources.length > 0 && <WebSources sources={webSources} />}
+      {!t.done && t.progress != null && t.progress > 0 && <div className="mx-3 mb-2 h-1 overflow-hidden rounded bg-elevated"><div className="h-full bg-info transition-all" style={{ width: `${Math.round(t.progress * 100)}%` }} /></div>}
+      {t.image && (
+        <div className="px-3 pb-3">
+          <a href={t.image.url} target="_blank" rel="noreferrer"><img src={t.image.url} alt={t.image.prompt} className="max-h-[420px] rounded-lg border border-border" /></a>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Badge tone="accent">{t.image.ref}</Badge>
+            {t.image.seconds && <span className="text-subtle">{num(t.image.seconds, 1)} s · {t.image.workflow}</span>}
+            <a href={`${t.image.url}?download=true`}><Button size="sm" variant="ghost"><Download className="h-3.5 w-3.5" />{L("Descargar", "Download")}</Button></a>
+            <Button size="sm" variant="ghost" onClick={() => onEdit(t.image.ref)}><Paintbrush className="h-3.5 w-3.5" />{L("Editar", "Edit")}</Button>
+          </div>
+        </div>
+      )}
+      {docSources.length > 0 && (
+        <details className="border-t border-border/60 px-3 py-2"><summary className="cursor-pointer text-muted">{L("Fuentes", "Sources")} ({docSources.length})</summary>
+          <ul className="mt-2 space-y-1.5">{docSources.map((s: any, i: number) => <li key={i}><span className="font-medium text-fg">[{i + 1}] {s.filename}{s.page ? `, p. ${s.page}` : ""}</span> <span className="text-subtle">· {s.collection}</span><p className="line-clamp-2 text-muted">{s.snippet}</p></li>)}</ul></details>
+      )}
+      {t.sql && <details className="border-t border-border/60 px-3 py-2"><summary className="cursor-pointer text-muted">SQL</summary><pre className="mt-1 overflow-x-auto whitespace-pre-wrap font-mono text-[11px]">{t.sql}</pre></details>}
+      {t.table && <div className="prose-chat overflow-x-auto border-t border-border/60 px-3 py-2"><ReactMarkdown remarkPlugins={[remarkGfm]}>{t.table}</ReactMarkdown></div>}
+      {t.memory && <div className="flex items-center gap-2 border-t border-border/60 px-3 py-2 text-muted"><Brain className="h-3.5 w-3.5" />{t.memory.content}
+        <button className="ml-auto text-accent" onClick={async () => { await api(`/api/v1/memories/${t.memory.id}`, { method: "DELETE" }); t.memory = null; }}>{L("Deshacer", "Undo")}</button></div>}
+      {t.done && t.ok === false && t.remediation && <p className="border-t border-border/60 px-3 py-2 text-warn">{t.remediation}</p>}
+    </div>
+  );
+}
+
+function AttachmentChip({ a, onRemove }: { a: Att & { uploading?: boolean }; onRemove?: () => void }) {
+  return (
+    <span className="inline-flex max-w-[220px] items-center gap-1.5 rounded-lg border border-border bg-elevated px-2 py-1 text-xs">
+      {a.kind === "image" && !a.uploading ? <img src={a.url} alt="" className="h-6 w-6 rounded object-cover" /> : a.uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : a.kind === "data" ? <Table2 className="h-3.5 w-3.5" /> : <FileText className="h-3.5 w-3.5" />}
+      <span className="truncate">{a.name}</span>{a.size_bytes ? <span className="text-subtle">{bytes(a.size_bytes)}</span> : null}
+      {onRemove && <button aria-label="remove" onClick={onRemove}><X className="h-3 w-3" /></button>}
+    </span>
+  );
+}
+
+function Chat() {
+  const { t } = useI18n();
+  const L = useL();
+  const { push } = useToast();
+  const sp = useSearchParams();
+  const { data: models } = useSWR("/api/v1/models");
+  const { data: projects } = useSWR("/api/v1/projects");
+  const { data: prompts, mutate: mutPrompts } = useSWR("/api/v1/playground/prompts");
+  const [projectId, setProjectId] = useState<string>(sp.get("project") ?? "");
+  const { data: convs, mutate: mutConvs } = useSWR(`/api/v1/playground/conversations${projectId ? `?project_id=${projectId}` : ""}`);
+  const chatModels = useMemo(() => (models ?? []).filter((m: any) => m.capabilities?.includes("chat") && ["installed", "ready", "loading", "busy"].includes(m.status)), [models]);
+  const [cid, setCid] = useState<string | null>(null);
+  const [msgs, setMsgs] = useState<Msg[]>([]);
+  const [model, setModel] = useState("");
+  const [system, setSystem] = useState("");
+  const [temp, setTemp] = useState(0.7);
+  const [maxTok, setMaxTok] = useState(4096);
+  const [input, setInput] = useState("");
+  const [status, setStatus] = useState<string | null>(null);
+  const [err, setErr] = useState<any>(null);
+  const [atts, setAtts] = useState<(Att & { uploading?: boolean })[]>([]);
+  const [mode, setMode] = useState<"chat" | "image">("chat");
+  const [aspect, setAspect] = useState("square");
+  const [tools, setTools] = useState(true);
+  const [thinking, setThinking] = useState(false);
+  const [web, setWeb] = useState(true);
+  const [ctxLimit, setCtxLimit] = useState(0);  // 0 = the model's full window
+  const [autoCompact, setAutoCompact] = useState(true);
+  const [ctxUsed, setCtxUsed] = useState<number | null>(null);
+  const [q, setQ] = useState("");
+  const { data: found } = useSWR(q.trim().length > 1 ? `/api/v1/playground/search?q=${encodeURIComponent(q)}` : null);
+  const [drag, setDrag] = useState(false);
+  const abort = useRef<AbortController | null>(null);
+  const bottom = useRef<HTMLDivElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  const sel = chatModels.find((m: any) => m.alias === model);
+  const proj = (projects ?? []).find((p: any) => p.id === projectId);
+
+  // New chats use the general model (always loaded for everyone) unless the project says otherwise.
+  const { data: pub } = useSWR("/api/v1/settings/public");
+  const generalModel = pub?.chat_default_model || pub?.default_model;
+  useEffect(() => {
+    if (model || !chatModels.length || pub === undefined) return;
+    const pref = proj?.default_model;
+    const best = chatModels.find((m: any) => m.alias === pref) ?? chatModels.find((m: any) => m.alias === generalModel)
+      ?? chatModels.find((m: any) => m.runtime) ?? chatModels.find((m: any) => m.tools_enabled) ?? chatModels[0];
+    setModel(best.alias);
+  }, [chatModels, model, proj, pub, generalModel]);
+  useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs]);
+  const { data: active, mutate: mutActive } = useSWR("/api/v1/playground/active", { refreshInterval: 5000 });
+  const activeIds = useMemo(() => new Set((active ?? []).map((a: any) => a.conversation_id)), [active]);
+  const viewing = useRef<string | null>(null);  // conversation currently on screen (events of others are ignored)
+  useEffect(() => () => abort.current?.abort(), []);  // leaving the page detaches; the answer keeps running
+
+  function applyEvent(convId: string, ev: any) {
+    if (viewing.current !== convId) return;
+    if (ev.type === "status") setStatus(ev.status);
+    else if (ev.type === "delta") updLast((l) => ({ ...l, content: l.content + ev.content }));
+    else if (ev.type === "reasoning") updLast((l) => ({ ...l, reasoning: (l.reasoning ?? "") + ev.content }));
+    else if (ev.type === "warning") updLast((l) => ({ ...l, warnings: [...(l.warnings ?? []), ev.message] }));
+    else if (ev.type === "tool_start") updLast((l) => ({ ...l, tools: [...(l.tools ?? []), { id: ev.id, name: ev.name, label: ev.label, args: ev.args }] }));
+    else if (ev.type === "tool_progress") updLast((l) => ({ ...l, tools: (l.tools ?? []).map((tr) => (tr.id === ev.id ? { ...tr, progress: ev.progress, message: ev.message, status: ev.status, log: tr.name === "delegate_task" && ev.message ? [...(tr.log ?? []), ev.message] : tr.log } : tr)) }));
+    else if (ev.type === "context") setCtxUsed(ev.used);
+    else if (ev.type === "tool_result") updLast((l) => ({ ...l, tools: (l.tools ?? []).map((tr) => (tr.id === ev.id ? { ...tr, ...ev, done: true } : tr)) }));
+    else if (ev.type === "done") updLast((l) => ({ ...l, pending: false, metrics: ev.metrics, id: ev.message_id }));
+    else if (ev.type === "error") { setErr({ message: ev.message, detail: { remediation: ev.remediation } }); updLast((l) => ({ ...l, pending: false })); }
+  }
+
+  async function follow(convId: string, run: (signal: AbortSignal) => Promise<void>) {
+    abort.current?.abort();
+    const ctrl = new AbortController();
+    abort.current = ctrl;
+    try {
+      await run(ctrl.signal);
+    } catch (e: any) {
+      if (e.name !== "AbortError" && viewing.current === convId) setErr(e);
+    } finally {
+      if (viewing.current === convId && abort.current === ctrl) {
+        setStatus(null);
+        updLast((l) => (l?.role === "assistant" ? { ...l, pending: false } : l));
+      }
+      mutConvs();
+      mutActive();
+    }
+  }
+
+  async function openConv(id: string) {
+    abort.current?.abort();
+    viewing.current = id;
+    const c = await api(`/api/v1/playground/conversations/${id}`);
+    setCid(id);
+    setErr(null);
+    setStatus(null);
+    const history = c.messages.map((m: any) => ({ ...m, reasoning: m.metrics?.reasoning, tools: partsToTools(m.parts) }));
+    if (c.model_alias) setModel(c.model_alias);
+    if (c.project_id) setProjectId(c.project_id);
+    setSystem(c.settings?.system_prompt ?? "");
+    setCtxLimit(c.settings?.context_limit ?? 0);
+    setAutoCompact(c.settings?.auto_compact ?? true);
+    setWeb(c.settings?.web ?? true);
+    setCtxUsed([...c.messages].reverse().find((m: any) => m.metrics?.context_used)?.metrics?.context_used ?? null);
+    if (c.active_turn) {  // still answering (sent before leaving the page): replay its events and follow live
+      setMsgs([...history, { role: "assistant", content: "", pending: true, model_alias: c.model_alias, tools: [], warnings: [] }]);
+      setStatus("generating");
+      follow(id, (signal) => streamGet(`/api/v1/playground/conversations/${id}/stream`, (ev) => {
+        if (ev.type !== "gone") applyEvent(id, ev);
+      }, signal));
+    } else {
+      setMsgs(history);
+    }
+  }
+
+  useEffect(() => {
+    const c = sp.get("c");
+    if (c) openConv(c);
+    const a = sp.get("attach");  // one id, or several comma-separated (files shared from the Android app)
+    if (a) Promise.all(a.split(",").filter(Boolean).map((id) => api(`/api/v1/files/${id}`).catch(() => null)))
+      .then((fs) => setAtts(fs.filter(Boolean).map((f: any) => ({ file_id: f.id, name: f.filename, mime: f.mime, kind: f.kind, size_bytes: f.size_bytes, url: f.url }))));
+  }, [sp]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function ensureConv(): Promise<string> {
+    if (cid) return cid;
+    const c = await api("/api/v1/playground/conversations", { method: "POST", json: { model_alias: model || null, project_id: projectId || null } });
+    setCid(c.id);
+    mutConvs();
+    return c.id;
+  }
+
+  async function addFiles(list: FileList | File[]) {
+    const arr = Array.from(list);
+    if (!arr.length) return;
+    const id = await ensureConv();
+    for (const f of arr) {
+      const tmp = { file_id: `tmp-${Math.random()}`, name: f.name || "imagen.png", mime: f.type, kind: f.type.startsWith("image/") ? "image" : "document", url: "", uploading: true };
+      setAtts((x) => [...x, tmp]);
+      const fd = new FormData();
+      fd.append("file", f, f.name || "pegado.png");
+      try {
+        const r = await upload(`/api/v1/playground/conversations/${id}/attachments`, fd);
+        setAtts((x) => x.map((a) => (a.file_id === tmp.file_id ? { file_id: r.id, name: r.filename, mime: r.mime, kind: r.kind, size_bytes: r.size_bytes, url: r.url } : a)));
+      } catch (e: any) {
+        setAtts((x) => x.filter((a) => a.file_id !== tmp.file_id));
+        push("error", `${f.name}: ${e.message}`);
+      }
+    }
+  }
+
+  function updLast(fn: (m: Msg) => Msg) {
+    setMsgs((x) => { const y = [...x]; y[y.length - 1] = fn({ ...y[y.length - 1] }); return y; });
+  }
+
+  const [plan, setPlan] = useState<any>(null);
+  const confirmed = useRef<string | null>(null);
+
+  async function send(text?: string, forcedMode?: "chat" | "image", modelAlias?: string) {
+    const content = (text ?? input).trim();
+    const useModel = modelAlias ?? model;
+    const useSel = chatModels.find((x: any) => x.alias === useModel);
+    if (!content || !useModel || atts.some((a) => a.uploading)) return;
+    const m = forcedMode ?? mode;
+    // Before loading a model that is not in memory, show what it costs (memory, idle models unloaded, ETA).
+    if (m === "chat" && useSel && !useSel.runtime && confirmed.current !== useSel.alias) {
+      try {
+        const pl = await api(`/api/v1/models/${useSel.id}/load-plan`);
+        if (!pl.resident && (pl.evict.length || !pl.fits || (pl.expected_load_seconds ?? 0) > 45)) {
+          setPlan({ ...pl, text: content, mode: m });
+          return;
+        }
+      } catch { /* the plan is advisory */ }
+    }
+    setErr(null);
+    try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch { /* ignore */ }
+    const id = await ensureConv();
+    viewing.current = id;
+    const sentAtts = atts.filter((a) => !a.uploading);
+    setInput("");
+    setAtts([]);
+    setMsgs((x) => [...x, { role: "user", content, attachments: sentAtts }, { role: "assistant", content: "", pending: true, model_alias: useModel, tools: [], warnings: [] }]);
+    setStatus("loading");
+    await follow(id, (signal) => streamPost(`/api/v1/playground/conversations/${id}/messages`, {
+      content, model_alias: useModel, system_prompt: system || undefined, temperature: temp, max_tokens: maxTok,
+      attachments: sentAtts.map((a) => a.file_id), mode: m, tools, thinking: useSel?.backend === "vllm" ? thinking : undefined, aspect,
+      context_limit: ctxLimit || undefined, auto_compact: autoCompact, web,
+    }, (ev) => applyEvent(id, ev), signal));
+  }
+
+  async function stop() {
+    if (cid) await api(`/api/v1/playground/conversations/${cid}/cancel`, { method: "POST" }).catch(() => {});
+  }
+
+  function editImage(ref: string) {
+    setMode("chat");
+    setInput(L(`Edita ${ref}: `, `Edit ${ref}: `));
+    textRef.current?.focus();
+  }
+
+  const [drawer, setDrawer] = useState(false);
+  const statusLabel = status === "loading" ? t("play.loading_model") : status === "tool" ? L("usando herramientas…", "using tools…") : status === "compacting" ? L("compactando contexto…", "compacting context…") : status === "generating" ? L("generando…", "generating…") : status;
+  const newChat = () => { abort.current?.abort(); viewing.current = null; setCid(null); setMsgs([]); setAtts([]); setErr(null); setStatus(null); setCtxUsed(null); };
+  return (
+    <div className="grid h-[calc(100dvh-10.5rem)] gap-4 lg:h-[calc(100vh-7.5rem)] lg:grid-cols-[270px_minmax(0,1fr)_290px]">
+      <h1 className="sr-only">{L("Chat", "Chat")}</h1>
+      {drawer && <div className="fixed inset-0 z-[60] bg-black/40 lg:hidden" onClick={() => setDrawer(false)} />}
+      <Card className={cx("flex-col overflow-hidden lg:flex", drawer ? "fixed inset-y-0 left-0 z-[61] flex w-[85vw] max-w-sm rounded-none" : "hidden")} onClick={(e) => { if ((e.target as HTMLElement).closest("li button")) setDrawer(false); }}>
+        <div className="space-y-2 border-b border-border p-3">
+          <Button variant="primary" className="w-full" onClick={newChat}><MessageSquarePlus className="h-4 w-4" />{t("play.new")}</Button>
+          <div className="relative"><Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-subtle" /><Input className="h-8 pl-8 text-xs" placeholder={L("Buscar en tus chats…", "Search your chats…")} value={q} onChange={(e) => setQ(e.target.value)} /></div>
+          <Select className="h-8 text-xs" aria-label={L("Proyecto", "Project")} value={projectId} onChange={(e) => { setProjectId(e.target.value); setCid(null); setMsgs([]); }}>
+            <option value="">{L("Todos los chats (sin proyecto)", "All chats (no project)")}</option>
+            {(projects ?? []).map((p: any) => <option key={p.id} value={p.id}>📁 {p.name}</option>)}
+          </Select>
+        </div>
+        <ul className="flex-1 space-y-0.5 overflow-y-auto p-2">
+          {q.trim().length > 1 ? (found ?? []).map((r: any) => (
+            <li key={r.id}><button className="w-full rounded-lg px-2 py-1.5 text-left hover:bg-elevated" onClick={() => openConv(r.id)}><p className="truncate text-sm">{r.title}</p><p className="line-clamp-2 text-[11px] text-muted">{r.snippet}</p></button></li>
+          )) : convs?.mine?.map((c: any) => (
+            <li key={c.id} className={cx("group flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm", cid === c.id ? "bg-accent/12" : "hover:bg-elevated")}>
+              <button className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left" onClick={() => openConv(c.id)} title={c.title}>{activeIds.has(c.id) && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-info" />}<span className="truncate">{c.project_id && !projectId ? "📁 " : ""}{c.title}</span></button>
+              <a className="opacity-0 group-hover:opacity-100" href={`/api/v1/playground/conversations/${c.id}/export?fmt=md`} aria-label={t("common.export")}><Download className="h-3.5 w-3.5 text-muted" /></a>
+              <button className="opacity-0 group-hover:opacity-100" aria-label={t("common.delete")} onClick={async () => { await api(`/api/v1/playground/conversations/${c.id}`, { method: "DELETE" }); if (cid === c.id) { setCid(null); setMsgs([]); } mutConvs(); }}><Trash2 className="h-3.5 w-3.5 text-muted" /></button>
+            </li>
+          ))}
+          {q.trim().length > 1 && found && !found.length && <p className="px-2 py-4 text-center text-xs text-muted">{L("Sin resultados", "No results")}</p>}
+        </ul>
+      </Card>
+
+      <Card className={cx("relative flex min-h-0 flex-col overflow-hidden", drag && "ring-2 ring-accent")}
+        onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
+        onDrop={(e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); }}>
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
+          <Button size="icon" variant="ghost" className="lg:hidden" aria-label={L("Conversaciones", "Conversations")} onClick={() => setDrawer(true)}><MessagesSquare className="h-5 w-5 text-accent" /></Button>
+          <MessagesSquare className="hidden h-4 w-4 text-accent lg:block" />
+          <Button size="sm" variant="ghost" className="lg:hidden" onClick={newChat}><MessageSquarePlus className="h-4 w-4" /></Button>
+          <Select aria-label={t("common.model")} className="w-auto min-w-0 max-w-[60vw] sm:min-w-[220px]" value={model} onChange={(e) => setModel(e.target.value)}>
+            {chatModels.length === 0 && <option value="">{t("play.select_model")}</option>}
+            {chatModels.map((m: any) => <option key={m.id} value={m.alias}>{m.alias === generalModel ? "★ " : ""}{m.alias}{m.capabilities.includes("vision") ? " 👁" : ""}{m.tools_enabled ? " 🛠" : ""}{m.runtime ? ` · ${L("en memoria", "loaded")}` : ` · ${L("hay que cargarlo", "needs loading")}`}</option>)}
+          </Select>
+          {sel && <div className="flex flex-wrap gap-1">{sel.capabilities.includes("vision") && <Badge tone="accent">vision</Badge>}{sel.tools_enabled && <Badge tone="accent">tools</Badge>}{sel.runtime ? <Badge tone="ok">{L("en memoria", "loaded")}</Badge> : <Badge>{L("se cargará al enviar", "loads on send")}</Badge>}</div>}
+          {proj && <Badge tone="info"><FolderKanban className="h-3 w-3" />{proj.name}</Badge>}
+          {sel && <ContextMeter cid={cid} modelAlias={sel.alias} windowMax={sel.context_window} used={ctxUsed} limit={ctxLimit} setLimit={setCtxLimit} autoCompact={autoCompact} setAutoCompact={setAutoCompact} busy={!!status} />}
+          {statusLabel && <Badge tone="info" className="ml-auto"><Loader2 className="h-3 w-3 animate-spin" />{statusLabel}</Badge>}
+          <div className={cx("lg:hidden", !statusLabel && "ml-auto")}><MemoryPill /></div>
+        </div>
+        <div className="flex-1 space-y-4 overflow-y-auto p-4">
+          {msgs.length === 0 && (
+            <div className="mx-auto max-w-2xl pt-4">
+              <Guide id="chat" />
+              <div className="grid gap-2 sm:grid-cols-2">
+                {[[L("Resume este PDF en 5 puntos", "Summarise this PDF in 5 points"), FileText], [L("Genera una ilustración de un taller de diseño con luz cálida", "Generate an illustration of a design workshop with warm light"), ImageIcon],
+                  [L("¿Qué dicen mis documentos sobre …?", "What do my documents say about …?"), Search], [L("Con este Excel, calcula las ventas por mes y haz una tabla", "With this Excel, compute sales per month as a table"), Table2],
+                  [L("Busca en internet las últimas novedades sobre impresión 3D en metal y cita las fuentes", "Search the web for the latest news on metal 3D printing and cite sources"), Globe], [L("Lanza dos agentes en paralelo: uno que busque artículos científicos sobre … y otro que revise mi borrador", "Run two agents in parallel: one finding papers on … and one reviewing my draft"), Bot]].map(([s, I]: any) => (
+                  <button key={s} className="flex items-center gap-2 rounded-xl border border-border p-3 text-left text-sm hover:bg-elevated" onClick={() => { setInput(s); textRef.current?.focus(); }}><I className="h-4 w-4 shrink-0 text-accent" />{s}</button>))}
+              </div>
+            </div>
+          )}
+          {msgs.map((m, i) => (
+            <div key={i} className={cx("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+              <div className={cx("max-w-[88%] rounded-2xl px-4 py-2.5 text-sm", m.role === "user" ? "bg-accent text-accent-fg" : "w-full border border-border bg-elevated/60")}>
+                {m.role === "user" ? (
+                  <>
+                    {m.attachments && m.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-1.5">{m.attachments.map((a) => a.kind === "image" ? <a key={a.file_id} href={a.url} target="_blank" rel="noreferrer"><img src={a.url} alt={a.name} className="max-h-40 rounded-lg" /></a> : <span key={a.file_id} className="inline-flex items-center gap-1 rounded-md bg-white/15 px-2 py-0.5 text-xs"><FileText className="h-3 w-3" />{a.name}</span>)}</div>}
+                    <p className="whitespace-pre-wrap">{m.content}</p>
+                  </>
+                ) : (
+                  <>
+                    {m.warnings?.map((w, j) => <Notice key={j} tone="warn">{w}</Notice>)}
+                    {m.reasoning && <details className="mb-2 rounded-lg bg-bg/50 px-3 py-1.5 text-xs text-muted" open={m.pending && !m.content}><summary className="cursor-pointer"><Brain className="mr-1 inline h-3 w-3" />{L("Razonamiento", "Reasoning")}</summary><p className="mt-1 whitespace-pre-wrap">{m.reasoning}</p></details>}
+                    {m.tools?.map((tr) => <ToolCard key={tr.id} t={tr} onEdit={editImage} />)}
+                    <div className="prose-chat">{m.content ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.content}</ReactMarkdown> : m.pending && !m.tools?.length && <span className="inline-flex gap-1"><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:.15s]" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:.3s]" /></span>}</div>
+                    <Metrics m={m.metrics} />{m.model_alias && <div className="mt-1 text-[10px] text-subtle">{m.model_alias}</div>}
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+          {err && <ErrorBox error={err} />}
+          <div ref={bottom} />
+        </div>
+        <form className="space-y-2 border-t border-border p-3" onSubmit={(e) => { e.preventDefault(); send(); }}>
+          {atts.length > 0 && <div className="flex flex-wrap gap-1.5">{atts.map((a) => <AttachmentChip key={a.file_id} a={a} onRemove={() => setAtts((x) => x.filter((y) => y.file_id !== a.file_id))} />)}</div>}
+          <div className="flex items-end gap-2">
+            <div className="flex flex-col gap-1">
+              <Tip text={L("Adjuntar archivos o imágenes (también puedes arrastrar o pegar)", "Attach files or images (you can also drag or paste)")}><Button type="button" size="icon" variant="ghost" onClick={() => fileInput.current?.click()}><Paperclip className="h-4 w-4" /></Button></Tip>
+              <Tip text={mode === "image" ? L("Modo imagen activo: tu mensaje es el prompt (con imagen adjunta, la edita)", "Image mode on: your message is the prompt (with an attached image, it edits it)") : L("Activar modo imagen", "Switch to image mode")}>
+                <Button type="button" size="icon" variant={mode === "image" ? "primary" : "ghost"} onClick={() => setMode(mode === "image" ? "chat" : "image")}><Paintbrush className="h-4 w-4" /></Button></Tip>
+            </div>
+            <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
+            <Textarea ref={textRef} aria-label={t("play.placeholder")} rows={3} className="resize-none" value={input} onChange={(e) => setInput(e.target.value)}
+              placeholder={mode === "image" ? L("Describe la imagen que quieres (o qué cambiar en la adjunta)…", "Describe the image you want (or what to change in the attached one)…") : L("Escribe tu mensaje…", "Type your message…")}
+              onPaste={(e) => { const fs = Array.from(e.clipboardData.files); if (fs.length) { e.preventDefault(); addFiles(fs); } }}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
+            {status ? <Button key="stop" type="button" variant="danger" onClick={stop}><Square className="h-4 w-4" />{t("play.stop")}</Button>
+              : <Button key="send" type="submit" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)}>{mode === "image" ? <Sparkles className="h-4 w-4" /> : <Send className="h-4 w-4" />}{mode === "image" ? L("Crear", "Create") : t("play.send")}</Button>}
+          </div>
+          <div className="flex flex-wrap items-center gap-4 text-xs text-muted">
+            {mode === "image" ? (
+              <label className="flex items-center gap-2">{L("Formato", "Format")}<Select className="h-7 w-auto text-xs" value={aspect} onChange={(e) => setAspect(e.target.value)}>
+                <option value="square">{L("Cuadrado", "Square")}</option><option value="landscape">{L("Horizontal 4:3", "Landscape 4:3")}</option><option value="portrait">{L("Vertical 3:4", "Portrait 3:4")}</option><option value="wide">16:9</option><option value="tall">9:16</option></Select></label>
+            ) : (
+              <>
+                <Switch checked={tools} onChange={setTools} label={L("Herramientas", "Tools")} />
+                {tools && sel?.tools_enabled && pub?.web_search_enabled !== false && <Switch checked={web} onChange={setWeb} label={L("Internet", "Web")} />}
+                {sel?.backend === "vllm" && <Switch checked={thinking} onChange={setThinking} label={L("Pensar", "Think")} />}
+                {sel && !sel.tools_enabled && <span className="text-warn">{L("Este modelo no usa herramientas: para imágenes usa el modo 🎨.", "This model has no tools: use 🎨 mode for images.")}</span>}
+              </>
+            )}
+          </div>
+        </form>
+        {drag && <div className="pointer-events-none absolute inset-0 grid place-items-center bg-accent/10 text-sm font-medium text-accent">{L("Suelta para adjuntar", "Drop to attach")}</div>}
+      </Card>
+
+      <Card className="hidden overflow-y-auto p-4 lg:block">
+        <div className="space-y-4">
+          <Field label={t("play.system")} hint={L("Se suma a tus instrucciones personales y a las del proyecto", "Added to your personal and project instructions")}><Textarea rows={5} value={system} onChange={(e) => setSystem(e.target.value)} /></Field>
+          <Field label={`${t("play.temperature")}: ${temp}`}><input aria-label={t("play.temperature")} type="range" min={0} max={2} step={0.05} value={temp} onChange={(e) => setTemp(Number(e.target.value))} className="w-full accent-[rgb(var(--accent))]" /></Field>
+          <Field label={t("play.max_tokens")}><Input type="number" min={1} max={32768} value={maxTok} onChange={(e) => setMaxTok(Number(e.target.value))} /></Field>
+          <Notice tone="muted">{L("Tus conversaciones son privadas y se guardan en el Spark. El asistente usa tu Memoria y tus instrucciones (página Memoria).", "Your conversations are private and stored on the Spark. The assistant uses your Memory and instructions (Memory page).")}</Notice>
+          <div>
+            <div className="mb-2 flex items-center justify-between"><span className="text-xs font-medium text-muted">{t("play.prompts")}</span>
+              <Button size="sm" variant="ghost" disabled={!input && !system} onClick={async () => { await api("/api/v1/playground/prompts", { method: "POST", json: { title: (input || system).slice(0, 40), content: input, system_prompt: system || null } }); mutPrompts(); push("ok", t("common.save")); }}><Bookmark className="h-3.5 w-3.5" />{t("play.save_prompt")}</Button></div>
+            <ul className="space-y-1">
+              {prompts?.map((p: any) => (
+                <li key={p.id} className="group flex items-center gap-1 rounded-lg px-2 py-1 text-xs hover:bg-elevated">
+                  <button className="flex-1 truncate text-left" onClick={() => { setInput(p.content); if (p.system_prompt) setSystem(p.system_prompt); }}>{p.title}</button>
+                  <button className="opacity-0 group-hover:opacity-100" aria-label={t("common.delete")} onClick={async () => { await api(`/api/v1/playground/prompts/${p.id}`, { method: "DELETE" }); mutPrompts(); }}><Trash2 className="h-3 w-3" /></button>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <details className="text-xs text-muted"><summary className="cursor-pointer"><ChevronDown className="mr-1 inline h-3 w-3" />{L("Atajos", "Shortcuts")}</summary>
+            <ul className="mt-2 space-y-1"><li>Enter — {L("enviar", "send")}</li><li>Shift+Enter — {L("nueva línea", "new line")}</li><li>Ctrl+V — {L("pegar imagen", "paste image")}</li><li>«{L("recuerda que…", "remember that…")}» — {L("guardar en memoria", "save to memory")}</li><li>«{L("edita img2: …", "edit img2: …")}» — {L("editar una imagen", "edit an image")}</li></ul></details>
+        </div>
+      </Card>
+      {plan && <LoadConfirm plan={plan} defaultName={generalModel && generalModel !== plan.model ? generalModel : undefined}
+        onCancel={() => setPlan(null)}
+        onUseDefault={() => { const pl = plan; setPlan(null); setModel(generalModel); send(pl.text, pl.mode, generalModel); }}
+        onConfirm={() => { const pl = plan; confirmed.current = pl.model; setPlan(null); send(pl.text, pl.mode); }} />}
+    </div>
+  );
+}
+
+export default function Playground() {
+  return <Suspense><Chat /></Suspense>;
+}

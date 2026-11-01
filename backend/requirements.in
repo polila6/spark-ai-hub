@@ -1,0 +1,26 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+sqlalchemy>=2.0.36
+alembic>=1.14
+psycopg[binary]>=3.2
+pydantic>=2.10
+pydantic-settings>=2.6
+redis>=5.2
+httpx>=0.28
+argon2-cffi>=23.1
+cryptography>=44
+huggingface_hub>=0.30,<1.0
+python-multipart>=0.0.18
+structlog>=24.4
+numpy>=2.1
+safetensors>=0.4
+pyyaml>=6
+orjson>=3.10
+# personal cloud: document text extraction and data queries (no macros / code execution)
+pypdfium2==5.14.0
+python-docx==1.2.0
+python-pptx==1.0.2
+openpyxl==3.1.5
+beautifulsoup4==4.15.0
+duckdb==1.5.6
+pillow==12.3.0

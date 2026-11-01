@@ -1,0 +1,7 @@
+# Optional off-host backup destination (NFS/SMB/USB mounted on the host at $SAH_BACKUP_EXTERNAL).
+# Enable: docker compose -f compose.yaml -f compose.backup.yaml up -d worker
+# Then set Settings → Backups → "external subfolder". Copies are made after each verified backup.
+services:
+  worker:
+    volumes:
+      - ${SAH_BACKUP_EXTERNAL:?set SAH_BACKUP_EXTERNAL to the mounted off-host path}:/backups-external

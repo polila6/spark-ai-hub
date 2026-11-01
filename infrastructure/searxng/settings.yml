@@ -1,0 +1,92 @@
+# SearXNG for the chat's web_search tool. Internal only: reachable from the backend on the egress network,
+# never published. scripts/init-secrets.sh copies this file to $SAH_DATA_ROOT/config/searxng/ with a random secret.
+# Engines tested from a university network: bing returned unrelated results; google, duckduckgo and brave block it
+# intermittently but are kept as fallbacks.
+use_default_settings:
+  engines:
+    keep_only:
+      - google cse
+      - yahoo
+      - yandex
+      - startpage
+      - mojeek
+      - marginalia
+      - wikipedia
+      - wikidata
+      - arxiv
+      - google scholar
+      - semantic scholar
+      - openalex
+      - crossref
+      - pubmed
+      - github
+      - stackoverflow
+      - mdn
+      - google news
+      - yahoo news
+      - duckduckgo
+      - brave
+      - google
+general:
+  instance_name: "Spark AI Hub search"
+  enable_metrics: false
+server:
+  secret_key: "__SECRET__"
+  limiter: false          # only the backend talks to it
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+search:
+  safe_search: 1
+  autocomplete: ""
+  formats: [html, json]
+  default_lang: "auto"
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 8.0
+  pool_connections: 50
+engines:
+  - name: google cse
+    disabled: false
+  - name: yahoo
+    disabled: false
+  - name: yandex
+    disabled: false
+  - name: startpage
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: marginalia
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  - name: wikidata
+    disabled: false
+  - name: arxiv
+    disabled: false
+  - name: google scholar
+    disabled: false
+  - name: semantic scholar
+    disabled: false
+  - name: openalex
+    disabled: false
+  - name: crossref
+    disabled: false
+  - name: pubmed
+    disabled: false
+  - name: github
+    disabled: false
+  - name: stackoverflow
+    disabled: false
+  - name: mdn
+    disabled: false
+  - name: google news
+    disabled: false
+  - name: yahoo news
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false
+  - name: google
+    disabled: false
