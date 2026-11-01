@@ -10,7 +10,7 @@ PROXY_PORT="${SAH_PROXY_PORT:-8080}"
 if [[ $EUID -ne 0 ]]; then echo "Run with sudo" >&2; exit 1; fi
 
 echo "[1/3] Creating data hierarchy in ${DATA_ROOT} (owner ${OWNER})"
-for d in config database models datasets outputs experiments benchmarks jobs logs cache backups; do
+for d in config database models datasets outputs experiments benchmarks jobs logs cache backups run run/pkgproxy workspaces sandbox; do
   install -d -m 750 -o "${OWNER}" -g "${OWNER}" "${DATA_ROOT}/${d}"
 done
 chown "${OWNER}:${OWNER}" "${DATA_ROOT}"; chmod 750 "${DATA_ROOT}"

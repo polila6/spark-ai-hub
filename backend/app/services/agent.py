@@ -459,6 +459,12 @@ WORKSPACE_TOOLS = [
         "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
                        "required": ["path", "content"]}}},
     {"type": "function", "function": {
+        "name": "ws_append",
+        "description": "Append text to the end of a file of the workspace (creates it if needed). Use it to write long "
+                       "files (LaTeX, reports, big scripts) in several parts of ~150 lines each.",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                       "required": ["path", "content"]}}},
+    {"type": "function", "function": {
         "name": "ws_edit",
         "description": "Change part of a text file with exact find/replace edits (copy `find` literally from the file).",
         "parameters": {"type": "object", "properties": {
@@ -469,11 +475,13 @@ WORKSPACE_TOOLS = [
             "required": ["path", "edits"]}}},
     {"type": "function", "function": {
         "name": "ws_run",
-        "description": "Run a shell command in the workspace (current folder = workspace root, /work). No internet. "
-                       "Python 3.12 (numpy, pandas, scipy, scikit-learn, matplotlib, openpyxl, xlsxwriter, python-docx, "
-                       "python-pptx, reportlab, pypdf), Node (docx, pptxgenjs), pandoc, LibreOffice (soffice --headless), "
-                       "imagemagick, qpdf. Use it to run scripts and tests, convert documents and inspect data. Returns "
-                       "stdout/stderr and the files that changed.",
+        "description": "Run a shell command in the workspace (current folder = workspace root, /work). No internet "
+                       "except the Python and Node package registries. Installed: Python 3.12 (numpy, pandas, scipy, "
+                       "scikit-learn, matplotlib, openpyxl, xlsxwriter, python-docx, python-pptx, reportlab, pypdf), "
+                       "Node (docx, pptxgenjs), TeX Live (pdflatex, xelatex, lualatex, latexmk, biber; most LaTeX "
+                       "packages), pandoc, LibreOffice (soffice --headless), imagemagick, qpdf. If a Python or Node "
+                       "package is missing, install it: `pip install <pkg>` (kept in the workspace) or `npm install "
+                       "<pkg>`. System packages (apt) cannot be installed. Returns stdout/stderr and the changed files.",
         "parameters": {"type": "object", "properties": {
             "command": {"type": "string", "description": "e.g. python informe.py && ls -la salida/"},
             "timeout_s": {"type": "integer"}}, "required": ["command"]}}},
@@ -547,7 +555,7 @@ TOOL_LABELS = {"generate_image": "Generando imagen", "edit_image": "Editando ima
                "run_code": "Ejecutando código", "canvas_write": "Escribiendo en el lienzo",
                "canvas_edit": "Editando el lienzo", "deep_research": "Investigación a fondo",
                "schedule_task": "Programando tarea", "ws_list": "Mirando archivos", "ws_read": "Leyendo archivo",
-               "ws_write": "Escribiendo archivo", "ws_edit": "Editando archivo", "ws_run": "Ejecutando en el workspace"}
+               "ws_write": "Escribiendo archivo", "ws_append": "Añadiendo al archivo", "ws_edit": "Editando archivo", "ws_run": "Ejecutando en el workspace"}
 
 
 def agent_profiles(db, user: User) -> dict[str, dict]:
@@ -644,7 +652,9 @@ class Runner:
             extra = (" Si una tarea especializada lo merece y no hay skill adecuada, busca con find_skills e instálala con "
                      "install_skill." if self.flags["auto_install"] else
                      " Puedes buscar skills con find_skills; para instalarlas, el usuario debe hacerlo en la página Skills.")
-            lines.append((("Si una skill trae scripts, ejecútalos con run_code(skills=[nombre]); estarán en "
+            lines.append(((("Al cargar una skill con use_skill sus archivos se copian a .skills/<nombre>/ del workspace; "
+                            "ejecuta sus scripts con ws_run.") if self.workspace is not None else
+                           "Si una skill trae scripts, ejecútalos con run_code(skills=[nombre]); estarán en "
                            "/work/skills/<nombre>/." if es else "Run a skill's scripts with run_code(skills=[name]); "
                            "they are in /work/skills/<name>/.") if self.flags["code"] else
                           ("Las skills son solo instrucciones: no puedes ejecutar sus scripts; aplica sus pautas con tus "
@@ -661,7 +671,11 @@ class Runner:
                           "revisar y ejecutar código y documentos AQUÍ (no uses run_code ni el lienzo). Trabaja como un "
                           "programador: escribe los archivos, ejecútalos, comprueba la salida y corrige hasta que funcione. "
                           "Guarda los resultados (Excel, PDF, gráficos, informes) en el workspace con nombres claros y dile "
-                          "al usuario dónde están; él los ve y descarga en el panel de archivos.") if es else
+                          "al usuario dónde están; él los ve y descarga en el panel de archivos. Los archivos largos (más de "
+                          "~200 líneas) escríbelos por partes: ws_write con la primera y ws_append con el resto. Las imágenes "
+                          "que generes con generate_image se guardan solas en imagenes/ del workspace. Hay LaTeX instalado "
+                          "(compila con latexmk -pdf o xelatex); si falta una librería de Python o Node, instálala tú con "
+                          "pip install / npm install en el workspace antes de usarla.") if es else
                          (f"WORKSPACE MODE: you work in the user's workspace «{self.workspace.name}», a persistent folder "
                           "(/work). Use ws_list/ws_read/ws_write/ws_edit/ws_run to create, check and run code and documents "
                           "HERE (not run_code or the canvas). Write files, run them, check the output and fix until it works. "
@@ -879,6 +893,20 @@ class Runner:
         self.refs.append({"source": "artifact", "id": art["id"], "desc": f"generada: {prompt[:120]}",
                           "ref": f"img{len(self.refs) + 1}"})
         meta["ref"] = self.refs[-1]["ref"]
+        if self.workspace is not None:  # in a workspace the image also lands in imagenes/ so documents can use it
+            try:
+                with SessionLocal() as db:
+                    a = db.get(Artifact, uuid.UUID(art["id"]))
+                    src = get_settings().data_root / a.path
+                    rel = f"imagenes/{meta['ref']}{src.suffix.lower() or '.png'}"
+
+                    def save(db2, ws, svc):
+                        svc.write(db2, ws, rel, src.read_bytes())
+                        db2.commit()
+                    self._ws_call(save)
+                    meta["workspace_path"] = rel
+            except Exception:  # noqa: BLE001  (the image is still shown in the chat)
+                pass
         return meta
 
     def tool_generate_image(self, call_id: str, args: dict) -> dict:
@@ -896,8 +924,9 @@ class Runner:
         if isinstance(args.get("seed"), int):
             inputs["seed"] = abs(args["seed"]) % (2**48)
         img = self._image_job(call_id, wf_id, inputs, inputs["prompt"])
-        return {"ok": True, "summary": f"Imagen {img['ref']} generada con {wf_id} ({w}×{h}) y mostrada al usuario.",
-                "image": img}
+        where = f" Guardada en el workspace como {img['workspace_path']}." if img.get("workspace_path") else ""
+        return {"ok": True, "summary": f"Imagen {img['ref']} generada con {wf_id} ({w}×{h}) y mostrada al usuario.{where}",
+                "image": img, **({"workspace": {"changed": [img["workspace_path"]]}} if img.get("workspace_path") else {})}
 
     def tool_edit_image(self, call_id: str, args: dict) -> dict:
         ref = str(args.get("image_ref", "")).strip().lower()
@@ -918,7 +947,9 @@ class Runner:
             inputs["seed"] = abs(args["seed"]) % (2**48)
         img = self._image_job(call_id, wf_id, inputs, instr)
         img["edited_from"] = target["ref"]
-        return {"ok": True, "summary": f"{target['ref']} editada → {img['ref']} (mostrada al usuario).", "image": img}
+        where = f" Guardada en el workspace como {img['workspace_path']}." if img.get("workspace_path") else ""
+        return {"ok": True, "summary": f"{target['ref']} editada → {img['ref']} (mostrada al usuario).{where}", "image": img,
+                **({"workspace": {"changed": [img["workspace_path"]]}} if img.get("workspace_path") else {})}
 
     def tool_search_knowledge(self, call_id: str, args: dict) -> dict:
         with SessionLocal() as db:
@@ -1076,7 +1107,26 @@ class Runner:
             content = sk.content[:24000]
             name, src = sk.name, sk.source_url
         note = ("\n\nBundled files (read with read_skill_file): " + ", ".join(files)) if files else ""
-        tail = (f"(To run its scripts use run_code with skills=[\"{name}\"]; they are in /work/skills/{name}/.)"
+        copied = ""
+        if self.workspace is not None and self.flags["code"]:
+            def put(db, ws, svc):
+                svc.write(db, ws, f".skills/{name}/SKILL.md", content.encode())
+                with SessionLocal() as db2:
+                    sk2 = skills_svc.find(db2, db2.get(User, self.t.user_id), name)
+                    for rel, text in (sk2.files or {}).items() if sk2 else []:
+                        try:
+                            svc.write(db, ws, f".skills/{name}/{rel}", str(text).encode())
+                        except svc.WorkspaceError:
+                            pass
+                db.commit()
+            try:
+                self._ws_call(put)
+                copied = f".skills/{name}/"
+            except AgentError:
+                pass
+        tail = (f"(Its files are in the workspace at {copied}: run its scripts there with ws_run, e.g. "
+                f"python {copied}scripts/<script>.py.)" if copied else
+                f"(To run its scripts use run_code with skills=[\"{name}\"]; they are in /work/skills/{name}/.)"
                 if self.flags["code"] else "(Scripts cannot be executed here: apply the guidance with your tools or give "
                                            "the code to the user.)")
         return {"ok": True, "summary": f"Skill «{name}» cargada", "skill": {"name": name, "source_url": src},
@@ -1467,6 +1517,27 @@ class Runner:
                     "workspace": {"changed": [r["path"]]}, "content": f"Saved {r['path']} ({r['size']} bytes)."}
         return self._ws_call(go)
 
+    def tool_ws_append(self, call_id: str, args: dict) -> dict:
+        def go(db, ws, svc):
+            path = str(args.get("path") or "")
+            add = str(args.get("content") or "")
+            try:
+                cur = svc.read(ws, path)
+                if not cur["text"] or cur["truncated"]:
+                    raise AgentError("Solo se puede añadir a archivos de texto de menos de 2 MB")
+                old = cur["content"]
+            except svc.WorkspaceError as e:
+                if e.status != 404:
+                    raise
+                old = ""
+            sep = "" if not old or old.endswith("\n") else "\n"
+            r = svc.write(db, ws, path, (old + sep + add).encode())
+            db.commit()
+            total = (old + sep + add).count("\n") + 1
+            return {"ok": True, "summary": f"{r['path']} (+{add.count(chr(10)) + 1} líneas, {total} en total)",
+                    "workspace": {"changed": [r["path"]]}, "content": f"Appended to {r['path']} (now {total} lines)."}
+        return self._ws_call(go)
+
     def tool_ws_edit(self, call_id: str, args: dict) -> dict:
         def go(db, ws, svc):
             r = svc.read(ws, str(args.get("path") or ""))
@@ -1536,6 +1607,12 @@ class Runner:
         return [t for t in self._all_specs() if self._tool_allowed(t["function"]["name"])]
 
     def _exec(self, call_id: str, name: str, args: dict) -> dict:
+        if "_invalid_arguments" in args:
+            n = args["_invalid_arguments"]
+            return {"ok": False, "summary": "Llamada cortada: el contenido era demasiado largo",
+                    "content": f"Your {name} call was cut off ({n} characters) and its arguments are not valid JSON, so "
+                               "nothing was done. Write long files in several smaller parts: create the file with the "
+                               "first part (ws_write) and add the rest in pieces of ~150 lines with ws_append."}
         fn = getattr(self, f"tool_{name}", None)
         if fn is None or not self._tool_allowed(name):
             return {"ok": False, "summary": f"Herramienta no disponible: {name}", "content": f"Unknown tool {name}"}
@@ -1568,9 +1645,12 @@ class Runner:
                 if not isinstance(args, dict):
                     args = {}
             except ValueError:
-                args = {}
+                # usually the call was cut by max_tokens while writing a long file: tell the model instead of
+                # running the tool with empty arguments
+                args = {"_invalid_arguments": len(c["args"] or "")}
             assistant_msg["tool_calls"].append({"id": cid, "type": "function",
-                                                "function": {"name": c["name"], "arguments": json.dumps(args, ensure_ascii=False)}})
+                                                "function": {"name": c["name"], "arguments": json.dumps(
+                                                    {} if "_invalid_arguments" in args else args, ensure_ascii=False)}})
             results.append((cid, c["name"], args))
         return assistant_msg, results
 

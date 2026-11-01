@@ -15,6 +15,8 @@ from ..redis_client import get_redis
 
 TTL_S = 2 * 3600
 DONE_KEEP_S = 600  # finished turns stay replayable for 10 min (late tabs see the end, then reload from the DB)
+BEAT_EVERY_S = 15  # the process running a turn refreshes a heartbeat key while its thread is alive
+BEAT_TTL_S = 75    # no heartbeat for this long = the process died (backend restart, crash): the turn is dead
 
 
 def _k(cid, suffix: str = "") -> str:
@@ -22,8 +24,49 @@ def _k(cid, suffix: str = "") -> str:
 
 
 def active(cid) -> dict | None:
-    raw = get_redis().get(_k(cid))
-    return json.loads(raw) if raw else None
+    """Turn info; a "running" turn whose process stopped beating is closed as interrupted here."""
+    r = get_redis()
+    raw = r.get(_k(cid))
+    if not raw:
+        return None
+    info = json.loads(raw)
+    if info.get("status") == "running" and not r.exists(_k(cid, ":beat")):
+        started = datetime.fromisoformat(info["started_at"])
+        if (datetime.now(timezone.utc) - started).total_seconds() > BEAT_TTL_S:
+            info.update(status="interrupted", finished_at=datetime.now(timezone.utc).isoformat())
+            r.set(_k(cid), json.dumps(info), ex=DONE_KEEP_S)
+            r.rpush(_k(cid, ":ev"), json.dumps({"type": "error", "message": "Esta respuesta se interrumpió (el servidor "
+                                                "se reinició). Vuelve a enviar el mensaje."}, ensure_ascii=False))
+            r.expire(_k(cid, ":ev"), DONE_KEEP_S)
+            if info.get("user_id"):
+                r.srem(f"sah:turns:user:{info['user_id']}", str(cid))
+    return info
+
+
+def heartbeat(cid):
+    """Start a daemon thread that keeps the turn's heartbeat alive; call the returned function to stop it."""
+    import threading
+
+    stop = threading.Event()
+    r = get_redis()
+
+    def loop():
+        while not stop.is_set():
+            try:
+                r.set(_k(cid, ":beat"), "1", ex=BEAT_TTL_S)
+            except Exception:  # noqa: BLE001  (Redis hiccup: the next beat retries)
+                pass
+            stop.wait(BEAT_EVERY_S)
+
+    threading.Thread(target=loop, daemon=True, name=f"beat-{str(cid)[:8]}").start()
+
+    def done():
+        stop.set()
+        try:
+            r.delete(_k(cid, ":beat"))
+        except Exception:  # noqa: BLE001
+            pass
+    return done
 
 
 def start(cid, user_id, title: str) -> str:
@@ -32,11 +75,12 @@ def start(cid, user_id, title: str) -> str:
     info = {"id": tid, "conversation_id": str(cid), "user_id": str(user_id), "title": title[:120], "status": "running",
             "started_at": datetime.now(timezone.utc).isoformat()}
     if not r.set(_k(cid), json.dumps(info), ex=TTL_S, nx=True):
-        cur = active(cid)
+        cur = active(cid)  # also closes a dead turn, so it does not block the chat
         if cur and cur.get("status") == "running":
             raise RuntimeError("busy")
         r.set(_k(cid), json.dumps(info), ex=TTL_S)
     r.delete(_k(cid, ":ev"), _k(cid, ":cancel"))
+    r.set(_k(cid, ":beat"), "1", ex=BEAT_TTL_S)
     r.sadd(f"sah:turns:user:{user_id}", str(cid))
     r.expire(f"sah:turns:user:{user_id}", TTL_S)
     return tid
@@ -55,6 +99,7 @@ def emit(cid, ev: dict) -> None:
 
 def finish(cid, user_id, status: str) -> None:
     r = get_redis()
+    r.delete(_k(cid, ":beat"))
     cur = active(cid) or {}
     cur.update(status=status, finished_at=datetime.now(timezone.utc).isoformat())
     r.set(_k(cid), json.dumps(cur), ex=DONE_KEEP_S)
@@ -64,6 +109,17 @@ def finish(cid, user_id, status: str) -> None:
 
 def cancel(cid) -> None:
     get_redis().set(_k(cid, ":cancel"), "1", ex=TTL_S)
+
+
+def forget(cid, user_id) -> None:
+    """The conversation was deleted: stop its turn and drop it from the indicator right away."""
+    r = get_redis()
+    cancel(cid)
+    r.srem(f"sah:turns:user:{user_id}", str(cid))
+    cur = active(cid)
+    if cur and cur.get("status") == "running":
+        cur.update(status="cancelled", finished_at=datetime.now(timezone.utc).isoformat())
+        r.set(_k(cid), json.dumps(cur), ex=DONE_KEEP_S)
 
 
 def cancelled_checker(cid):

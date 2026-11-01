@@ -231,6 +231,7 @@ function System() {
           {num("code_exec_memory_mb", L("Memoria por ejecución (MB)", "Memory per run (MB)"), L("256–16384 MB; hasta 4 ejecuciones a la vez", "256–16384 MB; up to 4 runs at once"))}
           {num("workspace_timeout_s", L("Workspace: tiempo por comando (s)", "Workspace: time per command (s)"), L("5–900 s", "5–900 s"))}
           {num("workspace_max_gb", L("Workspace: tamaño máximo (GB)", "Workspace: maximum size (GB)"), L("Por cada workspace", "Per workspace"))}
+          <div className="sm:col-span-3"><Switch checked={!!s.workspace_packages_enabled} onChange={(v) => set("workspace_packages_enabled", v)} label={L("Workspace: permitir pip install / npm install (solo PyPI y npm, a través de un proxy; nada más sale a internet)", "Workspace: allow pip install / npm install (PyPI and npm only, through a proxy; nothing else goes out)")} /></div>
           <p className="self-end text-xs text-muted">{L("Cada ejecución es un contenedor nuevo sin internet, sin privilegios y con disco de solo lectura salvo su carpeta de trabajo. Los archivos que crea van a Mis archivos → «Resultados de código».", "Each run is a fresh container without internet or privileges, read-only except its work folder. Files it creates go to My files → “Code results”.")}</p>
         </div>}
         <div className="grid gap-3 sm:grid-cols-3">

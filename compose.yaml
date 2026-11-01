@@ -145,6 +145,28 @@ services:
       retries: 3
     logging: *logging
 
+  pkgproxy:
+    # Package registries (PyPI, npm) for workspaces. Sandboxes have no network: they reach this proxy only through
+    # the Unix socket in run/pkgproxy, and the proxy only allows the domains in infrastructure/pkgproxy/filter.
+    build: ./infrastructure/pkgproxy
+    image: spark-ai-hub/pkgproxy:${SAH_VERSION:-0.1.0}
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    tmpfs: ["/tmp", "/run", "/var/run/tinyproxy:uid=1000,gid=1000"]
+    volumes:
+      - ${SAH_DATA_ROOT:-/srv/spark-ai-hub}/run/pkgproxy:/sock
+    networks: [egress]
+    mem_limit: 128m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /sock/proxy.sock"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *logging
+
   backend:
     <<: *backend-common
     build: ./backend

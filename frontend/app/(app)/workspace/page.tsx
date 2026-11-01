@@ -116,7 +116,7 @@ function Terminal({ runs, busy, onRun, onOpen, onClear }: { runs: Run[]; busy: b
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#0d1117] text-[12px] text-[#c9d1d9]">
       <div className="min-h-0 flex-1 overflow-y-auto p-3 font-mono">
-        {runs.length === 0 && <p className="text-[#8b949e]">{L("Terminal del workspace (carpeta actual = raíz del workspace, sin internet). Prueba: ls -la · python script.py · pandoc informe.md -o informe.pdf", "Workspace terminal (current folder = workspace root, no internet). Try: ls -la · python script.py · pandoc report.md -o report.pdf")}</p>}
+        {runs.length === 0 && <p className="text-[#8b949e]">{L("Terminal del workspace (carpeta actual = raíz del workspace). Prueba: ls -la · python script.py · latexmk -pdf doc.tex · pip install paquete", "Workspace terminal (current folder = workspace root). Try: ls -la · python script.py · latexmk -pdf doc.tex · pip install package")}</p>}
         {runs.map((r, i) => (
           <div key={i} className="mb-2">
             <div className="text-[#7ee787]">$ {r.command}</div>
@@ -203,7 +203,7 @@ function Assistant({ wid, onFiles, onOpen }: { wid: string; onFiles: () => void;
     if (!content || !cid || busy) return;
     setInput("");
     setMsgs((x) => [...x, { role: "user", content }, { role: "assistant", content: "", tools: [], pending: true }]);
-    await follow((signal) => streamPost(`/api/v1/playground/conversations/${cid}/messages`, { content, model_alias: model, max_tokens: 8192, temperature: 0.3, tools: true, thinking: think, web: true, workspace_id: wid }, onEvent, signal));
+    await follow((signal) => streamPost(`/api/v1/playground/conversations/${cid}/messages`, { content, model_alias: model, max_tokens: 16384, temperature: 0.3, tools: true, thinking: think, web: true, workspace_id: wid }, onEvent, signal));
   }
   async function stop() { if (cid) await api(`/api/v1/playground/conversations/${cid}/cancel`, { method: "POST" }).catch(() => {}); abort.current?.abort(); }
   return (
@@ -246,6 +246,7 @@ export default function WorkspacePage() {
   const { data, mutate } = useSWR("/api/v1/workspaces");
   const [wid, setWid] = useState<string | null>(null);
   const ws = data?.workspaces?.find((w: any) => w.id === wid) ?? data?.workspaces?.[0];
+  useEffect(() => { const w = new URLSearchParams(window.location.search).get("w"); if (w) setWid(w); }, []);
   useEffect(() => { if (ws && !wid) setWid(ws.id); }, [ws, wid]);
   const { data: tree, mutate: mutTree } = useSWR(ws ? `/api/v1/workspaces/${ws.id}/tree` : null);
   const [sel, setSel] = useState<string | null>(null);
@@ -303,7 +304,7 @@ export default function WorkspacePage() {
         <Button size="sm" variant="ghost" onClick={() => setDialog({ kind: "ws", value: "" })}><Plus className="h-3.5 w-3.5" />{L("Nuevo", "New")}</Button>
         {ws && <a href={`/api/v1/workspaces/${ws.id}/zip`}><Button size="sm" variant="ghost"><Download className="h-3.5 w-3.5" />ZIP</Button></a>}
         {ws && data.workspaces.length > 1 && <Button size="sm" variant="ghost" onClick={async () => { if (!window.confirm(L(`¿Borrar el workspace «${ws.name}» y todos sus archivos?`, `Delete workspace “${ws.name}” and all its files?`))) return; await api(`/api/v1/workspaces/${ws.id}`, { method: "DELETE" }); setWid(null); mutate(); }}><Trash2 className="h-3.5 w-3.5" /></Button>}
-        {ws && <span className="text-xs text-muted">{bytes(ws.size_bytes)} / {data.limits.max_gb} GB · {L("comandos hasta", "commands up to")} {Math.round(data.limits.timeout_s / 60)} min · {L("sin internet", "no internet")}</span>}
+        {ws && <span className="text-xs text-muted">{bytes(ws.size_bytes)} / {data.limits.max_gb} GB · {L("comandos hasta", "commands up to")} {Math.round(data.limits.timeout_s / 60)} min · {data.limits.packages ? L("internet solo para pip/npm", "internet only for pip/npm") : L("sin internet", "no internet")}</span>}
         <div className="ml-auto flex gap-1 lg:hidden">{(["files", "editor", "chat"] as const).map((p) => <Button key={p} size="sm" variant={pane === p ? "primary" : "ghost"} onClick={() => setPane(p)}>{p === "files" ? L("Archivos", "Files") : p === "editor" ? L("Editor", "Editor") : L("Asistente", "Assistant")}</Button>)}</div>
       </div>
       <Guide id="workspace" />

@@ -27,7 +27,8 @@ from .sandbox import SandboxError, store_bytes
 
 MAX_TEXT_READ = 2 * 1024 * 1024
 MAX_TREE = 3000
-HIDDEN = {".git", "__pycache__", "node_modules", ".venv", ".cache", ".ipynb_checkpoints", ".mypy_cache", ".pytest_cache"}
+HIDDEN = {".git", "__pycache__", "node_modules", ".venv", ".cache", ".ipynb_checkpoints", ".mypy_cache", ".pytest_cache",
+          ".local"}
 TEXT_EXT = files_svc.DOC_EXT | files_svc.CODE_EXT | {".csv", ".tsv", ".json", ".jsonl", ".txt", ".css", ".svg", ".env.example",
                                                       ".gitignore", ".dockerfile", ".mk", ".cmake", ".bib", ".tex"}
 WELCOME = """# Bienvenido a tu workspace
@@ -305,7 +306,8 @@ def run(db: Session, ws: Workspace, command: str, *, language: str = "bash", tim
             res = orchestrator.run_sandbox({"run_id": rid, "language": language if language in ("python", "node") else "bash",
                                             "timeout_s": max(5, min(900, limit)),
                                             "memory_mb": int(get_setting(db, "code_exec_memory_mb") or 4096),
-                                            "workspace": f"{ws.owner_id}/{ws.id}"})
+                                            "workspace": f"{ws.owner_id}/{ws.id}",
+                                            "packages": bool(get_setting(db, "workspace_packages_enabled"))})
         except orchestrator.OrchestratorError as e:
             if getattr(e, "status", None) == 424:
                 raise SandboxError("Falta la imagen del entorno de ejecución.", "En el servidor: scripts/sah.sh build")

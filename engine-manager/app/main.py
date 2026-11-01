@@ -283,6 +283,7 @@ class SandboxRun(BaseModel):
     memory_mb: int = Field(default=2048, ge=256, le=16384)
     cpus: float = Field(default=4, ge=0.5, le=16)
     workspace: str | None = None  # "<user uuid>/<workspace uuid>": persistent folder mounted as /work
+    packages: bool = False  # pip/npm through the package proxy socket (still no network interface)
 
     @field_validator("workspace")
     @classmethod
@@ -306,10 +307,23 @@ def sandbox_spec(p: SandboxRun) -> dict:
     """No network, read-only root, non-root, no capabilities, CPU/memory/pids limits; only /work is writable.
     With a workspace, /work is the user's persistent workspace and the program comes read-only from /job."""
     run_dir = f"{HOST_DATA}/sandbox/{p.run_id}"
+    env = {"HOME": "/tmp", "MPLBACKEND": "Agg", "PYTHONUNBUFFERED": "1", "OPENBLAS_NUM_THREADS": "4"}
     if p.workspace:
         volumes = {f"{HOST_DATA}/workspaces/{p.workspace}": {"bind": "/work", "mode": "rw"},
                    run_dir: {"bind": "/job", "mode": "ro"}}
         command = [ENTRY[p.language][0], ENTRY[p.language][1].replace("/work/", "/job/")]
+        # packages installed by the user persist in the workspace: pip --user → /work/.local, npm → /work/node_modules
+        env.update(PYTHONUSERBASE="/work/.local", PIP_DISABLE_PIP_VERSION_CHECK="1",
+                   PATH="/work/.local/bin:/work/node_modules/.bin:/usr/local/bin:/usr/bin:/bin",
+                   NPM_CONFIG_CACHE="/tmp/.npm", NPM_CONFIG_UPDATE_NOTIFIER="false")
+        if p.packages:
+            volumes[f"{HOST_DATA}/run/pkgproxy"] = {"bind": "/proxy", "mode": "rw"}
+            proxy = "http://127.0.0.1:8888"
+            env.update(HTTP_PROXY=proxy, HTTPS_PROXY=proxy, http_proxy=proxy, https_proxy=proxy,
+                       NPM_CONFIG_PROXY=proxy, NPM_CONFIG_HTTPS_PROXY=proxy)
+            # a loopback-only forwarder inside the container: TCP 127.0.0.1:8888 → the proxy's Unix socket
+            command = ["bash", "-c", "socat TCP-LISTEN:8888,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/proxy/proxy.sock "
+                       "2>/dev/null & sleep 0.2; exec \"$@\"", "run"] + command
     else:
         volumes = {run_dir: {"bind": "/work", "mode": "rw"}}
         command = ENTRY[p.language]
@@ -318,7 +332,7 @@ def sandbox_spec(p: SandboxRun) -> dict:
         network_mode="none", user="1000:1000", working_dir="/work", read_only=True,
         tmpfs={"/tmp": "size=512m,mode=1777"},
         volumes=volumes,
-        environment={"HOME": "/tmp", "MPLBACKEND": "Agg", "PYTHONUNBUFFERED": "1", "OPENBLAS_NUM_THREADS": "4"},
+        environment=env,
         mem_limit=f"{p.memory_mb}m", memswap_limit=f"{p.memory_mb}m", pids_limit=512,
         nano_cpus=int(p.cpus * 1e9), cap_drop=["ALL"], security_opt=["no-new-privileges:true"],
         labels={"sah.managed": "true", "sah.engine": "sandbox", "com.docker.compose.project": PROJECT},

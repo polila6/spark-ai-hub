@@ -155,8 +155,8 @@ function ChatActivity() {
     const now = new Map<string, any>(data.map((t: any) => [t.conversation_id, t]));
     for (const [cid, t] of prev.current) {
       if (!now.has(cid)) {
-        const here = path.startsWith("/playground");
-        push("ok", L(`Respuesta lista: «${t.title}»`, `Answer ready: “${t.title}”`) + (here ? "" : L(" · ábrela en el Chat", " · open it in Chat")));
+        const here = t.workspace_id ? path.startsWith("/workspace") : path.startsWith("/playground");
+        push("ok", L(`Respuesta lista: «${t.title}»`, `Answer ready: “${t.title}”`) + (here ? "" : t.workspace_id ? L(" · ábrela en el Workspace", " · open it in the Workspace") : L(" · ábrela en el Chat", " · open it in Chat")));
         try {
           if (document.hidden && "Notification" in window && Notification.permission === "granted") new Notification("Spark AI Hub", { body: t.title });
         } catch { /* notifications unavailable */ }
@@ -165,13 +165,32 @@ function ChatActivity() {
     prev.current = now;
   }, [data, path, push, L]);
   if (!data?.length) return null;
+  const since = (iso: string) => { const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000)); return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`; };
   return (
-    <button onClick={() => router.push(`/playground?c=${data[0].conversation_id}`)} title={data.map((t: any) => t.title).join("\n")}
-      className="flex items-center gap-1.5 rounded-full bg-info/12 px-2.5 py-1 text-xs font-medium text-info ring-1 ring-inset ring-info/25">
-      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-      <span className="hidden sm:inline">{data.length === 1 ? L("1 chat trabajando", "1 chat working") : L(`${data.length} chats trabajando`, `${data.length} chats working`)}</span>
-      <span className="sm:hidden">{data.length}</span>
-    </button>
+    <DM.Root>
+      <DM.Trigger asChild>
+        <button className="flex items-center gap-1.5 rounded-full bg-info/12 px-2.5 py-1 text-xs font-medium text-info ring-1 ring-inset ring-info/25">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <span className="hidden sm:inline">{data.length === 1 ? L("1 chat trabajando", "1 chat working") : L(`${data.length} chats trabajando`, `${data.length} chats working`)}</span>
+          <span className="sm:hidden">{data.length}</span>
+        </button>
+      </DM.Trigger>
+      <DM.Portal>
+        <DM.Content align="end" sideOffset={6} className="z-[90] w-[340px] rounded-xl border border-border bg-surface p-1 shadow-card">
+          <p className="px-2.5 py-1.5 text-[11px] text-muted">{L("Siguen trabajando aunque cambies de página. Ábrelos para ver el progreso o páralos.", "They keep working when you change page. Open them to see progress, or stop them.")}</p>
+          {data.map((t: any) => (
+            <div key={t.conversation_id} className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-elevated">
+              <button className="min-w-0 flex-1 text-left" onClick={() => router.push(t.link ?? `/playground?c=${t.conversation_id}`)}>
+                <p className="truncate font-medium">{t.title}</p>
+                <p className="text-[11px] text-muted">{t.workspace_id ? "Workspace · " : ""}{L("hace", "")} {since(t.started_at)}{L("", " ago")}{t.last ? ` · ${t.last}` : ""}</p>
+              </button>
+              <button className="rounded-md px-2 py-1 text-xs text-danger hover:bg-danger/10" title={L("Parar esta respuesta", "Stop this answer")}
+                onClick={async () => { await api(`/api/v1/playground/conversations/${t.conversation_id}/cancel`, { method: "POST" }).catch(() => {}); push("info", L("Parando…", "Stopping…")); }}>{L("Parar", "Stop")}</button>
+            </div>
+          ))}
+        </DM.Content>
+      </DM.Portal>
+    </DM.Root>
   );
 }
 

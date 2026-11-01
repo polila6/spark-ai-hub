@@ -74,7 +74,8 @@ def list_workspaces(p: Principal = Depends(current_principal), db: Session = Dep
     return {"workspaces": [ws_svc.public(w) for w in rows],
             "limits": {"timeout_s": int(get_setting(db, "workspace_timeout_s") or 600),
                        "max_gb": float(get_setting(db, "workspace_max_gb") or 10),
-                       "code_enabled": bool(get_setting(db, "code_exec_enabled"))}}
+                       "code_enabled": bool(get_setting(db, "code_exec_enabled")),
+                       "packages": bool(get_setting(db, "workspace_packages_enabled"))}}
 
 
 @router.post("")

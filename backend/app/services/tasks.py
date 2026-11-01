@@ -186,6 +186,7 @@ def run_task(task_id: uuid.UUID, manual: bool = False) -> dict:
             raise TaskError("Su chat ya está respondiendo; se reintentará en la próxima ejecución")
         status, text, err = "ok", "", None
         t0 = time.time()
+        stop_beat = turns.heartbeat(cid)
         try:
             r = agent.run_turn(turn, lambda ev: turns.emit(cid, ev), turns.cancelled_checker(cid))
             text = r["text"]
@@ -206,6 +207,7 @@ def run_task(task_id: uuid.UUID, manual: bool = False) -> dict:
             status, err = "error", str(getattr(e, "message", e))[:1000]
             turns.emit(cid, {"type": "error", "message": err})
         finally:
+            stop_beat()
             turns.finish(cid, uid, "done" if status == "ok" else "error")
         with SessionLocal() as db:
             t = db.get(ScheduledTask, task_id)

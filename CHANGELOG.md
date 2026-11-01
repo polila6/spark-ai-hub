@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0 — 2026-11-01
+Reliable background work, LaTeX and package installs in workspaces, skills in workspaces.
+
+* **No more "zombie" chats**: every running reply keeps a heartbeat in Redis while its thread lives; a reply whose
+  process died (backend restart, crash) is closed as interrupted with a message, instead of showing "working" for two
+  hours. Deleting a conversation stops its reply.
+* **"N chats working" menu**: lists every running reply with its title, elapsed time and current step, opens it (in the
+  Chat or in its Workspace) and has a **Stop** button for each.
+* **LaTeX in workspaces**: the sandbox image now includes TeX Live (pdflatex, xelatex, lualatex, latexmk, biber, most
+  LaTeX packages, Spanish and English).
+* **Install missing packages**: in workspaces `pip install` / `npm install` work and persist in the workspace
+  (`.local`, `node_modules`). The sandbox still has no network interface: a loopback forwarder talks to the new
+  `pkgproxy` service through a Unix socket, and the proxy only allows PyPI and npm over HTTPS (admin switch).
+* **Skills in workspaces**: loading a skill copies its files to `.skills/<name>/` so its scripts can run with `ws_run`.
+* Workspace assistant: long files are written in parts (`ws_append`); a tool call cut by the output limit is reported
+  to the model instead of running with empty arguments; images generated in a workspace chat are saved in `imagenes/`
+  so documents can include them; up to 16k output tokens per step.
+* The Workspace opens the right workspace from links (`/workspace?w=<id>`).
+
 ## 0.6.1 — 2026-11-01
 Work keeps going — and stays visible — when you leave the page.
 

@@ -171,6 +171,7 @@ def patch_conversation(cid: uuid.UUID, body: ConvPatch, p: Principal = Depends(c
 @router.delete("/conversations/{cid}")
 def delete_conversation(cid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     c = _conv(db, p, cid, write=True)
+    turns.forget(c.id, p.id)
     db.delete(c)
     db.commit()
     return {"ok": True}
@@ -256,6 +257,7 @@ def _run_turn(turn, p: Principal, model_alias: str, title: str) -> None:
     cid = turn.conversation_id
     t0 = time.perf_counter()
     status = "done"
+    stop_beat = turns.heartbeat(cid)
     try:
         r = agent.run_turn(turn, lambda ev: turns.emit(cid, ev), turns.cancelled_checker(cid))
         with SessionLocal() as s2:
@@ -284,6 +286,7 @@ def _run_turn(turn, p: Principal, model_alias: str, title: str) -> None:
         status = "error"
         turns.emit(cid, {"type": "error", "message": str(e)[:1000]})
     finally:
+        stop_beat()
         turns.finish(cid, p.id, status)
         if time.perf_counter() - t0 > 30:  # long turns (images, model loads): leave a notice in the bell
             try:
@@ -343,6 +346,10 @@ async def stream_turn(cid: uuid.UUID, request: Request, p: Principal = Depends(c
 
 @router.post("/conversations/{cid}/cancel")
 def cancel_turn(cid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    info = turns.active(cid)
+    if db.get(Conversation, cid) is None and info and info.get("user_id") == str(p.id):
+        turns.forget(cid, p.id)  # the chat no longer exists
+        return {"ok": True}
     _conv(db, p, cid, write=True)
     turns.cancel(cid)
     return {"ok": True}
@@ -414,9 +421,21 @@ def context_info(cid: uuid.UUID, p: Principal = Depends(current_principal), db: 
 
 
 @router.get("/active")
-def active_turns(p: Principal = Depends(current_principal)):
-    """Chats of this user that are still working (header indicator)."""
-    return turns.running_for_user(p.id)
+def active_turns(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Chats of this user that are still working (header indicator), with where to open them."""
+    out = []
+    for t in turns.running_for_user(p.id):
+        try:
+            c = db.get(Conversation, uuid.UUID(t["conversation_id"]))
+        except ValueError:
+            c = None
+        if c is None:  # deleted while answering: stop it and drop it from the list
+            turns.forget(t["conversation_id"], p.id)
+            continue
+        wid = (c.settings or {}).get("workspace_id")
+        out.append({**t, "title": c.title or t.get("title"), "workspace_id": wid,
+                    "link": f"/workspace?w={wid}" if wid else f"/playground?c={c.id}"})
+    return out
 
 
 @router.get("/prompts")

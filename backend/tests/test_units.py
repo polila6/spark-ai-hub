@@ -453,3 +453,66 @@ def test_workspace_paths_refuse_links_fifos_and_escapes(tmp_path, monkeypatch):
         w.raw(ws, "dir/secret.txt")
     assert {e["path"]: e["type"] for e in w.tree(ws)}["fuga"] == "link"
     assert w.clean_rel("/a//b/./c") == "a/b/c"
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.kv, self.lists, self.sets = {}, {}, {}
+
+    def get(self, k):
+        return self.kv.get(k)
+
+    def set(self, k, v, ex=None, nx=False):
+        if nx and k in self.kv:
+            return False
+        self.kv[k] = v
+        return True
+
+    def exists(self, k):
+        return int(k in self.kv)
+
+    def delete(self, *ks):
+        for k in ks:
+            self.kv.pop(k, None)
+            self.lists.pop(k, None)
+
+    def rpush(self, k, v):
+        self.lists.setdefault(k, []).append(v)
+
+    def lrange(self, k, a, b):
+        return self.lists.get(k, [])[a: None if b == -1 else b + 1]
+
+    def expire(self, *a):
+        return True
+
+    def sadd(self, k, v):
+        self.sets.setdefault(k, set()).add(v)
+
+    def srem(self, k, v):
+        self.sets.get(k, set()).discard(v)
+
+    def smembers(self, k):
+        return set(self.sets.get(k, set()))
+
+
+def test_dead_turns_are_closed_and_deleted_chats_stop(monkeypatch):
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from app.services import turns
+
+    fake = _FakeRedis()
+    monkeypatch.setattr(turns, "get_redis", lambda: fake)
+    turns.start("c1", "u1", "vivo")
+    assert [t["conversation_id"] for t in turns.running_for_user("u1")] == ["c1"]  # fresh turn has a heartbeat
+    # the process died: no heartbeat and started long ago
+    fake.delete(turns._k("c1", ":beat"))
+    info = json.loads(fake.get(turns._k("c1")))
+    info["started_at"] = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    fake.set(turns._k("c1"), json.dumps(info))
+    assert turns.running_for_user("u1") == []
+    assert turns.active("c1")["status"] == "interrupted"
+    assert turns.events("c1")[-1]["type"] == "error"
+    turns.start("c1", "u1", "otra vez")  # a dead turn no longer blocks the chat
+    turns.forget("c1", "u1")  # chat deleted while answering
+    assert turns.running_for_user("u1") == [] and fake.exists(turns._k("c1", ":cancel"))
