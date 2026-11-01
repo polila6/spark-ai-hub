@@ -56,6 +56,7 @@ class SendIn(BaseModel):
     auto_compact: bool = True
     web: bool = True
     research: bool = False
+    workspace_id: uuid.UUID | None = None
 
 
 class PromptIn(BaseModel):
@@ -236,7 +237,7 @@ async def send_message(cid: uuid.UUID, body: SendIn, request: Request, p: Princi
                       attachments=list(body.attachments), system_prompt=body.system_prompt, params=params,
                       use_tools=body.tools, thinking=body.thinking, mode=body.mode, lang=lang,
                       context_limit=body.context_limit, auto_compact=body.auto_compact, web=body.web,
-                      research=body.research)
+                      research=body.research, workspace_id=body.workspace_id)
     title = c.title
     try:
         turns.start(cid, p.id, title)

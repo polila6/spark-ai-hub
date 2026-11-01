@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.5.0-76b900">
+  <img alt="version" src="https://img.shields.io/badge/version-0.6.0-76b900">
   <img alt="platform" src="https://img.shields.io/badge/platform-DGX%20Spark%20(GB10%2C%20aarch64)-76b900">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="stack" src="https://img.shields.io/badge/stack-FastAPI%20%C2%B7%20Next.js%20%C2%B7%20vLLM%20%C2%B7%20Docker-555">
@@ -49,6 +49,7 @@ without sending a single prompt to an external AI service.
 - **Web search** through a private [SearXNG](https://github.com/searxng/searxng) inside the hub; pages and PDFs are read and cited. SSRF-safe: internal addresses are never fetched.
 - **Agents**: the assistant delegates to sub-agents (researcher, writer, analyst, reviewer, or your own) — several **in parallel**, with live progress and a report each.
 - **Skills**: install [Agent Skills](https://github.com/anthropics/skills) from GitHub or a link, write your own, or let the model find and install the one it needs.
+- **Workspace — a remote harness in the browser**: your own persistent folders on the Spark with files, editor, previews (Excel, PDF, images, HTML), a terminal and an assistant that writes, runs and fixes code there. Upload a CSV, ask for "an Excel with a monthly summary and a chart" and download it.
 - **Runs code safely**: calculations, charts and real files (Excel, Word, PowerPoint, PDF) from a sandbox with no network; images appear in the chat, files go to your drive. Skills can run their own scripts.
 - **Canvas**: reports, letters and programs open beside the chat — edit, ask for changes, restore versions, export to **Word, PDF, Markdown or HTML**.
 - **Deep research**: one switch launches parallel researcher agents and returns a long report with numbered sources, ready to export.
@@ -87,6 +88,9 @@ without sending a single prompt to an external AI service.
 - Secure by default: only `127.0.0.1:8080` is published; remote access through **Tailscale Serve** (tailnet only, never Funnel). Argon2id, CSRF, per-user API keys, Docker socket held by a single allow-listed engine manager.
 
 <table>
+  <tr>
+    <td colspan="2"><img src="docs/assets/workspace.png" alt="Workspace with files, Excel preview, terminal and assistant"><br><sub><b>Workspace</b>: files, previews, terminal and an assistant that runs code on the Spark</sub></td>
+  </tr>
   <tr>
     <td><img src="docs/assets/canvas.png" alt="Deep research report in the canvas"><br><sub><b>Deep research</b> report in the <b>canvas</b>, exportable to Word/PDF</sub></td>
     <td><img src="docs/assets/code-run.png" alt="Code execution"><br><sub><b>Code execution</b> in a sandbox with output and files</sub></td>

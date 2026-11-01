@@ -272,6 +272,7 @@ def _start(engine: str, spec: dict) -> dict:
 # ------------------------------------------------------------------ code sandbox
 
 RUN_ID = re.compile(r"^[0-9a-f]{32}$")
+WORKSPACE_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 SANDBOX_SLOTS = threading.BoundedSemaphore(int(os.environ.get("SAH_SANDBOX_CONCURRENCY", "4")))
 
 
@@ -281,6 +282,14 @@ class SandboxRun(BaseModel):
     timeout_s: int = Field(default=120, ge=5, le=900)
     memory_mb: int = Field(default=2048, ge=256, le=16384)
     cpus: float = Field(default=4, ge=0.5, le=16)
+    workspace: str | None = None  # "<user uuid>/<workspace uuid>": persistent folder mounted as /work
+
+    @field_validator("workspace")
+    @classmethod
+    def _ws(cls, v: str | None) -> str | None:
+        if v is not None and not WORKSPACE_ID.match(v):
+            raise ValueError("workspace must be <uuid>/<uuid>")
+        return v
 
     @field_validator("run_id")
     @classmethod
@@ -294,12 +303,21 @@ ENTRY = {"python": ["python", "/work/.main.py"], "bash": ["bash", "/work/.main.s
 
 
 def sandbox_spec(p: SandboxRun) -> dict:
-    """No network, read-only root, non-root, no capabilities, CPU/memory/pids limits; only /work is writable."""
+    """No network, read-only root, non-root, no capabilities, CPU/memory/pids limits; only /work is writable.
+    With a workspace, /work is the user's persistent workspace and the program comes read-only from /job."""
+    run_dir = f"{HOST_DATA}/sandbox/{p.run_id}"
+    if p.workspace:
+        volumes = {f"{HOST_DATA}/workspaces/{p.workspace}": {"bind": "/work", "mode": "rw"},
+                   run_dir: {"bind": "/job", "mode": "ro"}}
+        command = [ENTRY[p.language][0], ENTRY[p.language][1].replace("/work/", "/job/")]
+    else:
+        volumes = {run_dir: {"bind": "/work", "mode": "rw"}}
+        command = ENTRY[p.language]
     return dict(
-        image=IMAGES["sandbox"], command=ENTRY[p.language], name=f"sah-sandbox-{p.run_id[:12]}", detach=True,
+        image=IMAGES["sandbox"], command=command, name=f"sah-sandbox-{p.run_id[:12]}", detach=True,
         network_mode="none", user="1000:1000", working_dir="/work", read_only=True,
         tmpfs={"/tmp": "size=512m,mode=1777"},
-        volumes={f"{HOST_DATA}/sandbox/{p.run_id}": {"bind": "/work", "mode": "rw"}},
+        volumes=volumes,
         environment={"HOME": "/tmp", "MPLBACKEND": "Agg", "PYTHONUNBUFFERED": "1", "OPENBLAS_NUM_THREADS": "4"},
         mem_limit=f"{p.memory_mb}m", memswap_limit=f"{p.memory_mb}m", pids_limit=512,
         nano_cpus=int(p.cpus * 1e9), cap_drop=["ALL"], security_opt=["no-new-privileges:true"],

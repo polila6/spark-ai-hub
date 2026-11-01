@@ -35,6 +35,7 @@ su clave API, sin enviar ni un prompt a servicios de IA externos.
   directo e informe.
 - **Skills** desde GitHub o un enlace, escritas por ti o instaladas por el propio modelo cuando las necesita.
 - **Ventana de contexto** ajustable con indicador en vivo y **compactación automática** (resume, no olvida).
+- **Workspace (harness remoto)**: carpetas propias en el Spark con archivos, editor, vistas previas (Excel, PDF, imágenes, HTML), terminal y un asistente que escribe, ejecuta y corrige código allí. Sube un CSV, pide «un Excel con el resumen por mes y un gráfico» y descárgalo.
 - **Ejecuta código** en un entorno aislado sin internet: cálculos, gráficos y archivos Excel, Word, PowerPoint o PDF.
 - **Lienzo** junto al chat para informes, cartas o código: edítalo, pide cambios y expórtalo a **Word, PDF o Markdown**.
 - **Investigación a fondo**: varios agentes en paralelo y un informe largo con fuentes numeradas.

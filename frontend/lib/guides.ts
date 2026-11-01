@@ -110,6 +110,20 @@ export const GUIDES: Record<string, GuideDef> = {
     ],
     tips: [b("Tu cuota de espacio aparece arriba. Los archivos de datos (CSV, Excel, SQLite) se consultan con SQL desde el chat.", "Your storage quota is shown at the top. Data files (CSV, Excel, SQLite) are queried with SQL from the chat.")],
   },
+  workspace: {
+    title: b("Workspace", "Workspace"),
+    intro: b("Tu espacio de trabajo remoto en el Spark: una carpeta que se conserva, con editor, terminal y un asistente que escribe, ejecuta y corrige código sobre tus archivos. Todo se ejecuta aislado y sin internet.",
+      "Your remote workspace on the Spark: a persistent folder with an editor, a terminal and an assistant that writes, runs and fixes code on your files. Everything runs isolated and without internet."),
+    steps: [
+      b("Sube tus datos con ⬆ (o arrástralos a la columna de archivos), o tráelos desde Mis archivos con el icono del disco.", "Upload your data with ⬆ (or drop it on the file column), or bring it from My files with the drive icon."),
+      b("Pídele al asistente (derecha) lo que necesites: «con ventas.csv hazme un Excel con un resumen por mes y un gráfico», «genera un PDF con…», «crea un script que…». Escribe el código, lo ejecuta y corrige los errores él solo.", "Ask the assistant (right) what you need: “from sales.csv make an Excel with a monthly summary and a chart”, “make a PDF with…”, “write a script that…”. It writes the code, runs it and fixes errors on its own."),
+      b("Abre cualquier archivo: el código se edita (Ctrl+S guarda) y se ejecuta con ▶; los Excel/CSV se ven como tabla; PDF, imágenes y HTML se previsualizan.", "Open any file: code is editable (Ctrl+S saves) and runs with ▶; Excel/CSV show as a table; PDF, images and HTML are previewed."),
+      b("Terminal (abajo): ejecuta tus propios comandos (python, ls, pandoc, soffice…). ↑ recupera los anteriores.", "Terminal (bottom): run your own commands (python, ls, pandoc, soffice…). ↑ recalls previous ones."),
+      b("Descarga un archivo con ⬇, todo el workspace en ZIP, o guarda una copia en Mis archivos.", "Download a file with ⬇, the whole workspace as ZIP, or save a copy to My files."),
+    ],
+    tips: [b("Puedes tener varios workspaces (uno por proyecto). Cada uno tiene su propio chat; «nueva conversación» empieza de cero sin borrar archivos.", "You can have several workspaces (one per project). Each has its own chat; “new conversation” starts fresh without deleting files."),
+      b("Sin internet: no se pueden instalar paquetes nuevos (pip/npm). Ya incluye pandas, numpy, matplotlib, scikit-learn, openpyxl, python-docx, reportlab, LibreOffice y pandoc.", "No internet: new packages cannot be installed (pip/npm). It already includes pandas, numpy, matplotlib, scikit-learn, openpyxl, python-docx, reportlab, LibreOffice and pandoc.")],
+  },
   tasks: {
     title: b("Tareas programadas", "Scheduled tasks"),
     intro: b("El asistente trabaja solo a la hora que digas: resúmenes de novedades, vigilancia de webs, informes periódicos… Cada tarea tiene su propio chat con todos los resultados.", "The assistant works on its own on schedule: news digests, monitoring, periodic reports… Each task has its own chat with all results."),

@@ -131,3 +131,21 @@ def test_deep_research_writes_cited_report(alice):
     r = next(e for e in evs if e["type"] == "tool_result" and e["name"] == "deep_research")
     d = alice.get(f"/api/v1/canvas/{r['canvas']['id']}").json()
     assert r["ok"] and len(r["sources"]) >= 3 and "[1]" in d["content"] and time.time() - t0 < 1200
+
+
+def test_workspace_files_terminal_and_assistant(alice):
+    ws = alice.post("/api/v1/workspaces", json={"name": f"acc-{int(time.time())}"}).json()
+    wid = ws["id"]
+    alice.c.post(f"/api/v1/workspaces/{wid}/upload", headers={"X-CSRF-Token": alice.csrf},
+                 files={"file": ("ventas.csv", b"mes,importe\nenero,10\nenero,5\nfebrero,7\n", "text/csv")}, data={"folder": "datos"})
+    r = alice.post(f"/api/v1/workspaces/{wid}/run", json={"command": "ln -s /run/secrets x && wc -l datos/ventas.csv"}).json()
+    assert r["exit_code"] == 0 and "4 datos/ventas.csv" in r["stdout"], r
+    assert alice.get(f"/api/v1/workspaces/{wid}/file", params={"path": "x"}).status_code == 422
+    cid = alice.post(f"/api/v1/workspaces/{wid}/conversation").json()["conversation_id"]
+    evs = chat(alice, cid, "Con datos/ventas.csv crea resumen.xlsx con el total por mes y compruébalo.", model=GENERAL,
+               max_tokens=4096, thinking=False, workspace_id=wid)
+    assert any(e["type"] == "tool_result" and e["name"] == "ws_run" for e in evs)
+    t = alice.get(f"/api/v1/workspaces/{wid}/table", params={"path": "resumen.xlsx"}).json()
+    flat = " ".join(" ".join(r) for s in t["sheets"] for r in s["rows"])
+    assert "15" in flat and "7" in flat, flat
+    assert alice.delete(f"/api/v1/workspaces/{wid}").json()["ok"]

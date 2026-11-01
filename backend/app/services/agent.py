@@ -34,6 +34,7 @@ from . import files as files_svc
 from .jobs import JobError, create_job, request_cancel
 
 MAX_STEPS = 10
+WORKSPACE_MAX_STEPS = 30  # write → run → read the error → fix loops need more steps
 SUB_MAX_STEPS = 8
 IMAGE_MAX_SIDE = 1280
 TOOL_RESULT_CHARS = 12000
@@ -64,6 +65,7 @@ class Turn:
     auto_compact: bool = True
     web: bool = True
     research: bool = False  # "Deep research" switch: the assistant calls deep_research
+    workspace_id: uuid.UUID | None = None  # workspace mode: files and commands in the user's persistent workspace
 
 
 # ------------------------------------------------------------------ helpers
@@ -440,6 +442,43 @@ RESEARCH_TOOLS = [
             "required": ["question"]}}},
 ]
 
+WORKSPACE_TOOLS = [
+    {"type": "function", "function": {
+        "name": "ws_list",
+        "description": "List the files of the workspace (or of one folder).",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Folder (empty = root)"}}}}},
+    {"type": "function", "function": {
+        "name": "ws_read",
+        "description": "Read a text file of the workspace (code, CSV, Markdown...). For big files read a range of lines.",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}},
+            "required": ["path"]}}},
+    {"type": "function", "function": {
+        "name": "ws_write",
+        "description": "Create or overwrite a text file in the workspace (folders are created as needed).",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                       "required": ["path", "content"]}}},
+    {"type": "function", "function": {
+        "name": "ws_edit",
+        "description": "Change part of a text file with exact find/replace edits (copy `find` literally from the file).",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string"},
+            "edits": {"type": "array", "items": {"type": "object", "properties": {
+                "find": {"type": "string"}, "replace": {"type": "string"}, "all": {"type": "boolean"}},
+                "required": ["find", "replace"]}}},
+            "required": ["path", "edits"]}}},
+    {"type": "function", "function": {
+        "name": "ws_run",
+        "description": "Run a shell command in the workspace (current folder = workspace root, /work). No internet. "
+                       "Python 3.12 (numpy, pandas, scipy, scikit-learn, matplotlib, openpyxl, xlsxwriter, python-docx, "
+                       "python-pptx, reportlab, pypdf), Node (docx, pptxgenjs), pandoc, LibreOffice (soffice --headless), "
+                       "imagemagick, qpdf. Use it to run scripts and tests, convert documents and inspect data. Returns "
+                       "stdout/stderr and the files that changed.",
+        "parameters": {"type": "object", "properties": {
+            "command": {"type": "string", "description": "e.g. python informe.py && ls -la salida/"},
+            "timeout_s": {"type": "integer"}}, "required": ["command"]}}},
+]
+
 TASK_TOOLS = [
     {"type": "function", "function": {
         "name": "schedule_task",
@@ -507,7 +546,8 @@ TOOL_LABELS = {"generate_image": "Generando imagen", "edit_image": "Editando ima
                "install_skill": "Instalando skill", "delegate_task": "Agente trabajando", "compact_context": "Contexto compactado",
                "run_code": "Ejecutando código", "canvas_write": "Escribiendo en el lienzo",
                "canvas_edit": "Editando el lienzo", "deep_research": "Investigación a fondo",
-               "schedule_task": "Programando tarea"}
+               "schedule_task": "Programando tarea", "ws_list": "Mirando archivos", "ws_read": "Leyendo archivo",
+               "ws_write": "Escribiendo archivo", "ws_edit": "Editando archivo", "ws_run": "Ejecutando en el workspace"}
 
 
 def agent_profiles(db, user: User) -> dict[str, dict]:
@@ -554,6 +594,7 @@ class Runner:
         self.flags = {"web": False, "skills": False, "agents": False, "auto_install": False, "code": False}
         self.project_id: uuid.UUID | None = None
         self.canvas_id: uuid.UUID | None = None
+        self.workspace = None
         self.lock = threading.Lock()
         self.summary: str | None = None
         self.ctx = 8192
@@ -609,7 +650,24 @@ class Runner:
                           ("Las skills son solo instrucciones: no puedes ejecutar sus scripts; aplica sus pautas con tus "
                            "herramientas o muestra el código al usuario." if es else
                            "Skills are instructions only: you cannot run their scripts.")) + extra)
-        if tools_on and self.flags["code"]:
+        if tools_on and self.workspace is not None:
+            from . import workspace as ws_svc
+
+            entries = ws_svc.tree(self.workspace)
+            listing = "\n".join(f"- {e['path']}{'/' if e['type'] == 'dir' else ''}" + (f" ({e['size']} B)" if e['type'] == 'file' else "")
+                                 for e in entries[:150]) or "(vacío)"
+            lines.append((f"MODO WORKSPACE: trabajas en el workspace «{self.workspace.name}» del usuario, una carpeta "
+                          "persistente en el Spark (/work). Usa ws_list, ws_read, ws_write, ws_edit y ws_run para crear, "
+                          "revisar y ejecutar código y documentos AQUÍ (no uses run_code ni el lienzo). Trabaja como un "
+                          "programador: escribe los archivos, ejecútalos, comprueba la salida y corrige hasta que funcione. "
+                          "Guarda los resultados (Excel, PDF, gráficos, informes) en el workspace con nombres claros y dile "
+                          "al usuario dónde están; él los ve y descarga en el panel de archivos.") if es else
+                         (f"WORKSPACE MODE: you work in the user's workspace «{self.workspace.name}», a persistent folder "
+                          "(/work). Use ws_list/ws_read/ws_write/ws_edit/ws_run to create, check and run code and documents "
+                          "HERE (not run_code or the canvas). Write files, run them, check the output and fix until it works. "
+                          "Save results with clear names and tell the user where they are."))
+            lines.append(("Archivos actuales:\n" if es else "Current files:\n") + listing)
+        if tools_on and self.flags["code"] and self.workspace is None:
             lines.append("Código: run_code ejecuta Python, bash o Node en un entorno aislado sin internet. Úsalo para "
                          "cálculos exactos, análisis y gráficos de datos, y para crear o convertir archivos (Word, Excel, "
                          "PowerPoint, PDF, imágenes). Guarda los resultados en /work: el usuario los recibe como archivos "
@@ -617,7 +675,7 @@ class Runner:
                          "Code: run_code runs Python, bash or Node in an isolated sandbox without internet, for exact "
                          "calculations, data analysis, charts and creating/converting files. Save results in /work: the "
                          "user receives them as downloads (do not write links). If it fails, fix it and retry.")
-        if tools_on:
+        if tools_on and self.workspace is None:
             docs = canvas_svc.for_conversation(db, user.id, conv.id)
             self.canvas_id = docs[0].id if docs else None
             lines.append("Lienzo: con canvas_write abres junto al chat un documento o un programa que el usuario puede "
@@ -1363,6 +1421,90 @@ class Runner:
                     "content": f"Task created: «{t.name}», {when}; next run {local} ({tz}). The user can edit or delete it "
                                "on the Tasks page."}
 
+    def _ws_call(self, fn):
+        from . import workspace as ws_svc
+
+        if self.workspace is None:
+            raise AgentError("No hay workspace en esta conversación")
+        with SessionLocal() as db:
+            ws = db.merge(self.workspace)
+            try:
+                return fn(db, ws, ws_svc)
+            except ws_svc.WorkspaceError as e:
+                raise AgentError(e.message)
+            except sandbox.SandboxError as e:
+                raise AgentError(e.message, e.remediation)
+
+    def tool_ws_list(self, call_id: str, args: dict) -> dict:
+        def go(db, ws, svc):
+            pre = svc.clean_rel(str(args.get("path") or ""))
+            items = [e for e in svc.tree(ws) if not pre or e["path"] == pre or e["path"].startswith(pre + "/")]
+            text = "\n".join(f"{e['path']}{'/' if e['type'] == 'dir' else ''}" + (f"  {e['size']} B" if e["type"] == "file" else "")
+                             for e in items[:400])
+            return {"ok": True, "summary": f"{len(items)} entradas", "content": text or "(vacío)"}
+        return self._ws_call(go)
+
+    def tool_ws_read(self, call_id: str, args: dict) -> dict:
+        def go(db, ws, svc):
+            r = svc.read(ws, str(args.get("path") or ""))
+            if not r["text"]:
+                return {"ok": True, "summary": f"{r['path']}: binario ({r['size']} B)",
+                        "content": f"{r['path']} is a binary file ({r['mime']}, {r['size']} bytes); inspect it with ws_run."}
+            lines = r["content"].splitlines()
+            a = max(1, int(args.get("start_line") or 1))
+            b = min(len(lines), int(args.get("end_line") or (a + 799)))
+            body = "\n".join(f"{i:5d}| {ln}" for i, ln in enumerate(lines[a - 1:b], a))
+            more = f"\n[... {len(lines) - b} more lines: read with start_line={b + 1}]" if b < len(lines) else ""
+            return {"ok": True, "summary": f"{r['path']} ({len(lines)} líneas)", "content": body[:TOOL_RESULT_CHARS * 2] + more}
+        return self._ws_call(go)
+
+    def tool_ws_write(self, call_id: str, args: dict) -> dict:
+        def go(db, ws, svc):
+            content = str(args.get("content") or "")
+            r = svc.write(db, ws, str(args.get("path") or ""), content.encode())
+            db.commit()
+            return {"ok": True, "summary": f"{r['path']} ({len(content.splitlines())} líneas)",
+                    "workspace": {"changed": [r["path"]]}, "content": f"Saved {r['path']} ({r['size']} bytes)."}
+        return self._ws_call(go)
+
+    def tool_ws_edit(self, call_id: str, args: dict) -> dict:
+        def go(db, ws, svc):
+            r = svc.read(ws, str(args.get("path") or ""))
+            if not r["text"] or r["truncated"]:
+                raise AgentError("Solo se pueden editar archivos de texto de menos de 2 MB")
+            from ..models import CanvasDoc
+
+            try:
+                new = canvas_svc.apply_edits(CanvasDoc(content=r["content"]), list(args.get("edits") or []))
+            except canvas_svc.CanvasError as e:
+                raise AgentError(e.message)
+            svc.write(db, ws, r["path"], new.encode())
+            db.commit()
+            return {"ok": True, "summary": f"{r['path']} editado", "workspace": {"changed": [r["path"]]},
+                    "content": f"Edited {r['path']}."}
+        return self._ws_call(go)
+
+    def tool_ws_run(self, call_id: str, args: dict) -> dict:
+        cmd = str(args.get("command") or "").strip()
+        if not cmd:
+            raise AgentError("Falta el comando")
+        self.emit({"type": "tool_progress", "id": call_id, "message": cmd[:120]})
+
+        def go(db, ws, svc):
+            t = args.get("timeout_s")
+            res = svc.run(db, ws, cmd, timeout_s=int(t) if isinstance(t, int) else None)
+            ok = res["exit_code"] == 0 and not res["timed_out"]
+            state = "tiempo agotado" if res["timed_out"] else "sin memoria" if res.get("oom_killed") else \
+                ("ok" if ok else f"error {res['exit_code']}")
+            ch = res["changed"]
+            return {"ok": ok, "summary": f"{state} · {res['seconds']:.1f} s" + (f" · {len(ch)} archivo(s) cambiados" if ch else ""),
+                    "terminal": {"command": cmd[:4000], "stdout": res["stdout"][-6000:], "stderr": res["stderr"][-3000:],
+                                 "exit_code": res["exit_code"], "timed_out": res["timed_out"], "seconds": res["seconds"]},
+                    "workspace": {"changed": ch, "removed": res["removed"]},
+                    "content": f"exit_code={res['exit_code']} timed_out={res['timed_out']}\n--- stdout ---\n{res['stdout'][-8000:]}"
+                               f"\n--- stderr ---\n{res['stderr'][-4000:]}\n--- changed files ---\n" + ("\n".join(ch[:100]) or "(none)")}
+        return self._ws_call(go)
+
     # -------------------------------------------------------------- tool plumbing
 
     def _tool_allowed(self, name: str) -> bool:
@@ -1373,13 +1515,19 @@ class Runner:
         if name == "delegate_task":
             return self.flags["agents"]
         if name == "run_code":
-            return self.flags["code"]
+            return self.flags["code"] and self.workspace is None
+        if name in ("describe_data", "query_data", "read_document") and self.workspace is not None:
+            return False  # in a workspace the files are read and processed with ws_read / ws_run
+        if name.startswith("ws_"):
+            return self.workspace is not None and (name != "ws_run" or self.flags["code"])
+        if name in ("canvas_write", "canvas_edit") and self.workspace is not None:
+            return False
         if name == "deep_research":
             return self.flags["web"] and self.flags["agents"]
         return True
 
     def _all_specs(self) -> list[dict]:
-        specs = TOOLS + WEB_TOOLS + SKILL_TOOLS + CODE_TOOLS + CANVAS_TOOLS + RESEARCH_TOOLS + TASK_TOOLS
+        specs = TOOLS + WEB_TOOLS + SKILL_TOOLS + CODE_TOOLS + CANVAS_TOOLS + RESEARCH_TOOLS + TASK_TOOLS + WORKSPACE_TOOLS
         if self.agents:
             specs = specs + [_delegate_spec(self.agents)]
         return specs
@@ -1508,6 +1656,14 @@ class Runner:
                           "auto_install": bool(get_setting(db, "skills_auto_install")),
                           "code": tools_on and bool(get_setting(db, "code_exec_enabled"))}
             self.project_id = conv.project_id
+            wid = self.t.workspace_id or (conv.settings or {}).get("workspace_id")
+            if wid and tools_on:
+                from ..models import Workspace
+
+                ws = db.get(Workspace, uuid.UUID(str(wid)))
+                if ws and ws.owner_id == user.id:
+                    db.expunge(ws)
+                    self.workspace = ws
             self.agents = agent_profiles(db, user) if self.flags["agents"] else {}
             if not self.flags["web"]:
                 self.agents.pop("investigador", None)
@@ -1585,7 +1741,8 @@ class Runner:
 
         step = 0
         retried = False
-        for step in range(MAX_STEPS):
+        steps_max = WORKSPACE_MAX_STEPS if self.workspace is not None else MAX_STEPS
+        for step in range(steps_max):
             self.emit({"type": "status", "status": "loading" if self.inst is None else "generating"})
             if self.inst is None:
                 self.inst = scheduler.ensure_loaded(self.t.model_id, wait_s=1800)
@@ -1594,7 +1751,7 @@ class Runner:
             fit_tokens = self._fit(messages, max_tokens)
             chars = sum(len(json.dumps(m.get("content"), ensure_ascii=False)) for m in messages)
             try:
-                text, calls, finish = self._llm_step(messages, specs if step < MAX_STEPS - 1 else None, fit_tokens,
+                text, calls, finish = self._llm_step(messages, specs if step < steps_max - 1 else None, fit_tokens,
                                                      self.t.thinking, on_delta, on_reasoning, usage_total)
             except EngineError as e:
                 if not retried and re.search(r"context length|maximum context|too long|max_tokens|exceed", e.message, re.I):

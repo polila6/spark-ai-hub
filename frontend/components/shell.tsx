@@ -1,7 +1,7 @@
 "use client";
 import * as DM from "@radix-ui/react-dropdown-menu";
 import {
-  Activity, AlarmClock, AudioLines, Gauge, BarChart3, Bell, Bot, Boxes, Brain, Clapperboard, Code2, Cpu, FlaskConical, FolderKanban, FolderOpen,
+  Activity, AlarmClock, AudioLines, Gauge, SquareTerminal, BarChart3, Bell, Bot, Boxes, Brain, Clapperboard, Code2, Cpu, FlaskConical, FolderKanban, FolderOpen,
   GitCompare, HardDrive, Image as ImageIcon, Inbox, LayoutDashboard, LibraryBig, LifeBuoy, ListChecks, Loader2, LogOut, Menu,
   MessagesSquare, Monitor, Moon, Plug, Puzzle, Search, Settings, Sun, Users, X,
 } from "lucide-react";
@@ -23,6 +23,7 @@ const GROUPS: { key: string; label?: [string, string]; items: Item[] }[] = [
     { href: "/playground", key: "nav.chat", label: ["Chat", "Chat"], icon: MessagesSquare },
     { href: "/projects", key: "nav.projects", label: ["Proyectos", "Projects"], icon: FolderKanban },
     { href: "/files", key: "nav.files", label: ["Mis archivos", "My files"], icon: FolderOpen },
+    { href: "/workspace", key: "nav.workspace", label: ["Workspace", "Workspace"], icon: SquareTerminal },
     { href: "/knowledge", key: "nav.knowledge", label: ["Conocimiento", "Knowledge"], icon: LibraryBig },
     { href: "/memory", key: "nav.memory", label: ["Memoria", "Memory"], icon: Brain },
     { href: "/skills", key: "nav.skills", label: ["Skills", "Skills"], icon: Puzzle },

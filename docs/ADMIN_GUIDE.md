@@ -89,6 +89,8 @@ scripts/sah.sh backup && git pull --ff-only && scripts/sah.sh build && scripts/s
   pasos y la dirección de redirección que hay que copiar en la consola del proveedor. Las cuentas nuevas siguen el modo
   de registro (con aprobación, abierto o cerrado).
 * **Respuestas más rápidas (MTP)** y **ventana de contexto**: Biblioteca → (modelo) → «Ventana de contexto».
+* **Workspace**: cada usuario tiene carpetas persistentes en `/srv/spark-ai-hub/workspaces/<usuario>/<workspace>`.
+  Los comandos usan el mismo entorno aislado sin red; límites en «Workspace: tiempo por comando» y «tamaño máximo».
 * **Uso**: página Uso → «Todo el equipo» (solo cifras, nunca contenido).
 
 ## 11. Si algo falla

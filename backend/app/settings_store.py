@@ -66,6 +66,8 @@ DEFAULTS: dict[str, Any] = {
     "code_exec_enabled": True,  # run_code tool: sandbox container without network (engines/sandbox)
     "code_exec_timeout_s": 120,
     "code_exec_memory_mb": 4096,
+    "workspace_timeout_s": 600,  # time limit of a command in a workspace (max 900)
+    "workspace_max_gb": 10,  # size limit of each workspace
     "voice_enabled": True,  # chat dictation (speech-to-text) and read-aloud (text-to-speech) with local models
     "voice_asr_model": None,  # alias; None = first installed speech-recognition model
     "voice_tts_model": None,  # alias; None = the voice matching the language

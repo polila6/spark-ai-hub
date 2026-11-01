@@ -40,8 +40,9 @@ const TOOLS: ToolDef[] = [
   {
     id: "opencode", name: "OpenCode", kind: "agent", desc: ["Agente de programación en la terminal.", "Terminal coding agent."],
     steps: (c) => {
-      const models = Object.fromEntries(c.models.filter((m) => m.tools_enabled).map((m) => [m.alias, { name: `${m.alias} (Spark)`, limit: { context: ctxFor(m), output: Math.min(16384, Math.floor(ctxFor(m) / 4)) } }]));
-      const cfg = { $schema: "https://opencode.ai/config.json", provider: { spark: { npm: "@ai-sdk/openai-compatible", name: "Spark AI Hub", options: { baseURL: `${c.base}/v1`, apiKey: "{env:SPARK_API_KEY}" }, models } },
+      const models = Object.fromEntries(c.models.filter((m) => m.tools_enabled).map((m) => [m.alias, { name: `${m.alias} (Spark · ${Math.round(ctxFor(m) / 1024)}k${m.alias === c.model ? " · general" : ""})`, limit: { context: ctxFor(m), output: Math.min(16384, Math.floor(ctxFor(m) / 4)) } }]));
+      // headerTimeout: a model that is not in memory is loaded on the first request (vLLM takes ~5 min); OpenCode's default is 5 min
+      const cfg = { $schema: "https://opencode.ai/config.json", provider: { spark: { npm: "@ai-sdk/openai-compatible", name: "Spark AI Hub", options: { baseURL: `${c.base}/v1`, apiKey: "{env:SPARK_API_KEY}", headerTimeout: 1800000 }, models } },
         model: `spark/${c.model}`, small_model: `spark/${c.small}`,
         mcp: { "spark-cloud": { type: "remote", url: `${c.base}/mcp`, headers: { Authorization: "Bearer {env:SPARK_API_KEY}" } } } };
       return [
@@ -49,6 +50,7 @@ const TOOLS: ToolDef[] = [
         envStep(c, "SPARK_API_KEY", c.key),
         { text: c.L(`Crea o edita el archivo ${cfgPath(c, "~/.config/opencode/opencode.json", "%USERPROFILE%\\.config\\opencode\\opencode.json")} con este contenido (incluye el servidor MCP de tu nube personal):`, `Create or edit ${cfgPath(c, "~/.config/opencode/opencode.json", "%USERPROFILE%\\.config\\opencode\\opencode.json")} with this content (includes the MCP server of your personal cloud):`), code: JSON.stringify(cfg, null, 2), lang: "json" },
         { text: c.L("Abre OpenCode en la carpeta de tu proyecto y elige el modelo con /models:", "Open OpenCode in your project folder and pick the model with /models:"), code: "opencode", lang: "bash" },
+        { text: c.L("Modelos que no están en memoria: al elegirlos con /models, el Spark los carga solo con tu primer mensaje (de 1 a 6 minutos; OpenCode espera hasta 30 min gracias a «headerTimeout»). Para no esperar, cárgalo antes en la web: Biblioteca → (modelo) → «Cargar», que además te dice si cabe en memoria. El modelo marcado «general» está siempre cargado y responde al instante.", "Models not in memory: when you pick one with /models, the Spark loads it with your first message (1 to 6 minutes; OpenCode waits up to 30 min thanks to “headerTimeout”). To avoid waiting, load it first on the web: Library → (model) → “Load”, which also tells you whether it fits in memory. The model marked “general” is always loaded and answers instantly.") },
         { text: c.L(`Contexto: este modelo admite ${ctxFor(c.models.find((m) => m.alias === c.model))} tokens por petición (ya está en el archivo de arriba). Al acercarse al límite OpenCode resume la sesión solo; también puedes escribir /compact cuando quieras. Si se te queda corto, un administrador puede ampliarlo en Modelos → (el modelo) → «Ventana de contexto»; después vuelve a copiar este archivo.`, `Context: this model accepts ${ctxFor(c.models.find((m) => m.alias === c.model))} tokens per request (already in the file above). Near the limit OpenCode summarises the session on its own; you can also type /compact. If it is too short, an administrator can raise it in Models → (the model) → “Context window”; then copy this file again.`) },
       ];
     },
@@ -174,7 +176,7 @@ export function ConnectSteps({ initialKey, initialTool = "opencode", compact }: 
     setSmall((m) => m || sm);
   }, [chat, pub]);
   const def = TOOLS.find((x) => x.id === tool) ?? TOOLS[0];
-  const ctx: Ctx = { base: base || (typeof window !== "undefined" ? window.location.origin : ""), key: key || PLACEHOLDER, model: model || "qwen3.5-35b-a3b", small: small || model || "qwen3-4b-instruct", os, models: chat, L };
+  const ctx: Ctx = { base: base || (typeof window !== "undefined" ? window.location.origin : ""), key: key || PLACEHOLDER, model: model || chat[0]?.alias || "", small: small || model || "qwen3-4b-instruct", os, models: chat, L };
   const steps = [...def.steps(ctx), checkStep(ctx)];
   async function createKey() {
     setBusy(true);

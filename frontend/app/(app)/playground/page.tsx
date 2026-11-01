@@ -132,7 +132,9 @@ function Chat() {
   const [mode, setMode] = useState<"chat" | "image">("chat");
   const [aspect, setAspect] = useState("square");
   const [tools, setTools] = useState(true);
-  const [thinking, setThinking] = useState(false);
+  const [thinking, setThinkingState] = useState(false);
+  useEffect(() => { try { setThinkingState(localStorage.getItem("sah-think") === "1"); } catch {} }, []);
+  const setThinking = (v: boolean) => { setThinkingState(v); try { localStorage.setItem("sah-think", v ? "1" : "0"); } catch {} };
   const { data: voice } = useSWR("/api/v1/voice");
   const [autoRead, setAutoRead] = useState(false);
   const autoReadRef = useRef(false);
@@ -216,6 +218,7 @@ function Chat() {
     setCtxLimit(c.settings?.context_limit ?? 0);
     setAutoCompact(c.settings?.auto_compact ?? true);
     setWeb(c.settings?.web ?? true);
+    if (typeof c.settings?.thinking === "boolean") setThinkingState(c.settings.thinking);
     setCanvas(null);
     setCtxUsed([...c.messages].reverse().find((m: any) => m.metrics?.context_used)?.metrics?.context_used ?? null);
     if (c.active_turn) {  // still answering (sent before leaving the page): replay its events and follow live

@@ -424,3 +424,32 @@ def test_oidc_id_token_claims_and_parsers():
     assert _claims(f"x.{payload}.sig")["email"] == "a@b.org"
     q = parser_defaults("Qwen/Qwen3.5-35B-A3B-FP8", {"text_config": {"model_type": "qwen3_5_moe", "mtp_num_hidden_layers": 1}})
     assert q["speculative_tokens"] == 2
+
+
+def test_workspace_paths_refuse_links_fifos_and_escapes(tmp_path, monkeypatch):
+    import os
+    import uuid
+
+    import pytest
+
+    from app.models import Workspace
+    from app.services import workspace as w
+
+    ws = Workspace(id=uuid.uuid4(), owner_id=uuid.uuid4(), name="t")
+    monkeypatch.setattr(w, "root", lambda _ws: tmp_path / "ws")
+    w.ensure(ws)
+    (tmp_path / "secret.txt").write_text("top secret")
+    (tmp_path / "ws" / "datos").mkdir()
+    (tmp_path / "ws" / "datos" / "a.csv").write_text("x,y\n1,2\n")
+    os.symlink(tmp_path / "secret.txt", tmp_path / "ws" / "fuga")
+    os.symlink(tmp_path, tmp_path / "ws" / "dir")
+    os.mkfifo(tmp_path / "ws" / "tubo")
+    assert w.read(ws, "datos/a.csv")["content"].startswith("x,y")
+    assert w.table_preview(ws, "datos/a.csv")["sheets"][0]["rows"][1] == ["1", "2"]
+    for bad in ("fuga", "dir/secret.txt", "tubo", "../secret.txt", "datos/../../secret.txt"):
+        with pytest.raises(w.WorkspaceError):
+            w.read(ws, bad)
+    with pytest.raises(w.WorkspaceError):
+        w.raw(ws, "dir/secret.txt")
+    assert {e["path"]: e["type"] for e in w.tree(ws)}["fuga"] == "link"
+    assert w.clean_rel("/a//b/./c") == "a/b/c"

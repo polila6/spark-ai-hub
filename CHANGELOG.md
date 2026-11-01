@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0 — 2026-11-01
+Workspace: a remote harness per user.
+
+* **Workspace** page: persistent folders per user (several per person, ZIP download, 10 GB each by default) with a
+  file tree (upload, drag & drop, import from My files, new file/folder, rename, delete), an editor (Ctrl+S, ▶ to run
+  `.py`/`.sh`/`.js`), previews (Excel/CSV as tables with sheets, PDF, images, HTML in a sandboxed frame, Markdown) and a
+  terminal. Every command runs in the no-network sandbox with the workspace mounted as `/work` (engine-manager
+  `workspace` mount; the program itself comes read-only from `/job`); up to 10 min per command by default.
+* **Workspace assistant**: its own chat per workspace with `ws_list`, `ws_read`, `ws_write`, `ws_edit` and `ws_run`; it
+  writes code, runs it, reads the errors and fixes them (up to 30 tool steps) and leaves Excel, PDF, charts or scripts in
+  the workspace. Verified: CSV → Excel with detail and monthly sheets + chart + one-page PDF report.
+* Untrusted files written by programs are handled safely: symbolic links are never followed from the web, only regular
+  files are read (no FIFOs/devices), paths cannot leave the workspace.
+* Settings: `workspace_timeout_s`, `workspace_max_gb`. Migration 38ed2f96b523.
+* OpenCode configuration from "Connect tools" adds `headerTimeout` (30 min) so the first request to a model that is not
+  in memory waits for it to load, labels each model with its context and marks the general one.
+* Chat: the "Think" switch is remembered (per browser and per conversation).
+
 ## 0.5.0 — 2026-11-01
 Code, canvas, deep research, voice, scheduled tasks, connectors, single sign-on and a usage panel.
 
