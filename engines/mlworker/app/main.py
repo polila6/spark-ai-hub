@@ -17,6 +17,9 @@ import numpy as np
 import torch
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+# Imported eagerly: transformers' lazy imports are not thread-safe, and two requests importing them at the same time
+# (e.g. a smoke test and a chat read-aloud) failed with "cannot import name AutoTokenizer".
+from transformers import AutoTokenizer, VitsModel, pipeline  # noqa: E402,F401
 
 app = FastAPI(title="Spark AI Hub ML worker", docs_url=None, redoc_url=None)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

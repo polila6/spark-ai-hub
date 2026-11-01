@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.1 — 2026-11-01
+Connectors verified against real servers; voice fixes.
+
+* **WebDAV connector** now reads every `propstat` block of a PROPFIND answer (servers such as WsgiDAV and Nextcloud
+  put found and missing properties in separate blocks): sub-folders were not followed and some files had no ETag.
+  Verified against a real WebDAV server: new files, sub-folders, changed files and deleted files.
+* **SMB connector**: each connector uses its own connection cache (the shared pool reused another connector's session
+  and credentials for the same server: "access denied"); guest shares work (NTLM without signing); clear messages for
+  wrong passwords, missing shares and folders. Verified against Samba: guest, user/password and wrong password.
+* The sync statistics count deletions correctly.
+* **ML worker**: `transformers` is imported at start-up; two simultaneous requests (e.g. a smoke test and a
+  read-aloud) could fail with "cannot import name AutoTokenizer".
+* English read-aloud: install `facebook/mms-tts-eng` (the chat picks the voice matching the user's language).
+* Admin PDF guide: background replies, workspace packages and LaTeX, backups of users' files.
+
 ## 0.8.0 — 2026-11-01
 Deep review: fixes and hardening across the platform.
 

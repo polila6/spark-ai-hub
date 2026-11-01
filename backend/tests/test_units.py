@@ -516,3 +516,30 @@ def test_dead_turns_are_closed_and_deleted_chats_stop(monkeypatch):
     turns.start("c1", "u1", "otra vez")  # a dead turn no longer blocks the chat
     turns.forget("c1", "u1")  # chat deleted while answering
     assert turns.running_for_user("u1") == [] and fake.exists(turns._k("c1", ":cancel"))
+
+
+def test_webdav_listing_reads_every_propstat_and_recurses(monkeypatch):
+    import httpx
+
+    from app.services import connectors
+
+    root = """<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">
+<d:response><d:href>/dav/docs/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+<d:response><d:href>/dav/docs/informe.md</d:href>
+  <d:propstat><d:prop><d:getetag/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat>
+  <d:propstat><d:prop><d:getlastmodified>Sun, 01 Nov 2026</d:getlastmodified><d:getcontentlength>42</d:getcontentlength><d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+<d:response><d:href>/dav/docs/sub/</d:href>
+  <d:propstat><d:prop><d:getetag/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat>
+  <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+</d:multistatus>"""
+    sub = """<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">
+<d:response><d:href>/dav/docs/sub/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+<d:response><d:href>/dav/docs/sub/nota%20uno.txt</d:href><d:propstat><d:prop><d:getetag>"e1"</d:getetag><d:getcontentlength>7</d:getcontentlength><d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+</d:multistatus>"""
+
+    def fake(db, method, url, **kw):
+        return httpx.Response(207, content=(sub if url.rstrip("/").endswith("/sub") else root).encode())
+    monkeypatch.setattr(connectors, "_request", fake)
+    items = connectors.WebDav(None, {"url": "https://cloud.example.org/dav/docs/"}, None).list()
+    assert sorted((i["path"], i["etag"], i["size"]) for i in items) == [
+        ("informe.md", "Sun, 01 Nov 2026", 42), ("sub/nota uno.txt", "e1", 7)]

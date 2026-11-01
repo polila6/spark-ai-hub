@@ -152,16 +152,21 @@ class WebDav:
                 path = urlsplit(href).path
                 if not path.startswith(self.root) or path.rstrip("/") == self.root.rstrip("/"):
                     continue
-                prop = resp.find("d:propstat/d:prop", ns)
-                if prop is None:
+                # a response may hold several propstat blocks (found props with 200, missing ones with 404)
+                props = [ps.find("d:prop", ns) for ps in resp.findall("d:propstat", ns)
+                         if " 200 " in (ps.findtext("d:status", default=" 200 ", namespaces=ns) + " ")]
+                props = [x for x in props if x is not None]
+                if not props:
                     continue
-                if prop.find("d:resourcetype/d:collection", ns) is not None:
+
+                def val(tag: str) -> str:
+                    return next((x.findtext(tag, default="", namespaces=ns) for x in props if x.find(tag, ns) is not None), "")
+                if any(x.find("d:resourcetype/d:collection", ns) is not None for x in props) or href.endswith("/"):
                     todo.append(urljoin(self.base, quote(path)))
                     continue
                 rel = path[len(self.root):]
-                out.append({"path": rel, "etag": (prop.findtext("d:getetag", default="", namespaces=ns) or
-                                                  prop.findtext("d:getlastmodified", default="", namespaces=ns)).strip('"'),
-                            "size": int(prop.findtext("d:getcontentlength", default="0", namespaces=ns) or 0)})
+                out.append({"path": rel, "etag": (val("d:getetag") or val("d:getlastmodified")).strip('"'),
+                            "size": int(val("d:getcontentlength") or 0)})
         return out
 
     def get(self, item: dict) -> bytes:
@@ -228,6 +233,9 @@ class Zotero:
 
 
 class Smb:
+    """Each connector uses its own connection cache: smbclient's global pool would reuse another connector's session
+    (other credentials) for the same server."""
+
     def __init__(self, db, cfg: dict, secret: str | None):
         self.db, self.host = db, cfg["host"].strip()
         self.share = cfg["share"].strip("\\/ ")
@@ -236,14 +244,31 @@ class Smb:
         if cfg.get("domain"):
             self.user = f"{cfg['domain']}\\{self.user}"
         self.password = secret or ""
+        self.cache: dict = {}
 
     def _session(self):
         import smbclient
 
         ip = resolve(self.db, self.host, 445)
-        smbclient.register_session(ip, username=self.user or None, password=self.password or None, port=445,
-                                   connection_timeout=15)
+        guest = not self.user
+        # guest sessions cannot sign, so they cannot pass SMB 3 secure negotiation either
+        smbclient.ClientConfig(require_secure_negotiate=not guest)
+        try:
+            smbclient.register_session(ip, username=self.user or "guest", password=self.password or "", port=445,
+                                       connection_timeout=15, auth_protocol="ntlm", require_signing=not guest,
+                                       connection_cache=self.cache)
+        except Exception as e:  # noqa: BLE001  (smbprotocol raises many specific errors)
+            self.close()
+            raise ConnectorError(_smb_message(self.host, e))
         return smbclient, ip
+
+    def close(self) -> None:
+        import smbclient
+
+        try:
+            smbclient.reset_connection_cache(connection_cache=self.cache)
+        except Exception:  # noqa: BLE001
+            pass
 
     def list(self) -> list[dict]:
         smbclient, ip = self._session()
@@ -252,7 +277,7 @@ class Smb:
         try:
             while todo and len(out) < MAX_FILES:
                 d = todo.pop()
-                for e in smbclient.scandir(d):
+                for e in smbclient.scandir(d, connection_cache=self.cache):
                     if e.is_dir():
                         if not e.name.startswith("."):
                             todo.append(f"{d}\\{e.name}")
@@ -261,14 +286,29 @@ class Smb:
                     rel = f"{d}\\{e.name}"[len(root) + 1:].replace("\\", "/")
                     out.append({"path": rel, "etag": f"{int(st.st_mtime)}-{st.st_size}", "size": st.st_size,
                                 "full": f"{d}\\{e.name}"})
-        except Exception as e:  # noqa: BLE001  (smbprotocol raises many specific errors)
-            raise ConnectorError(f"SMB: {type(e).__name__}: {str(e)[:200]}")
+        except Exception as e:  # noqa: BLE001
+            self.close()
+            raise ConnectorError(_smb_message(self.host, e))
         return out
 
     def get(self, item: dict) -> bytes:
         smbclient, _ = self._session()
-        with smbclient.open_file(item["full"], mode="rb") as fh:
-            return fh.read(MAX_FILE_BYTES + 1)
+        try:
+            with smbclient.open_file(item["full"], mode="rb", connection_cache=self.cache) as fh:
+                return fh.read(MAX_FILE_BYTES + 1)
+        except Exception as e:  # noqa: BLE001
+            raise ConnectorError(_smb_message(self.host, e))
+
+
+def _smb_message(host: str, e: Exception) -> str:
+    t = str(e)
+    if "ACCESS_DENIED" in t or "LOGON_FAILURE" in t or "0xc000006d" in t.lower():
+        return f"SMB {host}: acceso denegado (revisa usuario, contraseña, dominio y que tenga permiso sobre el recurso)"
+    if "BAD_NETWORK_NAME" in t or "0xc00000cc" in t.lower():
+        return f"SMB {host}: el recurso compartido no existe (revisa el nombre)"
+    if "OBJECT_NAME_NOT_FOUND" in t or "OBJECT_PATH_NOT_FOUND" in t:
+        return f"SMB {host}: la carpeta no existe"
+    return f"SMB {host}: {type(e).__name__}: {t[:150]}"
 
 
 SOURCES = {"webdav": WebDav, "github": GitHub, "zotero": Zotero, "smb": Smb}
@@ -313,7 +353,11 @@ def source(db: Session, c: KbConnector):
 
 
 def test(db: Session, c: KbConnector) -> dict:
-    items = source(db, c).list()
+    src = source(db, c)
+    try:
+        items = src.list()
+    finally:
+        getattr(src, "close", lambda: None)()
     ok = [i for i in items if PurePosixPath(i["path"]).suffix.lower() in IMPORT_EXT]
     return {"files": len(items), "importable": len(ok), "examples": [i["path"] for i in ok[:8]]}
 
@@ -329,6 +373,13 @@ def sync(db: Session, c: KbConnector, progress=None) -> dict:
     c.status, c.status_message = "syncing", None
     db.commit()
     src = source(db, c)
+    try:
+        return _sync(db, c, user, src, progress)
+    finally:
+        getattr(src, "close", lambda: None)()
+
+
+def _sync(db: Session, c: KbConnector, user: User, src, progress) -> dict:
     remote = [i for i in src.list() if PurePosixPath(i["path"]).suffix.lower() in IMPORT_EXT
               and (not i.get("size") or i["size"] <= MAX_FILE_BYTES)][:MAX_FILES]
     known = {it.remote_path: it for it in db.scalars(select(ConnectorItem).where(ConnectorItem.connector_id == c.id))}
@@ -366,6 +417,7 @@ def sync(db: Session, c: KbConnector, progress=None) -> dict:
         _drop_file(db, gone.file_id)
         db.delete(gone)
         removed += 1
+    db.flush()
     c.status = "ok" if not failed else "error"
     c.status_message = "; ".join(errors[:5]) or None
     c.last_sync_at = datetime.now(timezone.utc)
