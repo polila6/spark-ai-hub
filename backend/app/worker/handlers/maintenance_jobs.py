@@ -77,13 +77,19 @@ class Backup(Handler):
         if cfg_src.exists():
             shutil.copytree(cfg_src, dest / "config", ignore=shutil.ignore_patterns("*.key", "*secret*", "*token*"))
         if include_user:
-            ctx.progress(0.5, "Archiving user data (datasets, outputs, experiments)", force=True)
+            ctx.progress(0.5, "Archiving user data (drives, workspaces, datasets, outputs, experiments)", force=True)
+            skip_dirs = {"node_modules", ".local", ".cache", "__pycache__", ".venv"}
+
+            def member(ti):
+                parts = ti.name.split("/")
+                if "/comfyui/" in ti.name or ti.name.startswith("outputs/mlworker") or skip_dirs & set(parts):
+                    return None
+                return None if ti.issym() or ti.islnk() or not (ti.isfile() or ti.isdir()) else ti
             with tarfile.open(dest / "user_data.tar.gz", "w:gz") as tar:
-                for sub in ("datasets", "outputs", "experiments", "benchmarks"):
+                for sub in ("users", "workspaces", "datasets", "outputs", "experiments", "benchmarks", "apps"):
                     p = s.data_root / sub
                     if p.exists():
-                        tar.add(p, arcname=sub, filter=lambda ti: None if "/comfyui/" in ti.name or
-                                ti.name.startswith("outputs/mlworker") else ti)
+                        tar.add(p, arcname=sub, filter=member)
                     ctx.raise_if_cancelled()
         ctx.progress(0.8, "Writing manifest and verifying", force=True)
         files = []

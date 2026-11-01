@@ -46,7 +46,7 @@ def make_pdf(lines: list[str]) -> bytes:
 
 @pytest.fixture(scope="module")
 def ra():
-    return Hub("alice-test", PW)
+    return Hub(os.environ.get("SAH_TEST_USER", "alice-test"), os.environ.get("SAH_TEST_USER_PASSWORD", PW))
 
 
 @pytest.fixture(scope="module")

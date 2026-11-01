@@ -27,7 +27,7 @@ from ..services.jobs import JobError, create_job
 router = APIRouter(tags=["mcp"])
 
 PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
-SERVER_INFO = {"name": "spark-ai-hub", "title": "Spark AI Hub", "version": "0.4.0"}
+SERVER_INFO = {"name": "spark-ai-hub", "title": "Spark AI Hub", "version": __import__("app").__version__}
 INSTRUCTIONS = ("Personal private cloud of the user on their DGX Spark. Use search_knowledge for questions about the "
                 "user's documents, list_files/read_file for their drive, describe_data/query_data for CSV/Excel/SQLite "
                 "files, search_chats/get_chat for previous conversations, list_memories/save_memory for durable facts "

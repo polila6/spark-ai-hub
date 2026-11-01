@@ -54,6 +54,8 @@ def heartbeat(cid):
         while not stop.is_set():
             try:
                 r.set(_k(cid, ":beat"), "1", ex=BEAT_TTL_S)
+                r.expire(_k(cid), TTL_S)
+                r.expire(_k(cid, ":ev"), TTL_S)
             except Exception:  # noqa: BLE001  (Redis hiccup: the next beat retries)
                 pass
             stop.wait(BEAT_EVERY_S)

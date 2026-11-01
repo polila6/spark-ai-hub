@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SAH_", extra="ignore")
 
     env: str = "production"
-    version: str = "0.1.0"
+    version: str = __import__("app").__version__  # release; SAH_VERSION is only the Docker image tag
     log_level: str = "INFO"
 
     # Persistent data root *inside* containers (bind-mounted from host SAH_DATA_ROOT).

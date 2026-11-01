@@ -328,7 +328,7 @@ export default function WorkspacePage() {
         <div className={cx("min-h-0 flex-col gap-3 lg:flex", pane === "editor" ? "flex" : "hidden")}>
           <Card className="min-h-0 flex-[3] overflow-hidden">
             {ws && sel && selEntry?.type === "file" ? <Viewer key={`${sel}`} wid={ws.id} path={sel} version={fileVersion} onRun={run} onSaved={refresh} />
-              : <div className="grid h-full place-items-center p-6 text-center text-sm text-muted">{L("Abre un archivo de la izquierda, sube datos o pídele algo al asistente.", "Open a file on the left, upload data or ask the assistant.")}</div>}
+              : <div className="grid h-full place-items-center p-6 text-center text-sm text-muted">{L("Abre un archivo (en la lista de archivos), sube datos o pídele algo al asistente.", "Open a file (from the file list), upload data or ask the assistant.")}</div>}
           </Card>
           <Card className="min-h-[160px] flex-[2] overflow-hidden"><Terminal runs={runs} busy={running} onRun={run} onOpen={open} onClear={async () => { if (ws) { await api(`/api/v1/workspaces/${ws.id}/runs`, { method: "DELETE" }); mutRuns(); } }} /></Card>
         </div>

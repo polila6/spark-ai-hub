@@ -9,7 +9,7 @@ x-backend-common: &backend-common
   restart: unless-stopped
   environment: &backend-env
     SAH_ENV: production
-    SAH_VERSION: ${SAH_VERSION:-0.1.0}
+    SAH_IMAGE_TAG: ${SAH_VERSION:-0.1.0}
     SAH_LOG_LEVEL: ${SAH_LOG_LEVEL:-INFO}
     SAH_HOST_DATA_ROOT: ${SAH_DATA_ROOT:-/srv/spark-ai-hub}
     SAH_PUBLIC_BASE_URL: ${SAH_PUBLIC_BASE_URL:-http://localhost:8080}

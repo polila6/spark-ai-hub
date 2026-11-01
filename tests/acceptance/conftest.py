@@ -10,10 +10,15 @@ def adm() -> Hub:
 
 
 @pytest.fixture(scope="session")
-def alice(adm) -> Hub:
+def alice(request) -> Hub:
+    """SAH_TEST_USER (+ SAH_TEST_USER_PASSWORD) runs the researcher tests with an existing account, no admin needed."""
+    import os
+
+    if os.environ.get("SAH_TEST_USER"):
+        return Hub(os.environ["SAH_TEST_USER"], os.environ["SAH_TEST_USER_PASSWORD"])
     from test_acceptance import _make_researcher
 
-    return _make_researcher(adm, "alice-test")
+    return _make_researcher(request.getfixturevalue("adm"), "alice-test")
 
 
 @pytest.fixture(scope="session")

@@ -103,7 +103,14 @@ def rename_workspace(wid: uuid.UUID, body: WsIn, p: Principal = Depends(require_
 def delete_workspace(wid: uuid.UUID, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
     import shutil
 
+    from ..services import turns
+
     ws = _ws(db, p, wid)
+    for c in db.scalars(select(Conversation).where(Conversation.owner_id == p.id,
+                                                   Conversation.settings["workspace_id"].astext == str(ws.id))):
+        turns.forget(c.id, p.id)  # stop a reply that is still working in this workspace
+        db.delete(c)
+    ws_svc.clear_runs(ws)
     shutil.rmtree(ws_svc.root(ws), ignore_errors=True)
     db.delete(ws)
     db.commit()
@@ -163,14 +170,14 @@ def write_file(wid: uuid.UUID, body: FileIn, p: Principal = Depends(require_rese
 @router.post("/{wid}/upload")
 async def upload(wid: uuid.UUID, file: UploadFile = File(...), folder: str = Form(default=""),
                  p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
-    ws = _ws(db, p, wid)
-    data = await file.read(500 * 1024 * 1024 + 1)
-    if len(data) > 500 * 1024 * 1024:
-        raise HTTPException(413, detail={"code": "too_large", "message": "Máximo 500 MB por archivo"})
+    from starlette.concurrency import run_in_threadpool
+
     from ..services.uploads import safe_name
 
+    ws = _ws(db, p, wid)
+    target = f"{folder.strip('/')}/{safe_name(file.filename or 'archivo')}".lstrip("/")
     try:
-        r = ws_svc.write(db, ws, f"{folder.strip('/')}/{safe_name(file.filename or 'archivo')}".lstrip("/"), data)
+        r = await run_in_threadpool(ws_svc.write_stream, db, ws, target, file.file, 500 * 1024 * 1024)
     except ws_svc.WorkspaceError as e:
         raise _err(e)
     db.commit()

@@ -195,6 +195,32 @@ def write(db: Session, ws: Workspace, path: str, data: bytes) -> dict:
     return {"path": rel, "size": len(data)}
 
 
+def write_stream(db: Session, ws: Workspace, path: str, fh, max_bytes: int) -> dict:
+    """Like write() for uploads: copies in chunks (no whole file in memory) and enforces the size limits."""
+    rel = clean_rel(path)
+    if not rel:
+        raise WorkspaceError("Falta el nombre del archivo")
+    p = resolve(ws, rel, must_exist=False)
+    if p.exists() and not p.is_file():
+        raise WorkspaceError("Ya existe una carpeta con ese nombre")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f".{p.name}.{uuid.uuid4().hex[:6]}.tmp")
+    size = 0
+    try:
+        with open(tmp, "wb") as out:
+            while chunk := fh.read(1024 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise WorkspaceError(f"Máximo {max_bytes // (1024 * 1024)} MB por archivo", 413)
+                out.write(chunk)
+        _check_quota(db, ws)
+        os.replace(tmp, p)
+    finally:
+        tmp.unlink(missing_ok=True)
+    touch(ws)
+    return {"path": rel, "size": size}
+
+
 def mkdir(ws: Workspace, path: str) -> None:
     p = resolve(ws, path, must_exist=False)
     p.mkdir(parents=True, exist_ok=True)
@@ -287,14 +313,31 @@ def table_preview(ws: Workspace, path: str, rows: int = 200) -> dict:
 # ------------------------------------------------------------------ running commands
 
 
+def _snapshot(base: Path) -> dict[str, tuple[int, int]]:
+    """Regular files and their (size, mtime), skipping installs and caches (node_modules can hold 100 000 files)."""
+    out: dict[str, tuple[int, int]] = {}
+    for dirpath, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in HIDDEN]
+        for f in files:
+            fp = os.path.join(dirpath, f)
+            try:
+                st = os.lstat(fp)
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                out[os.path.relpath(fp, base)] = (st.st_size, st.st_mtime_ns)
+                if len(out) > 50_000:
+                    return out
+    return out
+
+
 def run(db: Session, ws: Workspace, command: str, *, language: str = "bash", timeout_s: int | None = None) -> dict:
     """Run a command (or a whole script) in the sandbox with the workspace as /work. Returns output + changed files."""
     if not get_setting(db, "code_exec_enabled"):
         raise SandboxError("La ejecución de código está desactivada.", "Un administrador puede activarla en Ajustes → Sistema.")
     base = ensure(ws)
     _check_quota(db, ws)
-    before = {str(p.relative_to(base)): (p.stat().st_size, p.stat().st_mtime_ns)
-              for p in base.rglob("*") if p.is_file() and not p.is_symlink()}
+    before = _snapshot(base)
     rid = uuid.uuid4().hex
     job = get_settings().data_root / "sandbox" / rid
     job.mkdir(parents=True)
@@ -302,23 +345,25 @@ def run(db: Session, ws: Workspace, command: str, *, language: str = "bash", tim
         name = {"python": ".main.py", "node": ".main.js"}.get(language, ".main.sh")
         (job / name).write_text(command if language != "bash" else f"cd /work\n{command}\n")
         limit = int(timeout_s or get_setting(db, "workspace_timeout_s") or 600)
+        from .sandbox import user_slot
+
         try:
-            res = orchestrator.run_sandbox({"run_id": rid, "language": language if language in ("python", "node") else "bash",
-                                            "timeout_s": max(5, min(900, limit)),
-                                            "memory_mb": int(get_setting(db, "code_exec_memory_mb") or 4096),
-                                            "workspace": f"{ws.owner_id}/{ws.id}",
-                                            "packages": bool(get_setting(db, "workspace_packages_enabled"))})
+            with user_slot(db, ws.owner_id):
+                res = orchestrator.run_sandbox({"run_id": rid, "language": language if language in ("python", "node") else "bash",
+                                                "timeout_s": max(5, min(900, limit)),
+                                                "memory_mb": int(get_setting(db, "code_exec_memory_mb") or 4096),
+                                                "workspace": f"{ws.owner_id}/{ws.id}",
+                                                "packages": bool(get_setting(db, "workspace_packages_enabled"))})
         except orchestrator.OrchestratorError as e:
             if getattr(e, "status", None) == 424:
                 raise SandboxError("Falta la imagen del entorno de ejecución.", "En el servidor: scripts/sah.sh build")
             raise SandboxError(f"No se pudo ejecutar: {e}")
     finally:
         shutil.rmtree(job, ignore_errors=True)
-    after = {str(p.relative_to(base)): (p.stat().st_size, p.stat().st_mtime_ns)
-             for p in base.rglob("*") if p.is_file() and not p.is_symlink()}
+    after = _snapshot(base)
     changed = sorted(k for k, v in after.items() if before.get(k) != v)[:200]
     removed = sorted(k for k in before if k not in after)[:200]
-    ws.size_bytes = sum(v[0] for v in after.values())
+    ws.size_bytes = size_of(ws)
     touch(ws)
     db.commit()
     return {**res, "changed": changed, "removed": removed}

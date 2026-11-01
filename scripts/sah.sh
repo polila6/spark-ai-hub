@@ -4,10 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DC="docker compose"
+DATA="${SAH_DATA_ROOT:-$(sed -n 's/^SAH_DATA_ROOT=\([^ #]*\).*/\1/p' .env 2>/dev/null)}"; DATA="${DATA:-/srv/spark-ai-hub}"
+dirs() { mkdir -p "$DATA/run/pkgproxy" "$DATA/workspaces" "$DATA/sandbox" 2>/dev/null || true; }
 case "${1:-status}" in
   status)   $DC ps --format 'table {{.Service}}\t{{.Status}}'; docker ps -a --filter name=sah- --format 'table {{.Names}}\t{{.Status}}';
             curl -s https://"$(tailscale status --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"/api/v1/system/health; echo ;;
-  up)       $DC up -d ;;
+  up)       dirs; $DC up -d ;;
   down)     # Stops the hub. On-demand engine containers (sah-*) are stopped too. Data is kept.
             docker ps -q --filter label=sah.managed=true | xargs -r docker stop; $DC down ;;
   restart)  shift; $DC restart "$@" ;;
@@ -42,7 +44,7 @@ with SessionLocal() as db:
     print(f"{get_settings().public_base_url}/invite/{t}  (valid 1 h)")
 PY
             ;;
-  update)   git pull --ff-only && $DC build && $DC up -d ;;   # migrations run automatically on backend start
+  update)   git pull --ff-only && dirs && $DC build && $DC -f compose.yaml -f compose.optional.yaml --profile sandbox build sandbox && $DC up -d ;;   # migrations run automatically on backend start
   unit)     docker run --rm --user 1000:1000 -e HOME=/tmp -v "$PWD/backend:/app" -w /app spark-ai-hub/backend:"${SAH_VERSION:-0.1.0}" \
               sh -c "pip install -q --user pytest==9.2.0 && python -m pytest -q tests" ;;
   test)     .venv-tests/bin/pytest -v tests/acceptance ;;

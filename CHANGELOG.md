@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0 — 2026-11-01
+Deep review: fixes and hardening across the platform.
+
+* **Backups were missing user files**: "include user data" archived datasets, outputs and experiments but not the
+  users' drives (`users/`, since 0.2.0) nor workspaces. Both are included now (without `node_modules`/installed
+  packages); symbolic links and special files are skipped. Verified with a real backup.
+* **Answers cut by the length limit** (`finish_reason=length`) now continue automatically (twice at most) instead of
+  ending mid-sentence; the chat's default output limit is 8192 tokens.
+* **Small models** (< 14B, e.g. Qwen3 4B) get only the core tools and a shorter prompt: with 20+ tools they stopped
+  calling the right one (memory regression found by the acceptance tests). «Recuerda que…» is always saved, even if
+  the model forgets to call the tool.
+* **Workspaces**: deleting a workspace stops its running reply and deletes its chat (a running reply could recreate a
+  deleted workspace); workspace chats no longer clutter the Chat sidebar; uploads are streamed to disk instead of read
+  into memory; change detection skips `node_modules`/`.local` (fast after `npm install`).
+* **Fair sandbox use**: at most 2 programs per person at once (chat + workspaces, setting `code_exec_per_user`); the
+  slot frees itself if a process dies. The engine manager removes sandbox containers left by a restart.
+* Replies longer than 2 h keep their state alive through the heartbeat.
+* **Version**: the app reports its real release (`/api/v1/system/health`, MCP, backups) instead of the Docker image tag.
+* `scripts/sah.sh up|update` create the runtime folders before Compose mounts them and `update` also rebuilds the
+  sandbox image.
+* Tests: acceptance tests can run with an existing researcher account (`SAH_TEST_USER`, `SAH_TEST_USER_PASSWORD`),
+  no admin password needed; 27 researcher-level acceptance tests and 36 unit tests pass.
+
 ## 0.7.0 — 2026-11-01
 Reliable background work, LaTeX and package installs in workspaces, skills in workspaces.
 

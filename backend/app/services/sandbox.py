@@ -33,6 +33,37 @@ class SandboxError(Exception):
         self.message, self.remediation = message, remediation
 
 
+class user_slot:
+    """At most N sandbox programs per user at once (the engine runs 4 for everybody): one person cannot take them all.
+    Each run is an entry with a timestamp, so a crashed process frees its slot after 20 minutes on its own."""
+
+    def __init__(self, db: Session, user_id):
+        self.key = f"sah:sandbox:user:{user_id}"
+        self.limit = int(get_setting(db, "code_exec_per_user") or 2)
+        self.member = uuid.uuid4().hex
+
+    def __enter__(self):
+        import time
+
+        from ..redis_client import get_redis
+
+        r = get_redis()
+        now = time.time()
+        r.zremrangebyscore(self.key, 0, now - 1200)
+        if r.zcard(self.key) >= self.limit:
+            raise SandboxError(f"Ya tienes {self.limit} programas ejecutándose a la vez.",
+                               "Espera a que terminen (o páralos) y vuelve a intentarlo.")
+        r.zadd(self.key, {self.member: now})
+        r.expire(self.key, 1200)
+        return self
+
+    def __exit__(self, *exc):
+        from ..redis_client import get_redis
+
+        get_redis().zrem(self.key, self.member)
+        return False
+
+
 def enabled(db: Session) -> bool:
     return bool(get_setting(db, "code_exec_enabled"))
 
@@ -72,8 +103,9 @@ def run(db: Session, user: User, *, code: str, language: str = "python", inputs:
         before = _snapshot(work)
         limit = int(timeout_s or get_setting(db, "code_exec_timeout_s") or 120)
         try:
-            res = orchestrator.run_sandbox({"run_id": rid, "language": language, "timeout_s": limit,
-                                            "memory_mb": int(get_setting(db, "code_exec_memory_mb") or 4096)})
+            with user_slot(db, user.id):
+                res = orchestrator.run_sandbox({"run_id": rid, "language": language, "timeout_s": limit,
+                                                "memory_mb": int(get_setting(db, "code_exec_memory_mb") or 4096)})
         except orchestrator.OrchestratorError as e:
             if getattr(e, "status", None) == 424 or "not present" in str(e):
                 raise SandboxError("Falta la imagen del entorno de ejecución.",

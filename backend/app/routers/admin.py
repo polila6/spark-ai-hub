@@ -157,6 +157,8 @@ def put_settings(body: dict, request: Request, p: Principal = Depends(require_ad
             if not (isinstance(v, list) and len(v) <= 50 and all(isinstance(x, str) and 0 < len(x) <= 255 for x in v)):
                 raise HTTPException(422, detail={"code": "invalid", "message": "connector_private_hosts: list of hosts/CIDRs"})
             v = [x.strip() for x in v if x.strip()]
+        if k == "code_exec_per_user" and not (isinstance(v, int) and 1 <= v <= 4):
+            raise HTTPException(422, detail={"code": "invalid", "message": "code_exec_per_user must be 1–4"})
         if k == "workspace_timeout_s" and not (isinstance(v, int) and 5 <= v <= 900):
             raise HTTPException(422, detail={"code": "invalid", "message": "workspace_timeout_s must be 5–900"})
         if k == "workspace_max_gb" and not (isinstance(v, (int, float)) and 0.1 <= v <= 1000):

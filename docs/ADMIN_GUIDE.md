@@ -91,6 +91,10 @@ scripts/sah.sh backup && git pull --ff-only && scripts/sah.sh build && scripts/s
 * **Respuestas más rápidas (MTP)** y **ventana de contexto**: Biblioteca → (modelo) → «Ventana de contexto».
 * **Workspace**: cada usuario tiene carpetas persistentes en `/srv/spark-ai-hub/workspaces/<usuario>/<workspace>`.
   Los comandos usan el mismo entorno aislado sin red; límites en «Workspace: tiempo por comando» y «tamaño máximo».
+  Si está activado «permitir pip install / npm install», los workspaces pueden descargar paquetes solo de PyPI y npm a
+  través del servicio `pkgproxy` (socket local, sin tarjeta de red). Cada persona puede tener 2 programas a la vez.
+* **Copias de seguridad**: con «incluir datos de usuario» se guardan también Mis archivos de todos (`users/`) y los
+  workspaces (sin `node_modules` ni paquetes instalados, que se pueden reinstalar).
 * **Uso**: página Uso → «Todo el equipo» (solo cifras, nunca contenido).
 
 ## 11. Si algo falla

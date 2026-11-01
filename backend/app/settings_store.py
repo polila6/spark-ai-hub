@@ -66,6 +66,7 @@ DEFAULTS: dict[str, Any] = {
     "code_exec_enabled": True,  # run_code tool: sandbox container without network (engines/sandbox)
     "code_exec_timeout_s": 120,
     "code_exec_memory_mb": 4096,
+    "code_exec_per_user": 2,  # sandbox programs one user may run at once (chat + workspaces)
     "workspace_timeout_s": 600,  # time limit of a command in a workspace (max 900)
     "workspace_max_gb": 10,  # size limit of each workspace
     "workspace_packages_enabled": True,  # pip/npm installs in workspaces through the PyPI/npm-only package proxy

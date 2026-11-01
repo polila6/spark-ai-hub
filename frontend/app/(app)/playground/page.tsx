@@ -124,7 +124,7 @@ function Chat() {
   const [model, setModel] = useState("");
   const [system, setSystem] = useState("");
   const [temp, setTemp] = useState(0.7);
-  const [maxTok, setMaxTok] = useState(4096);
+  const [maxTok, setMaxTok] = useState(8192);
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [err, setErr] = useState<any>(null);

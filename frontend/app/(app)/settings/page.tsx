@@ -229,6 +229,7 @@ function System() {
         {s.code_exec_enabled && <div className="grid gap-3 sm:grid-cols-3">
           {num("code_exec_timeout_s", L("Tiempo máximo por ejecución (s)", "Time limit per run (s)"), L("5–900 s", "5–900 s"))}
           {num("code_exec_memory_mb", L("Memoria por ejecución (MB)", "Memory per run (MB)"), L("256–16384 MB; hasta 4 ejecuciones a la vez", "256–16384 MB; up to 4 runs at once"))}
+          {num("code_exec_per_user", L("Programas a la vez por persona", "Programs at once per person"), L("Chat + workspaces; el servidor ejecuta 4 en total", "Chat + workspaces; the server runs 4 in total"))}
           {num("workspace_timeout_s", L("Workspace: tiempo por comando (s)", "Workspace: time per command (s)"), L("5–900 s", "5–900 s"))}
           {num("workspace_max_gb", L("Workspace: tamaño máximo (GB)", "Workspace: maximum size (GB)"), L("Por cada workspace", "Per workspace"))}
           <div className="sm:col-span-3"><Switch checked={!!s.workspace_packages_enabled} onChange={(v) => set("workspace_packages_enabled", v)} label={L("Workspace: permitir pip install / npm install (solo PyPI y npm, a través de un proxy; nada más sale a internet)", "Workspace: allow pip install / npm install (PyPI and npm only, through a proxy; nothing else goes out)")} /></div>

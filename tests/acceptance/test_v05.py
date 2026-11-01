@@ -1,4 +1,5 @@
 """0.5.0: code sandbox, canvas, deep research, voice, scheduled tasks, connectors, external sign-in, usage, MTP."""
+import os
 import time
 
 import pytest
@@ -10,7 +11,7 @@ from test_cloud import GENERAL, PW, chat, new_conv, text_of, wait
 @pytest.fixture(scope="module")
 def alice() -> Hub:
     """These tests only need a researcher: reuse the existing test account (no admin login needed)."""
-    return Hub("alice-test", PW)
+    return Hub(os.environ.get("SAH_TEST_USER", "alice-test"), os.environ.get("SAH_TEST_USER_PASSWORD", PW))
 
 
 def test_chat_runs_code_and_returns_files(alice):

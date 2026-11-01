@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.7.0-76b900">
+  <img alt="version" src="https://img.shields.io/badge/version-0.8.0-76b900">
   <img alt="platform" src="https://img.shields.io/badge/platform-DGX%20Spark%20(GB10%2C%20aarch64)-76b900">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="stack" src="https://img.shields.io/badge/stack-FastAPI%20%C2%B7%20Next.js%20%C2%B7%20vLLM%20%C2%B7%20Docker-555">
@@ -249,6 +249,8 @@ Ideas and pull requests are welcome — open an issue first for larger changes.
 ```bash
 scripts/sah.sh unit                          # backend unit tests (in the backend image)
 SAH_BASE_URL=https://... scripts/sah.sh test # acceptance tests against a running hub (creates test accounts)
+# researcher-level tests with an existing account, no admin password needed:
+SAH_TEST_USER=me SAH_TEST_USER_PASSWORD=... SAH_TEST_PASSWORD=x .venv-tests/bin/pytest tests/acceptance/test_v05.py tests/acceptance/test_cloud.py
 ```
 
 Please never commit `.env`, secrets, model weights or user data (see `.gitignore`).

@@ -34,6 +34,11 @@ from . import files as files_svc
 from .jobs import JobError, create_job, request_cancel
 
 MAX_STEPS = 10
+SMALL_MODEL_B = 14  # below this size models get only the core tools: 20+ tool definitions confuse them
+CORE_TOOLS = {"generate_image", "edit_image", "search_knowledge", "read_document", "describe_data", "query_data",
+              "save_memory", "web_search", "fetch_url", "use_skill"}
+REMEMBER_RE = re.compile(r"^\s*(?:por favor,?\s*)?(?:recuerda|recuérdalo|apunta|guarda en (?:tu )?memoria|remember)\b[\s,:]*(?:que|that)?\s*(.+)",
+                         re.I | re.S)
 WORKSPACE_MAX_STEPS = 30  # write → run → read the error → fix loops need more steps
 SUB_MAX_STEPS = 8
 IMAGE_MAX_SIDE = 1280
@@ -602,6 +607,7 @@ class Runner:
         self.flags = {"web": False, "skills": False, "agents": False, "auto_install": False, "code": False}
         self.project_id: uuid.UUID | None = None
         self.canvas_id: uuid.UUID | None = None
+        self.small = False
         self.workspace = None
         self.lock = threading.Lock()
         self.summary: str | None = None
@@ -689,7 +695,7 @@ class Runner:
                          "Code: run_code runs Python, bash or Node in an isolated sandbox without internet, for exact "
                          "calculations, data analysis, charts and creating/converting files. Save results in /work: the "
                          "user receives them as downloads (do not write links). If it fails, fix it and retry.")
-        if tools_on and self.workspace is None:
+        if tools_on and self.workspace is None and not self.small:
             docs = canvas_svc.for_conversation(db, user.id, conv.id)
             self.canvas_id = docs[0].id if docs else None
             lines.append("Lienzo: con canvas_write abres junto al chat un documento o un programa que el usuario puede "
@@ -1027,6 +1033,17 @@ class Runner:
         md = dataq.as_markdown(res)
         return {"ok": True, "summary": f"{len(res.get('rows') or [])} filas", "sql": sql, "table": md,
                 "content": md[:TOOL_RESULT_CHARS]}
+
+    def _remember_fallback(self) -> None:
+        """«Recuerda que…» is a promise of the UI: if the model did not save it, save it here."""
+        m = REMEMBER_RE.match(self.t.content or "")
+        if not m or any(p.get("name") == "save_memory" for p in self.parts) or len(self.t.content) > 600:
+            return
+        fact = m.group(1).strip().rstrip(".")
+        if len(fact) < 3:
+            return
+        res = self.run_tool(f"call_{uuid.uuid4().hex[:12]}", "save_memory", {"content": fact[0].upper() + fact[1:]})
+        _ = res
 
     def tool_save_memory(self, call_id: str, args: dict) -> dict:
         content = str(args.get("content", "")).strip()[:500]
@@ -1476,8 +1493,12 @@ class Runner:
 
         if self.workspace is None:
             raise AgentError("No hay workspace en esta conversación")
+        from ..models import Workspace
+
         with SessionLocal() as db:
-            ws = db.merge(self.workspace)
+            ws = db.get(Workspace, self.workspace.id)
+            if ws is None:
+                raise AgentError("Este workspace se ha borrado")
             try:
                 return fn(db, ws, ws_svc)
             except ws_svc.WorkspaceError as e:
@@ -1604,7 +1625,9 @@ class Runner:
         return specs
 
     def tool_specs(self) -> list[dict]:
-        return [t for t in self._all_specs() if self._tool_allowed(t["function"]["name"])]
+        small = self.small and self.workspace is None
+        return [t for t in self._all_specs() if self._tool_allowed(t["function"]["name"])
+                and (not small or t["function"]["name"] in CORE_TOOLS)]
 
     def _exec(self, call_id: str, name: str, args: dict) -> dict:
         if "_invalid_arguments" in args:
@@ -1735,6 +1758,9 @@ class Runner:
                           "agents": tools_on and bool(get_setting(db, "agents_enabled")),
                           "auto_install": bool(get_setting(db, "skills_auto_install")),
                           "code": tools_on and bool(get_setting(db, "code_exec_enabled"))}
+            self.small = (model.parameters_b or 99) < SMALL_MODEL_B
+            if self.small:  # small models: core tools only (see tool_specs)
+                self.flags.update(agents=False)  # run_code is filtered in tool_specs; ws_run stays for workspaces
             self.project_id = conv.project_id
             wid = self.t.workspace_id or (conv.settings or {}).get("workspace_id")
             if wid and tools_on:
@@ -1821,6 +1847,8 @@ class Runner:
 
         step = 0
         retried = False
+        continuations = 0  # an answer cut by max_tokens is continued automatically (twice at most)
+        glue = False
         steps_max = WORKSPACE_MAX_STEPS if self.workspace is not None else MAX_STEPS
         for step in range(steps_max):
             self.emit({"type": "status", "status": "loading" if self.inst is None else "generating"})
@@ -1844,7 +1872,19 @@ class Runner:
                 self.ratio = max(1.5, min(6.0, chars / max(1, usage_total["last_prompt"])))
                 self.emit({"type": "context", "used": usage_total["last_prompt"] + usage_total.get("last_completion", 0),
                            "limit": self.ctx})
-            text_out.append(text)
+            if glue and text_out:
+                text_out[-1] += text  # seamless continuation of the previous piece
+            else:
+                text_out.append(text)
+            glue = False
+            if not calls and finish == "length" and continuations < 2 and not self.stop() and step < steps_max - 2:
+                continuations += 1
+                glue = True
+                messages += [{"role": "assistant", "content": text},
+                             {"role": "user", "content": "Continúa exactamente donde lo has dejado, sin repetir nada y sin "
+                                                         "comentarios sobre la continuación." if self.t.lang != "en" else
+                                                         "Continue exactly where you stopped, without repeating anything."}]
+                continue
             if self.stop() or not calls:
                 break
             assistant_msg, results = self._calls_to_msg(text, calls)
@@ -1869,6 +1909,7 @@ class Runner:
                     db.expunge(model)
                 self.model = model
         self._release_llm()
+        self._remember_fallback()
         total = time.perf_counter() - t0
         final = "\n\n".join(x for x in text_out if x.strip())
         ct = usage_total["completion_tokens"]

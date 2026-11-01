@@ -380,6 +380,16 @@ def sandbox_run(p: SandboxRun):
 # ------------------------------------------------------------------ routes
 
 
+@app.on_event("startup")
+def _cleanup_sandboxes() -> None:
+    """A restart while a program ran leaves its container behind: remove them (they are single-use)."""
+    try:
+        for c in client.containers.list(all=True, filters={"label": ["sah.managed=true", "sah.engine=sandbox"]}):
+            c.remove(force=True)
+    except APIError:
+        pass
+
+
 @app.get("/health")
 def health():
     client.ping()

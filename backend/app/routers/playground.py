@@ -93,7 +93,7 @@ def _conv_pub(c: Conversation) -> dict:
 @router.get("/conversations")
 def list_conversations(p: Principal = Depends(current_principal), db: Session = Depends(get_db),
                        project_id: uuid.UUID | None = None):
-    q = select(Conversation).where(Conversation.owner_id == p.id)
+    q = select(Conversation).where(Conversation.owner_id == p.id, Conversation.settings["workspace_id"].astext.is_(None))
     if project_id:
         q = q.where(Conversation.project_id == project_id)
     rows = db.scalars(q.order_by(Conversation.updated_at.desc()).limit(500))
