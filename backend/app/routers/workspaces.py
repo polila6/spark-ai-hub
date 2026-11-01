@@ -42,6 +42,7 @@ class MoveIn(BaseModel):
 class RunIn(BaseModel):
     command: str = Field(min_length=1, max_length=100_000)
     timeout_s: int | None = Field(default=None, ge=5, le=900)
+    background: bool = False  # True: return at once; follow it with GET /runs (survives leaving the page)
 
 
 class ImportIn(BaseModel):
@@ -215,10 +216,27 @@ def delete_file(wid: uuid.UUID, path: str, p: Principal = Depends(require_resear
 @router.post("/{wid}/run")
 def run(wid: uuid.UUID, body: RunIn, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
     ws = _ws(db, p, wid)
+    if body.background:
+        if not get_setting(db, "code_exec_enabled"):
+            raise HTTPException(503, detail={"code": "sandbox", "message": "La ejecución de código está desactivada."})
+        if sum(1 for r in ws_svc.list_runs(ws) if r["status"] == "running") >= 3:
+            raise HTTPException(409, detail={"code": "busy", "message": "Ya hay 3 comandos en marcha en este workspace"})
+        return ws_svc.start_background_run(ws, body.command, body.timeout_s)
     try:
         return ws_svc.run(db, ws, body.command, timeout_s=body.timeout_s)
     except (ws_svc.WorkspaceError, sandbox_svc.SandboxError) as e:
         raise _err(e)
+
+
+@router.get("/{wid}/runs")
+def runs(wid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    return {"runs": ws_svc.list_runs(_ws(db, p, wid))}
+
+
+@router.delete("/{wid}/runs")
+def clear_runs(wid: uuid.UUID, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    ws_svc.clear_runs(_ws(db, p, wid))
+    return {"ok": True}
 
 
 @router.get("/{wid}/zip")

@@ -11,13 +11,13 @@ import remarkGfm from "remark-gfm";
 import useSWR from "swr";
 import { Guide } from "@/components/guide";
 import { Badge, Button, Card, Input, Modal, Notice, Select, Textarea, cx } from "@/components/ui";
-import { api, streamPost, upload } from "@/lib/api";
+import { api, streamGet, streamPost, upload } from "@/lib/api";
 import { bytes } from "@/lib/format";
 import { useL } from "@/lib/i18n";
 import { useToast } from "@/lib/providers";
 
 type Entry = { path: string; type: "file" | "dir" | "link"; size: number; collapsed?: boolean };
-type Run = { command: string; stdout?: string; stderr?: string; exit_code?: number; timed_out?: boolean; seconds?: number; changed?: string[]; running?: boolean };
+type Run = { id?: string; status?: string; command: string; stdout?: string; stderr?: string; exit_code?: number; timed_out?: boolean; seconds?: number; changed?: string[]; running?: boolean };
 type ChatMsg = { role: string; content: string; tools?: any[]; pending?: boolean };
 
 const ext = (p: string) => (p.split(".").pop() ?? "").toLowerCase();
@@ -106,7 +106,7 @@ function Viewer({ wid, path, version, onRun, onSaved }: { wid: string; path: str
   );
 }
 
-function Terminal({ runs, busy, onRun, onOpen }: { runs: Run[]; busy: boolean; onRun: (c: string) => void; onOpen: (p: string) => void }) {
+function Terminal({ runs, busy, onRun, onOpen, onClear }: { runs: Run[]; busy: boolean; onRun: (c: string) => void; onOpen: (p: string) => void; onClear: () => void }) {
   const L = useL();
   const [cmd, setCmd] = useState("");
   const [hist, setHist] = useState(-1);
@@ -135,6 +135,7 @@ function Terminal({ runs, busy, onRun, onOpen }: { runs: Run[]; busy: boolean; o
             if (e.key === "ArrowUp" && past.length) { e.preventDefault(); const h = Math.min(past.length - 1, hist + 1); setHist(h); setCmd(past[h]); }
             if (e.key === "ArrowDown") { e.preventDefault(); const h = hist - 1; setHist(h); setCmd(h >= 0 ? past[h] : ""); } }} />
         <Button type="submit" size="sm" variant="ghost" disabled={busy || !cmd.trim()} className="text-[#c9d1d9]"><Play className="h-3.5 w-3.5" /></Button>
+        {runs.length > 0 && !busy && <Button type="button" size="sm" variant="ghost" className="text-[#8b949e]" title={L("Limpiar el terminal", "Clear the terminal")} onClick={onClear}><Trash2 className="h-3.5 w-3.5" /></Button>}
       </form>
     </div>
   );
@@ -167,32 +168,42 @@ function Assistant({ wid, onFiles, onOpen }: { wid: string; onFiles: () => void;
   const [think, setThink] = useState(false);
   const abort = useRef<AbortController | null>(null);
   const end = useRef<HTMLDivElement>(null);
+  const upd = (fn: (m: ChatMsg) => ChatMsg) => setMsgs((x) => (x.length ? [...x.slice(0, -1), fn(x[x.length - 1])] : x));
+  const onEvent = useCallback((ev: any) => {
+    if (ev.type === "delta") upd((m) => ({ ...m, content: m.content + ev.content }));
+    else if (ev.type === "tool_start") upd((m) => ({ ...m, tools: [...(m.tools ?? []), { id: ev.id, name: ev.name, label: ev.label, args: ev.args }] }));
+    else if (ev.type === "tool_progress") upd((m) => ({ ...m, tools: (m.tools ?? []).map((t) => (t.id === ev.id ? { ...t, message: ev.message } : t)) }));
+    else if (ev.type === "tool_result") { upd((m) => ({ ...m, tools: (m.tools ?? []).map((t) => (t.id === ev.id ? { ...t, ...ev, done: true } : t)) })); if (ev.workspace) onFiles(); }
+    else if (ev.type === "done") upd((m) => ({ ...m, pending: false }));
+    else if (ev.type === "error") { upd((m) => ({ ...m, pending: false })); push("error", ev.message); }
+  }, [onFiles, push]);
+  // Follow a reply: the turn runs on the server, so leaving the page never stops it; coming back re-attaches.
+  const follow = useCallback(async (run: (signal: AbortSignal) => Promise<void>) => {
+    abort.current?.abort();
+    const ctl = new AbortController();
+    abort.current = ctl;
+    setBusy(true);
+    try { await run(ctl.signal); } catch (e: any) { if (e.name !== "AbortError") push("error", e.message); }
+    finally { if (abort.current === ctl) { setBusy(false); upd((m) => ({ ...m, pending: false })); onFiles(); } }
+  }, [onFiles, push]);
   const load = useCallback(async (fresh = false) => {
     const r = await api(`/api/v1/workspaces/${wid}/conversation${fresh ? "?new=true" : ""}`, { method: "POST" });
     setCid(r.conversation_id); setModel(r.model_alias ?? "");
     const c = await api(`/api/v1/playground/conversations/${r.conversation_id}`);
-    setMsgs(c.messages.map((m: any) => ({ role: m.role, content: m.content, tools: (m.parts ?? []).filter((p: any) => p.type === "tool").map((p: any) => ({ ...p, done: true })) })));
-  }, [wid]);
+    const history: ChatMsg[] = c.messages.map((m: any) => ({ role: m.role, content: m.content, tools: (m.parts ?? []).filter((p: any) => p.type === "tool").map((p: any) => ({ ...p, done: true })) }));
+    if (c.active_turn) {
+      setMsgs([...history, { role: "assistant", content: "", tools: [], pending: true }]);
+      follow((signal) => streamGet(`/api/v1/playground/conversations/${r.conversation_id}/stream`, (ev) => { if (ev.type !== "gone") onEvent(ev); }, signal));
+    } else setMsgs(history);
+  }, [wid, follow, onEvent]);
   useEffect(() => { load().catch((e) => push("error", e.message)); return () => abort.current?.abort(); }, [load, push]);
   useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [msgs]);
-  const upd = (fn: (m: ChatMsg) => ChatMsg) => setMsgs((x) => [...x.slice(0, -1), fn(x[x.length - 1])]);
   async function send() {
     const content = input.trim();
     if (!content || !cid || busy) return;
-    setInput(""); setBusy(true);
+    setInput("");
     setMsgs((x) => [...x, { role: "user", content }, { role: "assistant", content: "", tools: [], pending: true }]);
-    abort.current = new AbortController();
-    try {
-      await streamPost(`/api/v1/playground/conversations/${cid}/messages`, { content, model_alias: model, max_tokens: 8192, temperature: 0.3, tools: true, thinking: think, web: true, workspace_id: wid },
-        (ev) => {
-          if (ev.type === "delta") upd((m) => ({ ...m, content: m.content + ev.content }));
-          else if (ev.type === "tool_start") upd((m) => ({ ...m, tools: [...(m.tools ?? []), { id: ev.id, name: ev.name, label: ev.label, args: ev.args }] }));
-          else if (ev.type === "tool_progress") upd((m) => ({ ...m, tools: (m.tools ?? []).map((t) => (t.id === ev.id ? { ...t, message: ev.message } : t)) }));
-          else if (ev.type === "tool_result") { upd((m) => ({ ...m, tools: (m.tools ?? []).map((t) => (t.id === ev.id ? { ...t, ...ev, done: true } : t)) })); if (ev.workspace) onFiles(); }
-          else if (ev.type === "done") upd((m) => ({ ...m, pending: false }));
-          else if (ev.type === "error") { upd((m) => ({ ...m, pending: false })); push("error", ev.message); }
-        }, abort.current.signal);
-    } catch (e: any) { if (e.name !== "AbortError") push("error", e.message); } finally { setBusy(false); upd((m) => ({ ...m, pending: false })); onFiles(); }
+    await follow((signal) => streamPost(`/api/v1/playground/conversations/${cid}/messages`, { content, model_alias: model, max_tokens: 8192, temperature: 0.3, tools: true, thinking: think, web: true, workspace_id: wid }, onEvent, signal));
   }
   async function stop() { if (cid) await api(`/api/v1/playground/conversations/${cid}/cancel`, { method: "POST" }).catch(() => {}); abort.current?.abort(); }
   return (
@@ -238,8 +249,12 @@ export default function WorkspacePage() {
   useEffect(() => { if (ws && !wid) setWid(ws.id); }, [ws, wid]);
   const { data: tree, mutate: mutTree } = useSWR(ws ? `/api/v1/workspaces/${ws.id}/tree` : null);
   const [sel, setSel] = useState<string | null>(null);
-  const [runs, setRuns] = useState<Run[]>([]);
-  const [running, setRunning] = useState(false);
+  // Terminal runs live on the server (Redis): leaving the page or opening another window never loses them.
+  const { data: runsData, mutate: mutRuns } = useSWR(ws ? `/api/v1/workspaces/${ws.id}/runs` : null,
+    { refreshInterval: (d: any) => (d?.runs?.some((r: any) => r.status === "running") ? 1500 : 0) });
+  const runs: Run[] = (runsData?.runs ?? []).map((r: any) => ({ ...r, running: r.status === "running" }));
+  const running = runs.some((r) => r.running);
+  const wasRunning = useRef<Set<string>>(new Set());
   const [fileVersion, setFileVersion] = useState(0);
   const [dialog, setDialog] = useState<null | { kind: "file" | "dir" | "ws" | "rename"; value: string }>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -247,15 +262,18 @@ export default function WorkspacePage() {
   const fileInput = useRef<HTMLInputElement>(null);
   const entries: Entry[] = tree?.entries ?? [];
   const selDir = useMemo(() => { if (!sel) return ""; const e = entries.find((x) => x.path === sel); return e?.type === "dir" ? sel : sel.split("/").slice(0, -1).join("/"); }, [sel, entries]);
-  useEffect(() => { setSel(null); setRuns([]); }, [ws?.id]);
+  useEffect(() => { setSel(null); }, [ws?.id]);
   const refresh = useCallback(() => { mutTree(); mutate(); setFileVersion((v) => v + 1); }, [mutTree, mutate]);
   const open = (p: string) => { setSel(p); setPane("editor"); };
+  useEffect(() => {  // a command finished (here or while away): show the files it changed
+    const now = new Set(runs.filter((r: any) => r.running).map((r: any) => r.id));
+    if ([...wasRunning.current].some((id) => !now.has(id))) refresh();
+    wasRunning.current = now;
+  }, [runsData]); // eslint-disable-line react-hooks/exhaustive-deps
   async function run(command: string) {
     if (!ws) return;
-    setRunning(true);
-    setRuns((r) => [...r, { command, running: true }]);
-    try { const res = await api(`/api/v1/workspaces/${ws.id}/run`, { method: "POST", json: { command } }); setRuns((r) => [...r.slice(0, -1), { command, ...res }]); refresh(); }
-    catch (e: any) { setRuns((r) => [...r.slice(0, -1), { command, stderr: e.message, exit_code: -1 }]); } finally { setRunning(false); }
+    try { await api(`/api/v1/workspaces/${ws.id}/run`, { method: "POST", json: { command, background: true } }); await mutRuns(); }
+    catch (e: any) { push("error", e.message); }
   }
   async function uploadFiles(fs: FileList | File[]) {
     if (!ws) return;
@@ -311,7 +329,7 @@ export default function WorkspacePage() {
             {ws && sel && selEntry?.type === "file" ? <Viewer key={`${sel}`} wid={ws.id} path={sel} version={fileVersion} onRun={run} onSaved={refresh} />
               : <div className="grid h-full place-items-center p-6 text-center text-sm text-muted">{L("Abre un archivo de la izquierda, sube datos o pídele algo al asistente.", "Open a file on the left, upload data or ask the assistant.")}</div>}
           </Card>
-          <Card className="min-h-[160px] flex-[2] overflow-hidden"><Terminal runs={runs} busy={running} onRun={run} onOpen={open} /></Card>
+          <Card className="min-h-[160px] flex-[2] overflow-hidden"><Terminal runs={runs} busy={running} onRun={run} onOpen={open} onClear={async () => { if (ws) { await api(`/api/v1/workspaces/${ws.id}/runs`, { method: "DELETE" }); mutRuns(); } }} /></Card>
         </div>
         <Card className={cx("min-h-0 overflow-hidden lg:block", pane === "chat" ? "block" : "hidden")}>{ws && <Assistant key={ws.id} wid={ws.id} onFiles={refresh} onOpen={open} />}</Card>
       </div>

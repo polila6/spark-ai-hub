@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.1 — 2026-11-01
+Work keeps going — and stays visible — when you leave the page.
+
+* Workspace assistant: coming back to the Workspace (another page, window or a reload) re-attaches to a reply in
+  progress and replays its steps live, as the Chat already did.
+* Workspace terminal: commands run in the background on the server (`POST /run` with `background: true`); the last 30
+  runs per workspace are kept for 7 days (`GET/DELETE /runs`), so any window shows what is running and how it ended.
+  Up to 3 commands at once per workspace; a button clears the terminal.
+* Audio Studio lists recent transcription/speech jobs from the server instead of the page memory.
+
 ## 0.6.0 — 2026-11-01
 Workspace: a remote harness per user.
 

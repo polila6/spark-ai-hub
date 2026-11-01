@@ -44,7 +44,12 @@ export default function AudioPage() {
   const [ttsModel, setTtsModel] = useState("");
   const [text, setText] = useState("");
   const [rate, setRate] = useState(1);
-  const [jobs, setJobs] = useState<string[]>([]);
+  // Recent jobs come from the server, so leaving the page (or another window) never loses one in progress.
+  const { data: asrJobs, mutate: mutAsr } = useSWR("/api/v1/jobs?type=audio_transcribe&limit=5", { refreshInterval: 5000 });
+  const { data: ttsJobs, mutate: mutTts } = useSWR("/api/v1/jobs?type=audio_tts&limit=5", { refreshInterval: 5000 });
+  const asList = (d: any) => (Array.isArray(d) ? d : d?.items ?? d?.jobs ?? []);
+  const jobs: string[] = [...asList(asrJobs), ...asList(ttsJobs)].sort((a: any, b: any) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 8).map((j: any) => j.id);
+  const setJobs = (_: any) => { mutAsr(); mutTts(); };
   const [err, setErr] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const mlw = engines?.mlworker;
@@ -74,7 +79,7 @@ export default function AudioPage() {
                 </div>
                 <Button variant="primary" disabled={!file} loading={busy} onClick={async () => {
                   setBusy(true); setErr(null);
-                  try { const r = await api("/api/v1/media/audio/transcribe", { method: "POST", json: { artifact_id: file.id, model_id: asrModel || asr[0].id, language: lang || null, task: translate ? "translate" : "transcribe" } }); setJobs((j) => [r.job_id, ...j]); }
+                  try { const r = await api("/api/v1/media/audio/transcribe", { method: "POST", json: { artifact_id: file.id, model_id: asrModel || asr[0].id, language: lang || null, task: translate ? "translate" : "transcribe" } }); setJobs(r.job_id); }
                   catch (e) { setErr(e); } finally { setBusy(false); }
                 }}>{t("aud.transcribe")}</Button>
               </>
@@ -91,7 +96,7 @@ export default function AudioPage() {
                 <Field label={`speaking_rate: ${rate}`}><input type="range" min={0.5} max={2} step={0.05} value={rate} onChange={(e) => setRate(Number(e.target.value))} className="w-full" aria-label="speaking rate" /></Field>
                 <Button variant="primary" disabled={!text} onClick={async () => {
                   setErr(null);
-                  try { const r = await api("/api/v1/media/audio/tts", { method: "POST", json: { text, model_id: ttsModel || tts[0].id, speaking_rate: rate } }); setJobs((j) => [r.job_id, ...j]); }
+                  try { const r = await api("/api/v1/media/audio/tts", { method: "POST", json: { text, model_id: ttsModel || tts[0].id, speaking_rate: rate } }); setJobs(r.job_id); }
                   catch (e) { setErr(e); }
                 }}>{t("aud.tts")}</Button>
               </>

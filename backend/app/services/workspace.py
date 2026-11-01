@@ -322,6 +322,80 @@ def run(db: Session, ws: Workspace, command: str, *, language: str = "bash", tim
     return {**res, "changed": changed, "removed": removed}
 
 
+# ------------------------------------------------------------------ terminal runs kept on the server
+# The page may be closed while a command runs: runs execute in a thread and their state lives in Redis
+# (last 30 per workspace, kept 7 days), so any page or window shows them again.
+
+RUN_KEEP = 30
+RUN_TTL = 7 * 86400
+
+
+def _rkey(wid, rid=None) -> str:
+    return f"sah:ws:{wid}:runs" if rid is None else f"sah:ws:run:{rid}"
+
+
+def start_background_run(ws: Workspace, command: str, timeout_s: int | None) -> dict:
+    import json
+    import threading
+
+    from ..db import SessionLocal
+    from ..redis_client import get_redis
+
+    r = get_redis()
+    rid = uuid.uuid4().hex
+    rec = {"id": rid, "command": command[:100_000], "status": "running", "started_at": datetime.now(timezone.utc).isoformat()}
+    r.set(_rkey(ws.id, rid), json.dumps(rec), ex=RUN_TTL)
+    r.rpush(_rkey(ws.id), rid)
+    r.ltrim(_rkey(ws.id), -RUN_KEEP, -1)
+    r.expire(_rkey(ws.id), RUN_TTL)
+    wid = ws.id
+
+    def go():
+        out = dict(rec)
+        try:
+            with SessionLocal() as db:
+                w = db.get(Workspace, wid)
+                res = run(db, w, command, timeout_s=timeout_s)
+            out.update(status="done", **{k: res.get(k) for k in ("exit_code", "timed_out", "oom_killed", "seconds",
+                                                                   "stdout", "stderr", "changed", "removed")})
+        except Exception as e:  # noqa: BLE001  (sandbox/engine errors end up in the terminal)
+            out.update(status="done", exit_code=-1, stderr=str(getattr(e, "message", e))[:2000], seconds=0)
+        out["finished_at"] = datetime.now(timezone.utc).isoformat()
+        r.set(_rkey(wid, rid), json.dumps(out), ex=RUN_TTL)
+
+    threading.Thread(target=go, daemon=True, name=f"ws-run-{rid[:8]}").start()
+    return rec
+
+
+def list_runs(ws: Workspace) -> list[dict]:
+    import json
+
+    from ..redis_client import get_redis
+
+    r = get_redis()
+    ids = r.lrange(_rkey(ws.id), 0, -1)
+    out = []
+    for rid in ids:
+        raw = r.get(_rkey(ws.id, rid))
+        if raw:
+            rec = json.loads(raw)
+            if rec.get("status") == "running":  # a backend restart kills the thread: do not show it running forever
+                started = datetime.fromisoformat(rec["started_at"])
+                if (datetime.now(timezone.utc) - started).total_seconds() > 960:
+                    rec.update(status="done", exit_code=-1, stderr="Interrumpido (el servidor se reinició)")
+            out.append(rec)
+    return out
+
+
+def clear_runs(ws: Workspace) -> None:
+    from ..redis_client import get_redis
+
+    r = get_redis()
+    for rid in r.lrange(_rkey(ws.id), 0, -1):
+        r.delete(_rkey(ws.id, rid))
+    r.delete(_rkey(ws.id))
+
+
 def touch(ws: Workspace) -> None:
     ws.last_used_at = datetime.now(timezone.utc)
 
