@@ -6,7 +6,8 @@
 
 <p align="center">
   <b>Turn an NVIDIA DGX Spark into a private AI cloud for your whole team.</b><br>
-  Chat with vision and files · web search · agents & skills · RAG over your documents · image, video & audio studios ·
+  Chat with vision and files · web search · agents & skills · code execution · canvas · deep research · voice ·
+  scheduled tasks · RAG with Nextcloud/GitHub/Zotero connectors · image, video & audio studios ·
   OpenAI- and Anthropic-compatible API for OpenCode, Claude Code, Cline and friends — all on one desk, nothing leaves it.
 </p>
 
@@ -20,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.4.0-76b900">
+  <img alt="version" src="https://img.shields.io/badge/version-0.5.0-76b900">
   <img alt="platform" src="https://img.shields.io/badge/platform-DGX%20Spark%20(GB10%2C%20aarch64)-76b900">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="stack" src="https://img.shields.io/badge/stack-FastAPI%20%C2%B7%20Next.js%20%C2%B7%20vLLM%20%C2%B7%20Docker-555">
@@ -48,12 +49,19 @@ without sending a single prompt to an external AI service.
 - **Web search** through a private [SearXNG](https://github.com/searxng/searxng) inside the hub; pages and PDFs are read and cited. SSRF-safe: internal addresses are never fetched.
 - **Agents**: the assistant delegates to sub-agents (researcher, writer, analyst, reviewer, or your own) — several **in parallel**, with live progress and a report each.
 - **Skills**: install [Agent Skills](https://github.com/anthropics/skills) from GitHub or a link, write your own, or let the model find and install the one it needs.
+- **Runs code safely**: calculations, charts and real files (Excel, Word, PowerPoint, PDF) from a sandbox with no network; images appear in the chat, files go to your drive. Skills can run their own scripts.
+- **Canvas**: reports, letters and programs open beside the chat — edit, ask for changes, restore versions, export to **Word, PDF, Markdown or HTML**.
+- **Deep research**: one switch launches parallel researcher agents and returns a long report with numbered sources, ready to export.
+- **Voice**: dictate with 🎤 and listen to answers — local Whisper and TTS, audio never leaves the machine.
+- **Scheduled tasks**: "every Monday at 9, summarise new papers on…" — runs on its own, notifies you and can e-mail the answer.
 - **Context window you control**: live meter, adjustable size, **automatic compaction** that summarises old messages instead of forgetting them.
 - **Images in the chat**: "draw a logo…" or edit an attached photo (Qwen-Image / Qwen-Image-Edit).
 - Answers keep running in the background if you close the tab; notifications when they finish.
 
 ### Your private cloud
 - **My files** with text extraction, **knowledge base** (pgvector hybrid search), **projects** with shared instructions, documents and chats, and a personal **memory**.
+- **Connectors** keep the knowledge base in sync with **Nextcloud/WebDAV, GitHub, Zotero and network shares (SMB)**.
+- **Usage panel**: tokens by day, model, project and source, GPU jobs, storage and quotas.
 - Everything is private per user; sharing is explicit (users or projects). Data export and account deletion built in.
 
 ### Built for coding agents
@@ -64,7 +72,7 @@ without sending a single prompt to an external AI service.
 ### Models without the pain
 - **Discover** Hugging Face models with a compatibility verdict and memory estimate for *your* machine; one-click install with checksum verification. Tool-calling parsers are configured automatically for known families.
 - **Unified-memory scheduler**: knows what fits, unloads idle models after 5 minutes, shows a load plan (memory, ETA, what would be unloaded) before loading.
-- **Context window per model** in one click, showing how many conversations of each size fit at once.
+- **Context window per model** in one click, showing how many conversations of each size fit at once, and **faster answers with MTP** speculative decoding (+27 % tokens/s on the general model).
 - Model comparison, reproducible **benchmarks**, smoke tests, model requests with approval.
 
 ### Create and research
@@ -72,13 +80,21 @@ without sending a single prompt to an external AI service.
 - **Scientific lab**: datasets, trusted adapters, reproducible experiments.
 
 ### Run it like a service
-- Accounts with sign-up approval, e-mail invitations, roles (admin, manager, researcher, viewer), quotas and rate limits.
+- Accounts with sign-up approval, e-mail invitations, **sign in with Google, Microsoft or any OpenID Connect provider**, roles (admin, manager, researcher, viewer), quotas and rate limits.
 - Monitoring (CPU, GPU, memory, temperature, disk), alerts, audit log, verified **backups** with restore test.
 - **Guided instructions on every page** (Spanish and English UI), help centre, printable user/admin guides.
 - **Android app** (WebView shell with share-to-chat and camera upload) built on the Spark itself.
 - Secure by default: only `127.0.0.1:8080` is published; remote access through **Tailscale Serve** (tailnet only, never Funnel). Argon2id, CSRF, per-user API keys, Docker socket held by a single allow-listed engine manager.
 
 <table>
+  <tr>
+    <td><img src="docs/assets/canvas.png" alt="Deep research report in the canvas"><br><sub><b>Deep research</b> report in the <b>canvas</b>, exportable to Word/PDF</sub></td>
+    <td><img src="docs/assets/code-run.png" alt="Code execution"><br><sub><b>Code execution</b> in a sandbox with output and files</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/tasks.png" alt="Scheduled tasks"><br><sub><b>Scheduled tasks</b></sub></td>
+    <td><img src="docs/assets/connectors.png" alt="Knowledge connectors"><br><sub><b>Connectors</b>: Nextcloud, GitHub, Zotero, SMB</sub></td>
+  </tr>
   <tr>
     <td><img src="docs/assets/chat-web.png" alt="Web search with sources"><br><sub><b>Web search</b> with cited sources</sub></td>
     <td><img src="docs/assets/context-window.png" alt="Context window and compaction"><br><sub><b>Context window</b> and automatic compaction</sub></td>
@@ -217,10 +233,10 @@ scripts/sah.sh reset-link admin   # emergency password-reset link (needs shell a
 
 ## 🗺️ Roadmap
 
-- Sandboxed code execution for skills and data analysis (no network, CPU/memory/time limits).
-- Voice mode in the chat (local speech-to-text and text-to-speech).
-- Scheduled tasks ("every Monday, summarise…") and shared team agents.
-- Single sign-on (OIDC/SAML) for organisations.
+- Shared team agents and project-level scheduled tasks.
+- Real-time voice conversation (streaming speech in and out).
+- Code sandbox with GPU access for training small models.
+- SAML sign-in and SCIM user provisioning.
 
 Ideas and pull requests are welcome — open an issue first for larger changes.
 

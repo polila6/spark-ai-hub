@@ -27,6 +27,7 @@ from .routers import (
     mcp_server,
     media,
     models,
+    oidc,
     openai_gateway,
     playground,
     projects,
@@ -96,7 +97,7 @@ async def unhandled(request: Request, exc: Exception):
 
 
 for r in (auth, users, system, models, huggingface, jobs, evaluation, playground, media, science, api_keys, admin,
-          account, files, projects, assistant):
+          account, files, projects, assistant, oidc):
     app.include_router(r.router)
 app.include_router(openai_gateway.router)
 app.include_router(anthropic_gateway.router)

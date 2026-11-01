@@ -79,6 +79,7 @@ services:
       SAH_VLLM_IMAGE: ${SAH_VLLM_IMAGE:-nvcr.io/nvidia/vllm:26.09-py3}
       SAH_COMFYUI_IMAGE: spark-ai-hub/comfyui:0.42.5
       SAH_MLWORKER_IMAGE: spark-ai-hub/mlworker:${SAH_VERSION:-0.1.0}
+      SAH_SANDBOX_IMAGE: spark-ai-hub/sandbox:${SAH_VERSION:-0.1.0}
     secrets: [orchestrator_token]
     # Non-root; only the docker group (host gid ${SAH_DOCKER_GID:-988}) to reach the socket.
     user: "1000:1000"

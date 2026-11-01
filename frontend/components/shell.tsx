@@ -1,7 +1,7 @@
 "use client";
 import * as DM from "@radix-ui/react-dropdown-menu";
 import {
-  Activity, AudioLines, BarChart3, Bell, Bot, Boxes, Brain, Clapperboard, Code2, Cpu, FlaskConical, FolderKanban, FolderOpen,
+  Activity, AlarmClock, AudioLines, Gauge, BarChart3, Bell, Bot, Boxes, Brain, Clapperboard, Code2, Cpu, FlaskConical, FolderKanban, FolderOpen,
   GitCompare, HardDrive, Image as ImageIcon, Inbox, LayoutDashboard, LibraryBig, LifeBuoy, ListChecks, Loader2, LogOut, Menu,
   MessagesSquare, Monitor, Moon, Plug, Puzzle, Search, Settings, Sun, Users, X,
 } from "lucide-react";
@@ -27,6 +27,8 @@ const GROUPS: { key: string; label?: [string, string]; items: Item[] }[] = [
     { href: "/memory", key: "nav.memory", label: ["Memoria", "Memory"], icon: Brain },
     { href: "/skills", key: "nav.skills", label: ["Skills", "Skills"], icon: Puzzle },
     { href: "/agents", key: "nav.agents", label: ["Agentes", "Agents"], icon: Bot },
+    { href: "/tasks", key: "nav.tasks", label: ["Tareas", "Tasks"], icon: AlarmClock },
+    { href: "/usage", key: "nav.usage", label: ["Uso", "Usage"], icon: Gauge },
   ] },
   { key: "nav.group.models", items: [
     { href: "/discover", key: "nav.discover", icon: Search },

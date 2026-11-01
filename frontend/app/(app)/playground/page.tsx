@@ -8,7 +8,8 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import useSWR from "swr";
-import { AgentReport, ContextMeter, SkillNote, TOOL_ICONS, WebSources } from "@/components/assistant";
+import { CanvasChip, CanvasPanel } from "@/components/canvas";
+import { AgentReport, ContextMeter, SkillNote, TOOL_ICONS, WebSources, CodeRun, MicButton, SpeakButton, speakText } from "@/components/assistant";
 import { Guide } from "@/components/guide";
 import { LoadConfirm, MemoryPill } from "@/components/memory";
 import { Badge, Button, Card, ErrorBox, Field, Input, Notice, Select, Switch, Textarea, Tip, cx } from "@/components/ui";
@@ -18,7 +19,7 @@ import { useI18n, useL } from "@/lib/i18n";
 import { useToast } from "@/lib/providers";
 
 type Att = { file_id: string; name: string; mime: string; kind: string; size_bytes?: number; url: string };
-type ToolRun = { id: string; name: string; label?: string; args?: any; progress?: number; message?: string; status?: string; done?: boolean; ok?: boolean; summary?: string; image?: any; sources?: any[]; table?: string; memory?: any; sql?: string; remediation?: string; agent?: any; skill?: any; log?: string[] };
+type ToolRun = { id: string; name: string; label?: string; args?: any; progress?: number; message?: string; status?: string; done?: boolean; ok?: boolean; summary?: string; image?: any; sources?: any[]; table?: string; memory?: any; sql?: string; remediation?: string; agent?: any; skill?: any; log?: string[]; code?: any; canvas?: any; research?: any };
 type Msg = { id?: number; role: string; content: string; reasoning?: string; metrics?: any; model_alias?: string; pending?: boolean; attachments?: Att[]; tools?: ToolRun[]; warnings?: string[] };
 
 function Metrics({ m }: { m: any }) {
@@ -39,11 +40,17 @@ const MD_COMPONENTS = {
   img: ({ src, alt }: any) => (typeof src === "string" && src.startsWith("/api/") ? <img src={src} alt={alt ?? ""} className="max-h-80 rounded-lg" /> : null),
 };
 
+const TOOL_LABELS_ES: Record<string, string> = { run_code: "Código ejecutado", canvas_write: "Lienzo", canvas_edit: "Lienzo editado", deep_research: "Investigación a fondo",
+  schedule_task: "Tarea programada", web_search: "Búsqueda en internet", fetch_url: "Página web", delegate_task: "Agente", generate_image: "Imagen generada",
+  edit_image: "Imagen editada", search_knowledge: "Búsqueda en documentos", read_document: "Documento leído", query_data: "Consulta de datos",
+  describe_data: "Datos analizados", save_memory: "Guardado en memoria", use_skill: "Skill", install_skill: "Skill instalada", find_skills: "Búsqueda de skills",
+  compact_context: "Contexto compactado" };
+
 function partsToTools(parts: any[] | null | undefined): ToolRun[] {
-  return (parts ?? []).filter((p) => p.type === "tool").map((p, i) => ({ id: `p${i}`, done: true, ...p }));
+  return (parts ?? []).filter((p) => p.type === "tool").map((p, i) => ({ id: `p${i}`, done: true, label: TOOL_LABELS_ES[p.name], ...p }));
 }
 
-function ToolCard({ t, onEdit }: { t: ToolRun; onEdit: (ref: string) => void }) {
+function ToolCard({ t, onEdit, onCanvas }: { t: ToolRun; onEdit: (ref: string) => void; onCanvas: (id: string, v?: number) => void }) {
   const L = useL();
   const Extra = TOOL_ICONS[t.name];
   const icon = Extra ? <Extra className="h-3.5 w-3.5" /> : t.name?.includes("image") ? <ImageIcon className="h-3.5 w-3.5" /> : t.name?.includes("data") ? <Table2 className="h-3.5 w-3.5" /> : t.name === "save_memory" ? <Brain className="h-3.5 w-3.5" /> : t.name?.includes("knowledge") || t.name === "read_document" ? <FileText className="h-3.5 w-3.5" /> : <Wrench className="h-3.5 w-3.5" />;
@@ -58,8 +65,11 @@ function ToolCard({ t, onEdit }: { t: ToolRun; onEdit: (ref: string) => void }) 
         {t.done && t.summary && !t.image && <span className="truncate text-muted">· {t.summary}</span>}
         {!t.done && t.name === "delegate_task" && t.args?.agent && <Badge tone="info">{t.args.agent}</Badge>}
       </div>
-      {!t.done && t.name === "delegate_task" && (t.log?.length ?? 0) > 0 && <ul className="mx-3 mb-2 space-y-0.5 text-[11px] text-subtle">{t.log!.slice(-4).map((x, i) => <li key={i} className="truncate">· {x}</li>)}</ul>}
+      {!t.done && (t.name === "delegate_task" || t.name === "deep_research") && (t.log?.length ?? 0) > 0 && <ul className="mx-3 mb-2 space-y-0.5 text-[11px] text-subtle">{t.log!.slice(-4).map((x, i) => <li key={i} className="truncate">· {x}</li>)}</ul>}
       {t.done && t.agent && <AgentReport agent={t.agent} />}
+      {t.done && t.code && <CodeRun run={t.code} />}
+      {t.done && t.research && <div className="border-t border-border/60 px-3 py-2"><p className="text-muted">{L("Líneas de investigación", "Research lines")}:</p><ol className="mt-1 list-decimal space-y-0.5 pl-5 text-[11px] text-subtle">{t.research.subquestions?.map((q: string, i: number) => <li key={i}>{q}</li>)}</ol></div>}
+      {t.done && t.canvas && <CanvasChip canvas={t.canvas} onOpen={onCanvas} />}
       {t.done && t.skill && <SkillNote skill={t.skill} installed={t.name === "install_skill"} />}
       {t.done && webSources.length > 0 && <WebSources sources={webSources} />}
       {!t.done && t.progress != null && t.progress > 0 && <div className="mx-3 mb-2 h-1 overflow-hidden rounded bg-elevated"><div className="h-full bg-info transition-all" style={{ width: `${Math.round(t.progress * 100)}%` }} /></div>}
@@ -98,7 +108,7 @@ function AttachmentChip({ a, onRemove }: { a: Att & { uploading?: boolean }; onR
 }
 
 function Chat() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const L = useL();
   const { push } = useToast();
   const sp = useSearchParams();
@@ -109,6 +119,7 @@ function Chat() {
   const { data: convs, mutate: mutConvs } = useSWR(`/api/v1/playground/conversations${projectId ? `?project_id=${projectId}` : ""}`);
   const chatModels = useMemo(() => (models ?? []).filter((m: any) => m.capabilities?.includes("chat") && ["installed", "ready", "loading", "busy"].includes(m.status)), [models]);
   const [cid, setCid] = useState<string | null>(null);
+  const { data: canvases, mutate: mutCanvases } = useSWR(cid ? `/api/v1/canvas?conversation_id=${cid}` : null);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [model, setModel] = useState("");
   const [system, setSystem] = useState("");
@@ -122,7 +133,13 @@ function Chat() {
   const [aspect, setAspect] = useState("square");
   const [tools, setTools] = useState(true);
   const [thinking, setThinking] = useState(false);
+  const { data: voice } = useSWR("/api/v1/voice");
+  const [autoRead, setAutoRead] = useState(false);
+  const autoReadRef = useRef(false);
+  autoReadRef.current = autoRead;
   const [web, setWeb] = useState(true);
+  const [research, setResearch] = useState(false);
+  const [canvas, setCanvas] = useState<{ id: string; v?: number } | null>(null);
   const [ctxLimit, setCtxLimit] = useState(0);  // 0 = the model's full window
   const [autoCompact, setAutoCompact] = useState(true);
   const [ctxUsed, setCtxUsed] = useState<number | null>(null);
@@ -159,10 +176,11 @@ function Chat() {
     else if (ev.type === "reasoning") updLast((l) => ({ ...l, reasoning: (l.reasoning ?? "") + ev.content }));
     else if (ev.type === "warning") updLast((l) => ({ ...l, warnings: [...(l.warnings ?? []), ev.message] }));
     else if (ev.type === "tool_start") updLast((l) => ({ ...l, tools: [...(l.tools ?? []), { id: ev.id, name: ev.name, label: ev.label, args: ev.args }] }));
-    else if (ev.type === "tool_progress") updLast((l) => ({ ...l, tools: (l.tools ?? []).map((tr) => (tr.id === ev.id ? { ...tr, progress: ev.progress, message: ev.message, status: ev.status, log: tr.name === "delegate_task" && ev.message ? [...(tr.log ?? []), ev.message] : tr.log } : tr)) }));
+    else if (ev.type === "tool_progress") updLast((l) => ({ ...l, tools: (l.tools ?? []).map((tr) => (tr.id === ev.id ? { ...tr, progress: ev.progress, message: ev.message, status: ev.status, log: (tr.name === "delegate_task" || tr.name === "deep_research") && ev.message ? [...(tr.log ?? []), ev.message] : tr.log } : tr)) }));
     else if (ev.type === "context") setCtxUsed(ev.used);
+    else if (ev.type === "tool_result" && ev.canvas) { setCanvas({ id: ev.canvas.id, v: ev.canvas.version }); mutCanvases(); updLast((l) => ({ ...l, tools: (l.tools ?? []).map((tr) => (tr.id === ev.id ? { ...tr, ...ev, done: true } : tr)) })); }
     else if (ev.type === "tool_result") updLast((l) => ({ ...l, tools: (l.tools ?? []).map((tr) => (tr.id === ev.id ? { ...tr, ...ev, done: true } : tr)) }));
-    else if (ev.type === "done") updLast((l) => ({ ...l, pending: false, metrics: ev.metrics, id: ev.message_id }));
+    else if (ev.type === "done") updLast((l) => { if (autoReadRef.current && l.content) speakText(l.content, lang).catch(() => {}); return { ...l, pending: false, metrics: ev.metrics, id: ev.message_id }; });
     else if (ev.type === "error") { setErr({ message: ev.message, detail: { remediation: ev.remediation } }); updLast((l) => ({ ...l, pending: false })); }
   }
 
@@ -198,6 +216,7 @@ function Chat() {
     setCtxLimit(c.settings?.context_limit ?? 0);
     setAutoCompact(c.settings?.auto_compact ?? true);
     setWeb(c.settings?.web ?? true);
+    setCanvas(null);
     setCtxUsed([...c.messages].reverse().find((m: any) => m.metrics?.context_used)?.metrics?.context_used ?? null);
     if (c.active_turn) {  // still answering (sent before leaving the page): replay its events and follow live
       setMsgs([...history, { role: "assistant", content: "", pending: true, model_alias: c.model_alias, tools: [], warnings: [] }]);
@@ -280,7 +299,7 @@ function Chat() {
     await follow(id, (signal) => streamPost(`/api/v1/playground/conversations/${id}/messages`, {
       content, model_alias: useModel, system_prompt: system || undefined, temperature: temp, max_tokens: maxTok,
       attachments: sentAtts.map((a) => a.file_id), mode: m, tools, thinking: useSel?.backend === "vllm" ? thinking : undefined, aspect,
-      context_limit: ctxLimit || undefined, auto_compact: autoCompact, web,
+      context_limit: ctxLimit || undefined, auto_compact: autoCompact, web, research: research && web,
     }, (ev) => applyEvent(id, ev), signal));
   }
 
@@ -296,9 +315,9 @@ function Chat() {
 
   const [drawer, setDrawer] = useState(false);
   const statusLabel = status === "loading" ? t("play.loading_model") : status === "tool" ? L("usando herramientas…", "using tools…") : status === "compacting" ? L("compactando contexto…", "compacting context…") : status === "generating" ? L("generando…", "generating…") : status;
-  const newChat = () => { abort.current?.abort(); viewing.current = null; setCid(null); setMsgs([]); setAtts([]); setErr(null); setStatus(null); setCtxUsed(null); };
+  const newChat = () => { abort.current?.abort(); viewing.current = null; setCanvas(null); setCid(null); setMsgs([]); setAtts([]); setErr(null); setStatus(null); setCtxUsed(null); };
   return (
-    <div className="grid h-[calc(100dvh-10.5rem)] gap-4 lg:h-[calc(100vh-7.5rem)] lg:grid-cols-[270px_minmax(0,1fr)_290px]">
+    <div className={cx("grid h-[calc(100dvh-10.5rem)] gap-4 lg:h-[calc(100vh-7.5rem)]", canvas ? "lg:grid-cols-[250px_minmax(0,1fr)_minmax(0,1.1fr)]" : "lg:grid-cols-[270px_minmax(0,1fr)_290px]")}>
       <h1 className="sr-only">{L("Chat", "Chat")}</h1>
       {drawer && <div className="fixed inset-0 z-[60] bg-black/40 lg:hidden" onClick={() => setDrawer(false)} />}
       <Card className={cx("flex-col overflow-hidden lg:flex", drawer ? "fixed inset-y-0 left-0 z-[61] flex w-[85vw] max-w-sm rounded-none" : "hidden")} onClick={(e) => { if ((e.target as HTMLElement).closest("li button")) setDrawer(false); }}>
@@ -338,6 +357,7 @@ function Chat() {
           {sel && <div className="flex flex-wrap gap-1">{sel.capabilities.includes("vision") && <Badge tone="accent">vision</Badge>}{sel.tools_enabled && <Badge tone="accent">tools</Badge>}{sel.runtime ? <Badge tone="ok">{L("en memoria", "loaded")}</Badge> : <Badge>{L("se cargará al enviar", "loads on send")}</Badge>}</div>}
           {proj && <Badge tone="info"><FolderKanban className="h-3 w-3" />{proj.name}</Badge>}
           {sel && <ContextMeter cid={cid} modelAlias={sel.alias} windowMax={sel.context_window} used={ctxUsed} limit={ctxLimit} setLimit={setCtxLimit} autoCompact={autoCompact} setAutoCompact={setAutoCompact} busy={!!status} />}
+          {!canvas && (canvases?.length ?? 0) > 0 && <Button size="sm" variant="outline" onClick={() => setCanvas({ id: canvases[0].id, v: canvases[0].version })}><FileText className="h-3.5 w-3.5" />{L("Lienzo", "Canvas")}{canvases.length > 1 ? ` (${canvases.length})` : ""}</Button>}
           {statusLabel && <Badge tone="info" className="ml-auto"><Loader2 className="h-3 w-3 animate-spin" />{statusLabel}</Badge>}
           <div className={cx("lg:hidden", !statusLabel && "ml-auto")}><MemoryPill /></div>
         </div>
@@ -365,9 +385,10 @@ function Chat() {
                   <>
                     {m.warnings?.map((w, j) => <Notice key={j} tone="warn">{w}</Notice>)}
                     {m.reasoning && <details className="mb-2 rounded-lg bg-bg/50 px-3 py-1.5 text-xs text-muted" open={m.pending && !m.content}><summary className="cursor-pointer"><Brain className="mr-1 inline h-3 w-3" />{L("Razonamiento", "Reasoning")}</summary><p className="mt-1 whitespace-pre-wrap">{m.reasoning}</p></details>}
-                    {m.tools?.map((tr) => <ToolCard key={tr.id} t={tr} onEdit={editImage} />)}
+                    {m.tools?.map((tr) => <ToolCard key={tr.id} t={tr} onEdit={editImage} onCanvas={(id, v) => setCanvas({ id, v })} />)}
                     <div className="prose-chat">{m.content ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.content}</ReactMarkdown> : m.pending && !m.tools?.length && <span className="inline-flex gap-1"><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:.15s]" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:.3s]" /></span>}</div>
-                    <Metrics m={m.metrics} />{m.model_alias && <div className="mt-1 text-[10px] text-subtle">{m.model_alias}</div>}
+                    <Metrics m={m.metrics} />
+                    <div className="mt-1 flex items-center gap-3">{m.model_alias && <span className="text-[10px] text-subtle">{m.model_alias}</span>}{voice?.enabled && voice?.read_aloud && m.content && !m.pending && <SpeakButton text={m.content} lang={lang} />}</div>
                   </>
                 )}
               </div>
@@ -383,6 +404,7 @@ function Chat() {
               <Tip text={L("Adjuntar archivos o imágenes (también puedes arrastrar o pegar)", "Attach files or images (you can also drag or paste)")}><Button type="button" size="icon" variant="ghost" onClick={() => fileInput.current?.click()}><Paperclip className="h-4 w-4" /></Button></Tip>
               <Tip text={mode === "image" ? L("Modo imagen activo: tu mensaje es el prompt (con imagen adjunta, la edita)", "Image mode on: your message is the prompt (with an attached image, it edits it)") : L("Activar modo imagen", "Switch to image mode")}>
                 <Button type="button" size="icon" variant={mode === "image" ? "primary" : "ghost"} onClick={() => setMode(mode === "image" ? "chat" : "image")}><Paintbrush className="h-4 w-4" /></Button></Tip>
+              {voice?.enabled && voice?.dictation && <MicButton lang={lang} onText={(txt) => { setInput((x) => (x ? `${x} ${txt}` : txt)); textRef.current?.focus(); }} />}
             </div>
             <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
             <Textarea ref={textRef} aria-label={t("play.placeholder")} rows={3} className="resize-none" value={input} onChange={(e) => setInput(e.target.value)}
@@ -401,6 +423,8 @@ function Chat() {
                 <Switch checked={tools} onChange={setTools} label={L("Herramientas", "Tools")} />
                 {tools && sel?.tools_enabled && pub?.web_search_enabled !== false && <Switch checked={web} onChange={setWeb} label={L("Internet", "Web")} />}
                 {sel?.backend === "vllm" && <Switch checked={thinking} onChange={setThinking} label={L("Pensar", "Think")} />}
+                {tools && web && sel?.tools_enabled && pub?.web_search_enabled !== false && pub?.agents_enabled !== false && <Switch checked={research} onChange={setResearch} label={L("Investigación a fondo", "Deep research")} />}
+                {voice?.enabled && voice?.read_aloud && <Switch checked={autoRead} onChange={setAutoRead} label={L("Leer respuestas", "Read answers")} />}
                 {sel && !sel.tools_enabled && <span className="text-warn">{L("Este modelo no usa herramientas: para imágenes usa el modo 🎨.", "This model has no tools: use 🎨 mode for images.")}</span>}
               </>
             )}
@@ -409,7 +433,10 @@ function Chat() {
         {drag && <div className="pointer-events-none absolute inset-0 grid place-items-center bg-accent/10 text-sm font-medium text-accent">{L("Suelta para adjuntar", "Drop to attach")}</div>}
       </Card>
 
-      <Card className="hidden overflow-y-auto p-4 lg:block">
+      {canvas && <Card className="fixed inset-0 z-[62] flex min-h-0 flex-col overflow-hidden rounded-none lg:static lg:z-auto lg:rounded-2xl">
+        <CanvasPanel id={canvas.id} version={canvas.v} onClose={() => setCanvas(null)} busy={!!status} onAsk={(text) => { send(text); }} />
+      </Card>}
+      <Card className={cx("hidden overflow-y-auto p-4", !canvas && "lg:block")}>
         <div className="space-y-4">
           <Field label={t("play.system")} hint={L("Se suma a tus instrucciones personales y a las del proyecto", "Added to your personal and project instructions")}><Textarea rows={5} value={system} onChange={(e) => setSystem(e.target.value)} /></Field>
           <Field label={`${t("play.temperature")}: ${temp}`}><input aria-label={t("play.temperature")} type="range" min={0} max={2} step={0.05} value={temp} onChange={(e) => setTemp(Number(e.target.value))} className="w-full accent-[rgb(var(--accent))]" /></Field>

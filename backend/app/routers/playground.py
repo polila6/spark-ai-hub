@@ -55,6 +55,7 @@ class SendIn(BaseModel):
     context_limit: int | None = Field(default=None, ge=2048, le=1_048_576)
     auto_compact: bool = True
     web: bool = True
+    research: bool = False
 
 
 class PromptIn(BaseModel):
@@ -234,7 +235,8 @@ async def send_message(cid: uuid.UUID, body: SendIn, request: Request, p: Princi
     turn = agent.Turn(user_id=p.id, conversation_id=c.id, model_id=model.id, content=body.content,
                       attachments=list(body.attachments), system_prompt=body.system_prompt, params=params,
                       use_tools=body.tools, thinking=body.thinking, mode=body.mode, lang=lang,
-                      context_limit=body.context_limit, auto_compact=body.auto_compact, web=body.web)
+                      context_limit=body.context_limit, auto_compact=body.auto_compact, web=body.web,
+                      research=body.research)
     title = c.title
     try:
         turns.start(cid, p.id, title)

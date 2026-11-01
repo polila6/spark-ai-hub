@@ -1,12 +1,12 @@
 "use client";
 // Chat extensions: context-window meter/settings, and the cards for web sources, sub-agents and skills.
-import { Bot, ExternalLink, Gauge, Globe, Puzzle, Shrink } from "lucide-react";
+import { Bot, Code2, Download, ExternalLink, FileText, Gauge, Globe, Loader2, Mic, Puzzle, Shrink, Square, Volume2 } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import useSWR from "swr";
-import { api } from "@/lib/api";
+import { api, postBlob, upload } from "@/lib/api";
 import { useL } from "@/lib/i18n";
 import { useToast } from "@/lib/providers";
 import { Badge, Button, Field, Modal, Notice, Select, Switch, cx } from "./ui";
@@ -123,4 +123,96 @@ export function SkillNote({ skill, installed }: { skill: any; installed?: boolea
   );
 }
 
-export const TOOL_ICONS: Record<string, any> = { web_search: Globe, fetch_url: Globe, delegate_task: Bot, use_skill: Puzzle, read_skill_file: Puzzle, find_skills: Puzzle, install_skill: Puzzle, compact_context: Shrink };
+export function CodeRun({ run }: { run: any }) {
+  const L = useL();
+  const imgs = (run.files ?? []).filter((f: any) => f.kind === "image");
+  const others = (run.files ?? []).filter((f: any) => f.kind !== "image");
+  return (
+    <div className="border-t border-border/60 px-3 py-2">
+      <details><summary className="cursor-pointer text-muted"><Code2 className="mr-1 inline h-3 w-3" />{L("Código", "Code")} ({run.language}){run.exit_code !== 0 || run.timed_out ? <span className="ml-1 text-warn">· {run.timed_out ? L("tiempo agotado", "timed out") : `exit ${run.exit_code}`}</span> : null}</summary>
+        <pre className="mt-1 max-h-72 overflow-auto rounded-lg bg-elevated p-2 font-mono text-[11px]">{run.code}</pre></details>
+      {(run.stdout || run.stderr) && <details open={!run.files?.length}><summary className="cursor-pointer text-muted">{L("Salida", "Output")}</summary>
+        <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg bg-elevated p-2 font-mono text-[11px]">{run.stdout}{run.stderr ? `\n${run.stderr}` : ""}</pre></details>}
+      {imgs.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{imgs.map((f: any) => <a key={f.id} href={f.url} target="_blank" rel="noreferrer"><img src={f.url} alt={f.filename} className="max-h-[380px] rounded-lg border border-border bg-white" /></a>)}</div>}
+      {(run.files ?? []).length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{[...others, ...imgs].map((f: any) => (
+        <a key={f.id} href={`${f.url}?download=true`} className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 hover:bg-elevated"><FileText className="h-3 w-3" />{f.filename}<Download className="h-3 w-3 text-muted" /></a>))}
+        <Link href="/files" className="self-center text-accent">{L("En Mis archivos → Resultados de código", "In My files → Code results")}</Link></div>}
+    </div>
+  );
+}
+
+export const TOOL_ICONS: Record<string, any> = { run_code: Code2, web_search: Globe, fetch_url: Globe, delegate_task: Bot, use_skill: Puzzle, read_skill_file: Puzzle, find_skills: Puzzle, install_skill: Puzzle, compact_context: Shrink };
+
+// ------------------------------------------------------------------ voice (local Whisper / MMS-TTS on the Spark)
+
+export function MicButton({ onText, lang }: { onText: (t: string) => void; lang?: string }) {
+  const L = useL();
+  const { push } = useToast();
+  const [state, setState] = useState<"idle" | "rec" | "busy">("idle");
+  const [secs, setSecs] = useState(0);
+  const rec = useRef<MediaRecorder | null>(null);
+  const chunks = useRef<Blob[]>([]);
+  useEffect(() => { if (state !== "rec") return; const t = setInterval(() => setSecs((s) => s + 1), 1000); return () => clearInterval(t); }, [state]);
+  async function start() {
+    if (!navigator.mediaDevices?.getUserMedia) { push("error", L("Este navegador no permite grabar audio (hace falta https).", "This browser cannot record audio (https required).")); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4";
+      const r = new MediaRecorder(stream, { mimeType: mime });
+      chunks.current = [];
+      r.ondataavailable = (e) => e.data.size && chunks.current.push(e.data);
+      r.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setState("busy");
+        try {
+          const fd = new FormData();
+          fd.append("audio", new Blob(chunks.current, { type: mime }), mime === "audio/webm" ? "voz.webm" : "voz.m4a");
+          if (lang) fd.append("language", lang === "en" ? "english" : "spanish");
+          const res = await upload("/api/v1/voice/transcribe", fd);
+          if (res.text) onText(res.text); else push("info", L("No se ha entendido nada", "Nothing was recognised"));
+        } catch (e: any) { push("error", e.message); } finally { setState("idle"); }
+      };
+      rec.current = r; r.start(); setSecs(0); setState("rec");
+    } catch { push("error", L("Permiso de micrófono denegado", "Microphone permission denied")); }
+  }
+  const stop = () => rec.current?.state === "recording" && rec.current.stop();
+  return (
+    <Button type="button" size="icon" variant={state === "rec" ? "danger" : "ghost"} onClick={state === "rec" ? stop : start} disabled={state === "busy"}
+      title={state === "rec" ? L("Parar y transcribir", "Stop and transcribe") : L("Dictar (se transcribe en el Spark)", "Dictate (transcribed on the Spark)")}>
+      {state === "busy" ? <Loader2 className="h-4 w-4 animate-spin" /> : state === "rec" ? <span className="flex items-center gap-1 text-[10px] tabular-nums"><Square className="h-3 w-3" />{secs}s</span> : <Mic className="h-4 w-4" />}
+    </Button>
+  );
+}
+
+let playing: HTMLAudioElement | null = null;
+
+export async function speakText(text: string, lang?: string): Promise<HTMLAudioElement> {
+  const blob = await postBlob("/api/v1/voice/speak", { text, lang });
+  playing?.pause();
+  const a = new Audio(URL.createObjectURL(blob));
+  playing = a;
+  await a.play();
+  return a;
+}
+
+export function SpeakButton({ text, lang }: { text: string; lang?: string }) {
+  const L = useL();
+  const { push } = useToast();
+  const [state, setState] = useState<"idle" | "busy" | "play">("idle");
+  const audio = useRef<HTMLAudioElement | null>(null);
+  async function toggle() {
+    if (state === "play") { audio.current?.pause(); setState("idle"); return; }
+    setState("busy");
+    try {
+      const a = await speakText(text, lang);
+      audio.current = a; setState("play");
+      a.onended = a.onpause = () => setState("idle");
+    } catch (e: any) { push("error", e.message); setState("idle"); }
+  }
+  return (
+    <button type="button" onClick={toggle} className="inline-flex items-center gap-1 text-[10px] text-subtle hover:text-accent" title={L("Leer en voz alta", "Read aloud")}>
+      {state === "busy" ? <Loader2 className="h-3 w-3 animate-spin" /> : state === "play" ? <Square className="h-3 w-3" /> : <Volume2 className="h-3 w-3" />}
+      {state === "play" ? L("Parar", "Stop") : L("Escuchar", "Listen")}
+    </button>
+  );
+}

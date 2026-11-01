@@ -810,3 +810,98 @@ class AgentProfile(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class CanvasDoc(Base):
+    """Document or code edited side by side with a chat (the assistant writes it with canvas tools, the user edits it)."""
+
+    __tablename__ = "canvas_docs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"),
+                                                              nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(255), default="Documento")
+    kind: Mapped[str] = mapped_column(String(16), default="document")  # document | code
+    language: Mapped[str | None] = mapped_column(String(32), nullable=True)  # code language / "markdown"
+    content: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    history: Mapped[list] = mapped_column(JSONB, default=list)  # [{version, content, author, at}] (last 30)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ScheduledTask(Base):
+    """A prompt the assistant runs on a schedule; the answer goes to a chat, a notification and optionally e-mail."""
+
+    __tablename__ = "scheduled_tasks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    prompt: Mapped[str] = mapped_column(Text)
+    schedule: Mapped[dict] = mapped_column(JSONB, default=dict)  # {freq: daily|weekly|monthly|hourly, time, weekdays, day}
+    timezone: Mapped[str] = mapped_column(String(64), default="Europe/Madrid")
+    model_alias: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    options: Mapped[dict] = mapped_column(JSONB, default=dict)  # {web, code, email}
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"),
+                                                              nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # ok | error | running
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class KbConnector(Base):
+    """External source synchronised into a knowledge collection (WebDAV/Nextcloud, GitHub, Zotero, SMB)."""
+
+    __tablename__ = "kb_connectors"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # webdav | github | zotero | smb
+    name: Mapped[str] = mapped_column(String(120))
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)  # url/path/repo/branch/library... (no secrets)
+    secret: Mapped[str | None] = mapped_column(Text, nullable=True)  # encrypted password / token / API key
+    collection_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("kb_collections.id", ondelete="SET NULL"),
+                                                            nullable=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    schedule: Mapped[str] = mapped_column(String(16), default="daily")  # manual | hourly | daily
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(16), default="new")  # new | syncing | ok | error
+    status_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stats: Mapped[dict] = mapped_column(JSONB, default=dict)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ConnectorItem(Base):
+    __tablename__ = "connector_items"
+    __table_args__ = (UniqueConstraint("connector_id", "remote_path", name="uq_connector_items_path"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    connector_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("kb_connectors.id", ondelete="CASCADE"), index=True)
+    remote_path: Mapped[str] = mapped_column(String(2048))
+    etag: Mapped[str | None] = mapped_column(String(255), nullable=True)  # etag / sha / version / mtime+size
+    file_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("user_files.id", ondelete="SET NULL"), nullable=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UserIdentity(Base):
+    """External sign-in (OpenID Connect: Google, Microsoft, generic) linked to a local account."""
+
+    __tablename__ = "user_identities"
+    __table_args__ = (UniqueConstraint("provider", "subject", name="uq_user_identities_provider_subject"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    subject: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

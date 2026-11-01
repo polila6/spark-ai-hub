@@ -9,3 +9,7 @@ services:
     profiles: ["engines"]
     build: ./engines/mlworker
     image: spark-ai-hub/mlworker:${SAH_VERSION:-0.1.0}
+  sandbox:
+    profiles: ["sandbox"]
+    build: ./engines/sandbox
+    image: spark-ai-hub/sandbox:${SAH_VERSION:-0.1.0}

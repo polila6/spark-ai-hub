@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.5.0 — 2026-11-01
+Code, canvas, deep research, voice, scheduled tasks, connectors, single sign-on and a usage panel.
+
+* **Faster answers (MTP)**: vLLM speculative decoding with the model's own multi-token-prediction layers
+  (`speculative_tokens`, switch on the model page; set automatically when installing Qwen3.5/Qwen3-Next). General model:
+  50 → 63 tok/s for one user, 117 → 129 tok/s for four (2 draft tokens; 3 gave no further gain on GB10).
+* **Code execution**: `run_code` tool (Python, bash, Node) in a fresh sandbox container per run — no network,
+  read-only root, uid 1000, no capabilities, memory/CPU/pids/time limits (engine-manager `/sandbox/run`, image
+  `engines/sandbox`: numpy/pandas/scipy/scikit-learn/matplotlib, python-docx/pptx/openpyxl/reportlab, Node docx and
+  pptxgenjs, pandoc, LibreOffice). Files written to `/work` go to My files → "Resultados de código" and show in the chat
+  (images inline). Skills can now run their scripts (`run_code(skills=[…])`). Admin switch and limits.
+* **Canvas**: `canvas_write` / `canvas_edit` open a document or code file beside the chat; the user edits it, restores
+  versions (last 30), asks for changes and exports to Word, PDF, Markdown, HTML or the source file (pandoc +
+  LibreOffice in the sandbox), or saves a copy to My files.
+* **Deep research**: "Deep research" switch (or `deep_research` tool): plan → 3–7 researcher agents in parallel (plus
+  the user's documents on request) → long report with numbered sources in the canvas. Verified: 7 agents, 29 sources,
+  ~6 min.
+* **Voice**: dictation (🎤, local Whisper) and read-aloud ("Listen", "Read answers"; local MMS-TTS voices per language)
+  through the ML worker; audio never leaves the Spark. Android app already grants the microphone.
+* **Scheduled tasks**: Tasks page and `schedule_task` tool ("every Monday at 9 …"): hourly/daily (weekdays)/weekly/
+  monthly in the user's time zone, web/deep-research options, own chat per task, bell notification and optional e-mail
+  with the answer, "Run now". Runs from the worker (2 at a time); tokens counted as source `task`.
+* **Knowledge connectors**: Nextcloud/ownCloud/WebDAV, GitHub (public or token), Zotero (user/group libraries) and SMB
+  network shares, synced hourly/daily/manually into a collection (new, changed and deleted files). Remote addresses must
+  be public unless an admin lists the private host/network (`connector_private_hosts`); loopback, link-local and the
+  hub's containers are always refused; connections pinned to the checked IP; secrets encrypted.
+* **Sign in with Google, Microsoft or any OpenID Connect provider**: PKCE, state bound to the browser, nonce,
+  iss/aud/exp checks; accounts linked by e-mail only when the provider vouches for it; new accounts follow the sign-up
+  mode (approval/open/closed) and allowed domains. Step-by-step setup with the redirect address in Settings → Access.
+* **Usage panel**: tokens per day, per model, per source (chat/API/tasks) and per project, GPU/processing jobs, storage
+  and monthly quota; managers see everyone (numbers only).
+* Database migration 7982a336c53a (canvas_docs, scheduled_tasks, kb_connectors, connector_items, user_identities).
+* New dependencies: smbprotocol 1.17.0, pyspnego 0.12.4 (backend); sandbox image built by `install.sh` /
+  `scripts/sah.sh build`.
+
 ## 0.4.0 — 2026-11-01
 Bigger context for coding agents, one-command install and first public release.
 

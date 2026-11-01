@@ -79,3 +79,7 @@ def restart_service(service: str) -> dict:
 
 def versions() -> dict:
     return _call("GET", "/versions")
+
+
+def run_sandbox(body: dict) -> dict:
+    return _call("POST", "/sandbox/run", json=body, timeout=float(body.get("timeout_s", 120)) + 90)

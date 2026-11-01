@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/v1/models", tags=["models"])
 
 VLLM_PARAM_KEYS = {"max_model_len", "gpu_memory_utilization", "max_num_seqs", "dtype", "kv_cache_dtype",
                    "quantization", "trust_remote_code", "enable_tool_calling", "tool_call_parser", "reasoning_parser",
-                   "enforce_eager", "load_timeout_s"}
+                   "enforce_eager", "load_timeout_s", "speculative_tokens"}
 OLLAMA_PARAM_KEYS = {"keep_alive"}
 
 
@@ -200,18 +200,29 @@ CONTEXT_PRESETS = (8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576)
 
 
 class ContextIn(BaseModel):
-    max_model_len: int = Field(ge=4096, le=1_048_576)
+    max_model_len: int | None = Field(default=None, ge=4096, le=1_048_576)
+    speculative_tokens: int | None = Field(default=None, ge=0, le=4)
 
 
-def _native_context(m: RegisteredModel) -> int | None:
-    """Longest context the model was trained for (config.json max_position_embeddings)."""
+def _config(m: RegisteredModel) -> dict:
     import json
 
     snap = registry.hf_snapshot_dir(m)
     try:
-        cfg = json.loads((snap / "config.json").read_text()) if snap else {}
+        return json.loads((snap / "config.json").read_text()) if snap else {}
     except (OSError, ValueError):
-        return None
+        return {}
+
+
+def _has_mtp(m: RegisteredModel) -> bool:
+    cfg = _config(m)
+    return any(int(c.get("mtp_num_hidden_layers") or c.get("num_nextn_predict_layers") or 0) > 0
+               for c in (cfg.get("text_config") or {}, cfg))
+
+
+def _native_context(m: RegisteredModel) -> int | None:
+    """Longest context the model was trained for (config.json max_position_embeddings)."""
+    cfg = _config(m)
     for c in (cfg.get("text_config") or {}, cfg):
         if c.get("max_position_embeddings"):
             return int(c["max_position_embeddings"])
@@ -248,6 +259,7 @@ def context_info(model_id: uuid.UUID, p: Principal = Depends(current_principal),
     top = native or 262144
     return {"supported": True, "current": current, "native_max": native, "loaded": loaded, "kv_cache_tokens": kv,
             "max_num_seqs": int(params.get("max_num_seqs") or 16), "can_manage": _can_manage(p, m),
+            "mtp_available": _has_mtp(m), "speculative_tokens": int(params.get("speculative_tokens") or 0),
             "presets": [{"tokens": n, "fits_at_once": (kv // n) if kv else None}
                         for n in sorted({*(x for x in CONTEXT_PRESETS if x <= top), current, *([native] if native else [])})]}
 
@@ -262,15 +274,20 @@ def set_context(model_id: uuid.UUID, body: ContextIn, request: Request, p: Princ
     if m.backend != "vllm":
         raise HTTPException(400, detail={"code": "not_vllm", "message": "Only vLLM models have a configurable window"})
     native = _native_context(m)
-    if native and body.max_model_len > native:
+    if body.max_model_len and native and body.max_model_len > native:
         raise HTTPException(422, detail={"code": "too_long", "message": f"Este modelo admite como máximo {native} tokens"})
+    if body.speculative_tokens and not _has_mtp(m):
+        raise HTTPException(422, detail={"code": "no_mtp", "message": "Este modelo no trae capas MTP"})
     old = (m.runtime_config.params if m.runtime_config else {}) or {}
-    registry.set_runtime_params(db, m, {**old, "max_model_len": body.max_model_len})
-    registry.history(db, m, "config.changed", {"params": {"max_model_len": body.max_model_len}}, p.id)
+    change = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not change:
+        raise HTTPException(422, detail={"code": "empty", "message": "Nothing to change"})
+    registry.set_runtime_params(db, m, {**old, **change})
+    registry.history(db, m, "config.changed", {"params": change}, p.id)
     loaded = bool(db.scalar(select(RuntimeInstance.id).where(RuntimeInstance.model_id == m.id)))
     db.commit()
     audit(db, "models.context", actor=p.user, request=request, target_type="model", target_id=str(m.id),
-          details={"from": old.get("max_model_len"), "to": body.max_model_len})
+          details={"from": {k: old.get(k) for k in change}, "to": change})
     if loaded:
         import threading
 
@@ -286,7 +303,7 @@ def set_context(model_id: uuid.UUID, body: ContextIn, request: Request, p: Princ
                 log.warning("models.context_reload_failed", model=str(mid), error=str(getattr(e, "message", e)))
 
         threading.Thread(target=run, daemon=True).start()
-    return {"ok": True, "max_model_len": body.max_model_len, "reloading": loaded}
+    return {"ok": True, **change, "reloading": loaded}
 
 
 @router.post("/{model_id}/check")

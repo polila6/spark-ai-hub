@@ -1,0 +1,24 @@
+# Python libraries available to code run by the chat (no network at run time). Locked in requirements.txt.
+numpy
+pandas
+scipy
+statsmodels
+scikit-learn
+sympy
+networkx
+matplotlib
+seaborn
+pillow
+openpyxl
+xlsxwriter
+python-docx
+python-pptx
+reportlab
+pypdf
+pdfplumber
+markdown
+jinja2
+tabulate
+pyarrow
+defusedxml
+lxml

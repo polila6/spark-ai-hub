@@ -63,9 +63,24 @@ DEFAULTS: dict[str, Any] = {
     "skill_sources": ["anthropics/skills"],  # GitHub repos (owner/repo[/path]) offered as the skill catalog
     "agents_enabled": True,
     "max_parallel_agents": 3,
+    "code_exec_enabled": True,  # run_code tool: sandbox container without network (engines/sandbox)
+    "code_exec_timeout_s": 120,
+    "code_exec_memory_mb": 4096,
+    "voice_enabled": True,  # chat dictation (speech-to-text) and read-aloud (text-to-speech) with local models
+    "voice_asr_model": None,  # alias; None = first installed speech-recognition model
+    "voice_tts_model": None,  # alias; None = the voice matching the language
+    "connector_private_hosts": [],
+    # Sign in with Google / Microsoft / OpenID Connect (secrets in SECRET_KEYS)
+    "oidc_google_client_id": None,
+    "oidc_microsoft_client_id": None,
+    "oidc_microsoft_tenant": "organizations",  # a tenant id/domain limits sign-in to one organisation
+    "oidc_generic_name": None,
+    "oidc_generic_issuer": None,
+    "oidc_generic_client_id": None,  # private hosts/networks knowledge connectors may reach (e.g. "192.168.1.0/24", "nas.lab")
 }
 
-SECRET_KEYS = {"hf_token", "smtp_password", "tailscale_api_key"}
+SECRET_KEYS = {"hf_token", "smtp_password", "tailscale_api_key", "oidc_google_client_secret", "oidc_microsoft_client_secret",
+               "oidc_generic_client_secret"}
 
 
 def get_setting(db: Session, key: str) -> Any:

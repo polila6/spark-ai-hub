@@ -35,6 +35,13 @@ su clave API, sin enviar ni un prompt a servicios de IA externos.
   directo e informe.
 - **Skills** desde GitHub o un enlace, escritas por ti o instaladas por el propio modelo cuando las necesita.
 - **Ventana de contexto** ajustable con indicador en vivo y **compactación automática** (resume, no olvida).
+- **Ejecuta código** en un entorno aislado sin internet: cálculos, gráficos y archivos Excel, Word, PowerPoint o PDF.
+- **Lienzo** junto al chat para informes, cartas o código: edítalo, pide cambios y expórtalo a **Word, PDF o Markdown**.
+- **Investigación a fondo**: varios agentes en paralelo y un informe largo con fuentes numeradas.
+- **Voz**: dicta con 🎤 y escucha las respuestas (Whisper y voces locales).
+- **Tareas programadas**: «cada lunes a las 9, resúmeme…»; te avisa y puede enviarte el resultado por correo.
+- **Conectores** que sincronizan tu base de conocimiento con **Nextcloud/WebDAV, GitHub, Zotero y carpetas de red**.
+- **Entrar con Google o Microsoft** (u otro proveedor OpenID Connect) y **panel de uso** por modelo, proyecto y persona.
 - **Nube personal**: Mis archivos, base de conocimiento (búsqueda híbrida pgvector), proyectos compartidos, memoria.
 - **Para programar**: API `/v1` compatible con OpenAI, `/v1/messages` compatible con Anthropic (Claude Code), servidor
   **MCP**, y la página **Conectar herramientas** genera la configuración de OpenCode, Claude Code, Cline, Continue,

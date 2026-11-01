@@ -177,7 +177,9 @@ def parser_defaults(repo_id: str, config: dict | None) -> dict:
     if "gpt-oss" in rid or "gpt_oss" in mtype:
         return {"enable_tool_calling": True, "tool_call_parser": "openai", "reasoning_parser": "openai_gptoss"}
     if any(k in rid for k in ("qwen3.5", "qwen3_5", "qwen3-coder", "qwen3-next")) or any(k in mtype for k in ("qwen3_5", "qwen3_next")):
-        return {"enable_tool_calling": True, "tool_call_parser": "qwen3_coder", "reasoning_parser": "qwen3"}
+        out = {"enable_tool_calling": True, "tool_call_parser": "qwen3_coder", "reasoning_parser": "qwen3"}
+        tc = c.get("text_config") or c
+        return {**out, "speculative_tokens": 2} if int(tc.get("mtp_num_hidden_layers") or 0) > 0 else out
     if "qwen3" in rid or "qwen3" in mtype:
         out = {"enable_tool_calling": True, "tool_call_parser": "hermes"}
         return out if "instruct-2507" in rid else {**out, "reasoning_parser": "qwen3"}

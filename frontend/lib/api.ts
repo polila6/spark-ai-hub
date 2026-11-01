@@ -50,6 +50,13 @@ export async function api<T = any>(path: string, opts: RequestInit & { json?: an
 
 export const fetcher = (path: string) => api(path);
 
+/** POST JSON and return the raw response body as a Blob (audio, exported files). */
+export async function postBlob(path: string, json: any): Promise<Blob> {
+  const res = await fetch(path, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf() }, body: JSON.stringify(json) });
+  if (!res.ok) await parse(res);
+  return res.blob();
+}
+
 export async function upload<T = any>(path: string, form: FormData): Promise<T> {
   const res = await fetch(path, { method: "POST", body: form, credentials: "same-origin", headers: { "X-CSRF-Token": csrf() } });
   return parse(res) as Promise<T>;

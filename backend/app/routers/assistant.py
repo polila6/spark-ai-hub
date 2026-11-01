@@ -4,15 +4,22 @@ from __future__ import annotations
 import re
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import Principal, current_principal, not_found, require_researcher
-from ..models import AgentProfile, Skill, Visibility
+from ..models import AgentProfile, CanvasDoc, ConnectorItem, Conversation, KbConnector, ScheduledTask, SchedClass, Skill, Visibility
+from ..services import canvas as canvas_svc
+from ..services import connectors as conn_svc
+from ..services import kb
+from ..services import sandbox as sandbox_svc
 from ..services import skills as skills_svc
+from ..services import tasks as tasks_svc
+from ..services import voice as voice_svc
 from ..services import web
 from ..services.agent import BUILTIN_AGENTS, SUB_AGENT_TOOLS
 from ..settings_store import get_setting
@@ -21,7 +28,7 @@ router = APIRouter(prefix="/api/v1", tags=["assistant"])
 
 TOOL_NAMES = {"web_search": "Búsqueda web", "fetch_url": "Leer páginas web", "search_knowledge": "Buscar en documentos",
               "read_document": "Leer documentos", "describe_data": "Explorar datos", "query_data": "Consultas SQL",
-              "use_skill": "Usar skills", "read_skill_file": "Archivos de skills"}
+              "use_skill": "Usar skills", "read_skill_file": "Archivos de skills", "run_code": "Ejecutar código"}
 
 
 def _err(e: Exception, code: str = "skill_error"):
@@ -212,3 +219,343 @@ def delete_agent(aid: uuid.UUID, p: Principal = Depends(current_principal), db: 
     db.delete(a)
     db.commit()
     return {"ok": True}
+
+
+# ------------------------------------------------------------------ voice
+
+
+class SpeakIn(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+    lang: str | None = Field(default=None, max_length=8)
+    rate: float = Field(default=1.0, ge=0.5, le=2.0)
+
+
+def _voice_err(e: voice_svc.VoiceError):
+    return HTTPException(422, detail={"code": "voice_error", "message": e.message, "remediation": e.remediation})
+
+
+@router.get("/voice")
+def voice_status(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    return voice_svc.status(db)
+
+
+@router.post("/voice/transcribe")
+async def voice_transcribe(audio: UploadFile = File(...), language: str | None = Form(default=None),
+                           p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    data = await audio.read(voice_svc.MAX_AUDIO_BYTES + 1)
+    from starlette.concurrency import run_in_threadpool
+
+    try:
+        return await run_in_threadpool(voice_svc.transcribe, db, data, audio.filename or "audio.webm", language)
+    except voice_svc.VoiceError as e:
+        raise _voice_err(e)
+    except Exception as e:  # noqa: BLE001  (engine start-up, memory)
+        raise HTTPException(503, detail={"code": "voice_unavailable", "message": str(getattr(e, "message", e))[:300]})
+
+
+@router.post("/voice/speak")
+def voice_speak(body: SpeakIn, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    try:
+        audio, mime = voice_svc.speak(db, body.text, body.lang, body.rate)
+    except voice_svc.VoiceError as e:
+        raise _voice_err(e)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, detail={"code": "voice_unavailable", "message": str(getattr(e, "message", e))[:300]})
+    return Response(audio, media_type=mime, headers={"Cache-Control": "no-store"})
+
+
+# ------------------------------------------------------------------ canvas
+
+
+class CanvasIn(BaseModel):
+    title: str = Field(default="Documento", max_length=255)
+    content: str = Field(default="", max_length=canvas_svc.MAX_CHARS)
+    kind: str = Field(default="document", pattern="^(document|code)$")
+    language: str | None = Field(default=None, max_length=32)
+    conversation_id: uuid.UUID | None = None
+
+
+class CanvasPut(BaseModel):
+    content: str = Field(max_length=canvas_svc.MAX_CHARS)
+    title: str | None = Field(default=None, max_length=255)
+    base_version: int | None = None
+
+
+class ExportIn(BaseModel):
+    format: str = Field(default="docx", pattern="^(md|txt|docx|pdf|html|odt|code)$")
+    save: bool = False
+
+
+def _canvas(db: Session, p: Principal, did: uuid.UUID) -> CanvasDoc:
+    d = db.get(CanvasDoc, did)
+    if not d or d.owner_id != p.id:
+        raise not_found("canvas")
+    return d
+
+
+def _canvas_err(e: canvas_svc.CanvasError):
+    return HTTPException(e.status, detail={"code": "canvas_error", "message": e.message})
+
+
+@router.get("/canvas")
+def list_canvas(conversation_id: uuid.UUID | None = None, p: Principal = Depends(current_principal),
+                db: Session = Depends(get_db)):
+    q = select(CanvasDoc).where(CanvasDoc.owner_id == p.id)
+    if conversation_id:
+        q = q.where(CanvasDoc.conversation_id == conversation_id)
+    return [canvas_svc.public(d, with_content=False) for d in db.scalars(q.order_by(CanvasDoc.updated_at.desc()).limit(200))]
+
+
+@router.get("/canvas/{did}")
+def get_canvas(did: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    return canvas_svc.public(_canvas(db, p, did))
+
+
+@router.post("/canvas")
+def create_canvas(body: CanvasIn, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    if body.conversation_id:
+        c = db.get(Conversation, body.conversation_id)
+        if not c or c.owner_id != p.id:
+            raise not_found("conversation")
+    d = canvas_svc.create(db, p.user, title=body.title, content=body.content, kind=body.kind, language=body.language,
+                          conversation_id=body.conversation_id, author="user")
+    db.commit()
+    return canvas_svc.public(d)
+
+
+@router.put("/canvas/{did}")
+def save_canvas(did: uuid.UUID, body: CanvasPut, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    d = _canvas(db, p, did)
+    try:
+        canvas_svc.update(db, d, content=body.content, author="user", title=body.title, base_version=body.base_version)
+    except canvas_svc.CanvasError as e:
+        raise _canvas_err(e)
+    db.commit()
+    return canvas_svc.public(d)
+
+
+@router.post("/canvas/{did}/restore/{version}")
+def restore_canvas(did: uuid.UUID, version: int, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    d = _canvas(db, p, did)
+    try:
+        canvas_svc.restore(db, d, version, "user")
+    except canvas_svc.CanvasError as e:
+        raise _canvas_err(e)
+    db.commit()
+    return canvas_svc.public(d)
+
+
+@router.delete("/canvas/{did}")
+def delete_canvas(did: uuid.UUID, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    db.delete(_canvas(db, p, did))
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/canvas/{did}/export")
+def export_canvas(did: uuid.UUID, body: ExportIn, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    d = _canvas(db, p, did)
+    try:
+        data, name, mime, saved = canvas_svc.export(db, p.user, d, body.format, save=body.save)
+    except canvas_svc.CanvasError as e:
+        raise _canvas_err(e)
+    except sandbox_svc.SandboxError as e:
+        raise HTTPException(503, detail={"code": "sandbox", "message": e.message, "remediation": e.remediation})
+    if body.save:
+        return {"ok": True, "file": saved}
+    from urllib.parse import quote
+
+    return Response(data, media_type=mime, headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
+
+
+# ------------------------------------------------------------------ scheduled tasks
+
+
+class TaskIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    prompt: str = Field(min_length=1, max_length=20000)
+    schedule: dict
+    timezone: str = Field(default="Europe/Madrid", max_length=64)
+    model_alias: str | None = Field(default=None, max_length=128)
+    options: dict = {}
+    project_id: uuid.UUID | None = None
+    enabled: bool = True
+
+
+def _lang(p: Principal) -> str:
+    return (p.user.preferences or {}).get("language") or "es"
+
+
+def _task(db: Session, p: Principal, tid: uuid.UUID) -> ScheduledTask:
+    t = db.get(ScheduledTask, tid)
+    if not t or t.owner_id != p.id:
+        raise not_found("task")
+    return t
+
+
+def _apply_task(t: ScheduledTask, body: TaskIn) -> None:
+    try:
+        sched = tasks_svc.validate(body.schedule, body.timezone)
+        t.next_run_at = tasks_svc.next_run(sched, body.timezone) if body.enabled else None
+    except tasks_svc.TaskError as e:
+        raise HTTPException(422, detail={"code": "invalid_schedule", "message": e.message})
+    t.name, t.prompt, t.schedule, t.timezone = body.name, body.prompt, sched, body.timezone
+    t.model_alias, t.project_id, t.enabled = body.model_alias, body.project_id, body.enabled
+    t.options = {k: bool(v) for k, v in body.options.items() if k in ("web", "code", "email", "research")}
+
+
+@router.get("/tasks")
+def list_tasks(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    rows = db.scalars(select(ScheduledTask).where(ScheduledTask.owner_id == p.id).order_by(ScheduledTask.created_at)).all()
+    return {"tasks": [tasks_svc.public(t, _lang(p)) for t in rows], "mail_enabled": bool(get_setting(db, "mail_enabled"))}
+
+
+@router.post("/tasks")
+def create_task(body: TaskIn, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    if db.scalar(select(func.count()).select_from(ScheduledTask).where(ScheduledTask.owner_id == p.id)) >= 50:
+        raise HTTPException(409, detail={"code": "too_many", "message": "Máximo 50 tareas por usuario"})
+    t = ScheduledTask(owner_id=p.id)
+    _apply_task(t, body)
+    db.add(t)
+    db.commit()
+    return tasks_svc.public(t, _lang(p))
+
+
+@router.put("/tasks/{tid}")
+def update_task(tid: uuid.UUID, body: TaskIn, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    t = _task(db, p, tid)
+    _apply_task(t, body)
+    db.commit()
+    return tasks_svc.public(t, _lang(p))
+
+
+@router.post("/tasks/{tid}/run")
+def run_task_now(tid: uuid.UUID, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    t = _task(db, p, tid)
+    if t.last_status == "running":
+        raise HTTPException(409, detail={"code": "running", "message": "La tarea ya se está ejecutando"})
+    import threading
+
+    threading.Thread(target=tasks_svc.run_task, args=(t.id, True), daemon=True).start()
+    return {"ok": True, "conversation_id": str(t.conversation_id) if t.conversation_id else None}
+
+
+@router.delete("/tasks/{tid}")
+def delete_task(tid: uuid.UUID, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    db.delete(_task(db, p, tid))
+    db.commit()
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ knowledge connectors
+
+
+class ConnectorIn(BaseModel):
+    kind: str = Field(pattern="^(webdav|github|zotero|smb)$")
+    name: str = Field(min_length=1, max_length=120)
+    config: dict = {}
+    secret: str | None = Field(default=None, max_length=4000)  # None = keep the stored one, "" = remove
+    collection_id: uuid.UUID | None = None
+    schedule: str = Field(default="daily", pattern="^(manual|hourly|daily)$")
+    enabled: bool = True
+
+
+def _connector(db: Session, p: Principal, cid: uuid.UUID) -> KbConnector:
+    c = db.get(KbConnector, cid)
+    if not c or c.owner_id != p.id:
+        raise not_found("connector")
+    return c
+
+
+def _apply_connector(db: Session, p: Principal, c: KbConnector, body: ConnectorIn) -> None:
+    try:
+        c.config = conn_svc.validate(body.kind, body.config)
+    except conn_svc.ConnectorError as e:
+        raise HTTPException(422, detail={"code": "invalid", "message": e.message})
+    if body.collection_id:
+        try:
+            c.collection_id = kb.writable_collection(db, p.user, body.collection_id).id
+        except kb.KbError:
+            raise not_found("collection")
+    c.kind, c.name, c.schedule, c.enabled = body.kind, body.name, body.schedule, body.enabled
+    conn_svc.set_secret(c, body.secret)
+
+
+@router.get("/connectors")
+def list_connectors(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    rows = db.scalars(select(KbConnector).where(KbConnector.owner_id == p.id).order_by(KbConnector.created_at)).all()
+    return {"connectors": [conn_svc.public(c) for c in rows],
+            "private_hosts": get_setting(db, "connector_private_hosts") or []}
+
+
+@router.post("/connectors")
+def create_connector(body: ConnectorIn, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    if db.scalar(select(func.count()).select_from(KbConnector).where(KbConnector.owner_id == p.id)) >= 20:
+        raise HTTPException(409, detail={"code": "too_many", "message": "Máximo 20 conectores por usuario"})
+    c = KbConnector(owner_id=p.id)
+    _apply_connector(db, p, c, body)
+    if not c.collection_id:
+        c.collection_id = kb.default_collection(db, p.user).id
+    db.add(c)
+    db.commit()
+    return conn_svc.public(c)
+
+
+@router.put("/connectors/{cid}")
+def update_connector(cid: uuid.UUID, body: ConnectorIn, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    c = _connector(db, p, cid)
+    _apply_connector(db, p, c, body)
+    db.commit()
+    return conn_svc.public(c)
+
+
+@router.post("/connectors/{cid}/test")
+def test_connector(cid: uuid.UUID, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    c = _connector(db, p, cid)
+    try:
+        return {"ok": True, **conn_svc.test(db, c)}
+    except conn_svc.ConnectorError as e:
+        return {"ok": False, "message": e.message}
+
+
+@router.post("/connectors/{cid}/sync")
+def sync_connector(cid: uuid.UUID, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    from ..services.jobs import JobError, create_job
+
+    c = _connector(db, p, cid)
+    if c.status == "syncing":
+        raise HTTPException(409, detail={"code": "syncing", "message": "Ya se está sincronizando"})
+    try:
+        j = create_job(db, p.user, "connector_sync", {"connector_id": str(c.id)}, title=f"Sincronizar {c.name}",
+                       sched_class=SchedClass.interactive)
+    except JobError as e:
+        raise HTTPException(e.status, detail={"code": e.code, "message": e.message})
+    return {"ok": True, "job_id": str(j.id)}
+
+
+@router.delete("/connectors/{cid}")
+def delete_connector(cid: uuid.UUID, keep_files: bool = False, p: Principal = Depends(require_researcher),
+                     db: Session = Depends(get_db)):
+    c = _connector(db, p, cid)
+    if not keep_files:
+        for it in db.scalars(select(ConnectorItem).where(ConnectorItem.connector_id == c.id)):
+            conn_svc._drop_file(db, it.file_id)
+    db.delete(c)
+    db.commit()
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ usage panel
+
+
+@router.get("/usage")
+def usage(days: int = 30, scope: str = "me", user_id: uuid.UUID | None = None, p: Principal = Depends(current_principal),
+          db: Session = Depends(get_db)):
+    from ..services import usage as usage_svc
+
+    days = max(1, min(365, days))
+    if scope == "all" or user_id:
+        if not p.is_manager:
+            raise HTTPException(403, detail={"code": "forbidden", "message": "Only administrators/managers see everyone's usage"})
+        return usage_svc.report(db, [user_id] if user_id else None, days)
+    return usage_svc.report(db, [p.id], days)

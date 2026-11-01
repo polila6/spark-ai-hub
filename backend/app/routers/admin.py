@@ -125,7 +125,8 @@ def get_settings_api(_: Principal = Depends(require_admin), db: Session = Depend
 def public_settings(_: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     keys = ("default_language", "default_model", "scheduler_mode", "features", "model_idle_timeout_min",
             "chat_default_model", "harness_default_model", "harness_small_model", "embedding_model", "signup_mode",
-            "web_search_enabled", "skills_enabled", "skills_auto_install", "agents_enabled", "max_parallel_agents")
+            "web_search_enabled", "skills_enabled", "skills_auto_install", "agents_enabled", "max_parallel_agents",
+            "code_exec_enabled")
     out = {k: get_setting(db, k) for k in keys}
     out["public_base_url"] = get_settings().public_base_url
     out["mail_enabled"] = mailer.mail_enabled(db)
@@ -152,6 +153,14 @@ def put_settings(body: dict, request: Request, p: Principal = Depends(require_ad
             raise HTTPException(422, detail={"code": "invalid", "message": "smtp_security must be starttls|ssl|none"})
         if k == "terms_version":
             v = int(v)
+        if k == "connector_private_hosts":
+            if not (isinstance(v, list) and len(v) <= 50 and all(isinstance(x, str) and 0 < len(x) <= 255 for x in v)):
+                raise HTTPException(422, detail={"code": "invalid", "message": "connector_private_hosts: list of hosts/CIDRs"})
+            v = [x.strip() for x in v if x.strip()]
+        if k == "code_exec_timeout_s" and not (isinstance(v, int) and 5 <= v <= 900):
+            raise HTTPException(422, detail={"code": "invalid", "message": "code_exec_timeout_s must be 5–900"})
+        if k == "code_exec_memory_mb" and not (isinstance(v, int) and 256 <= v <= 16384):
+            raise HTTPException(422, detail={"code": "invalid", "message": "code_exec_memory_mb must be 256–16384"})
         if k == "max_parallel_agents":
             v = int(v)
             if not 1 <= v <= 6:

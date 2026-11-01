@@ -25,14 +25,18 @@ function ContextCard({ id, onChanged }: { id: string; onChanged: () => void }) {
   const L = useL();
   const { data: c, mutate } = useSWR(`/api/v1/models/${id}/context`, { refreshInterval: 15000 });
   const [pick, setPick] = useState<number | null>(null);
+  const [spec, setSpec] = useState<number | null>(null);
   const [ask, setAsk] = useState(false);
   if (!c?.supported) return null;
   const sel = pick ?? c.current;
+  const specSel = spec ?? c.speculative_tokens;
+  const change: any = { ...(sel !== c.current ? { max_model_len: sel } : {}), ...(specSel !== c.speculative_tokens ? { speculative_tokens: specSel } : {}) };
+  const dirty = Object.keys(change).length > 0;
   async function apply() {
     try {
-      const r = await api(`/api/v1/models/${id}/context`, { method: "POST", json: { max_model_len: sel } });
+      const r = await api(`/api/v1/models/${id}/context`, { method: "POST", json: change });
       push("ok", r.reloading ? L(`Ventana ${kTok(sel)}: recargando el modelo (unos minutos)`, `Window ${kTok(sel)}: reloading the model (a few minutes)`) : L(`Ventana ${kTok(sel)}: se aplica en la próxima carga`, `Window ${kTok(sel)}: applied on the next load`));
-      setPick(null); mutate(); onChanged();
+      setPick(null); setSpec(null); mutate(); onChanged();
     } catch (e: any) { push("error", e.message); } finally { setAsk(false); }
   }
   return (
@@ -54,14 +58,21 @@ function ContextCard({ id, onChanged }: { id: string; onChanged: () => void }) {
           {c.kv_cache_tokens ? <> · {L("memoria reservada para contexto", "memory reserved for context")}: <b className="text-fg">{kTok(c.kv_cache_tokens)}</b> {L("tokens repartidos entre todas las conversaciones. «N a la vez» = cuántas conversaciones de ese tamaño completo caben juntas; las cortas ocupan solo lo que usan.", "tokens shared by all conversations. “N at once” = how many full-size conversations fit together; short ones only take what they use.")}</> : null}
         </p>
         {c.kv_cache_tokens && sel > c.kv_cache_tokens && <Notice tone="warn">{L("No cabe ni una conversación de ese tamaño con la memoria reservada: sube «gpu_memory_utilization» en los parámetros avanzados.", "Not even one conversation of that size fits in the reserved memory: raise gpu_memory_utilization in the advanced parameters.")}</Notice>}
-        {c.can_manage && sel !== c.current && (
+        {c.mtp_available && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-3">
+            <div><p className="font-medium">{L("Respuestas más rápidas (MTP)", "Faster answers (MTP)")}</p>
+              <p className="text-xs text-muted">{L("El modelo trae capas que predicen varios tokens a la vez; vLLM las comprueba y acepta las correctas. Mismo resultado, ~25–30 % más tokens por segundo y casi sin memoria extra.", "The model ships layers that predict several tokens at once; vLLM verifies them. Same output, ~25–30% more tokens per second, almost no extra memory.")}</p></div>
+            <Switch checked={specSel > 0} onChange={(v) => c.can_manage && setSpec(v ? 2 : 0)} label={specSel > 0 ? L("Activado", "On") : L("Desactivado", "Off")} />
+          </div>
+        )}
+        {c.can_manage && dirty && (
           <div className="flex flex-wrap items-center justify-end gap-2">
             <span className="text-xs text-muted">{c.loaded ? L("El modelo se recargará (unos 4–5 min sin responder).", "The model will reload (about 4–5 min without answering).") : L("Se aplicará en la próxima carga.", "Applied on the next load.")} {L("Después vuelve a copiar la configuración de tu herramienta en «Conectar».", "Then copy your tool configuration again from “Connect”.")}</span>
-            <Button variant="primary" onClick={() => (c.loaded ? setAsk(true) : apply())}>{L("Aplicar", "Apply")} {kTok(sel)}</Button>
+            <Button variant="primary" onClick={() => (c.loaded ? setAsk(true) : apply())}>{L("Aplicar", "Apply")}{change.max_model_len ? ` ${kTok(sel)}` : ""}</Button>
           </div>
         )}
       </CardBody>
-      <Confirm open={ask} onOpenChange={setAsk} title={L(`Cambiar la ventana a ${kTok(sel)}`, `Change the window to ${kTok(sel)}`)} text={L("El modelo se descarga y se vuelve a cargar con la nueva ventana. Durante unos minutos los chats y las herramientas que lo usan esperarán. ¿Continuar?", "The model is unloaded and loaded again with the new window. For a few minutes chats and tools using it will wait. Continue?")} onConfirm={apply} />
+      <Confirm open={ask} onOpenChange={setAsk} title={L("Aplicar cambios y recargar el modelo", "Apply changes and reload the model")} text={L("El modelo se descarga y se vuelve a cargar con la nueva ventana. Durante unos minutos los chats y las herramientas que lo usan esperarán. ¿Continuar?", "The model is unloaded and loaded again with the new window. For a few minutes chats and tools using it will wait. Continue?")} onConfirm={apply} />
     </Card>
   );
 }

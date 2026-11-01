@@ -76,6 +76,21 @@ Cada investigador crea su clave en **Centro API** y usa `https://your-spark.your
 scripts/sah.sh backup && git pull --ff-only && scripts/sah.sh build && scripts/sah.sh up
 ```
 
-## 10. Si algo falla
+## 10. Funciones del chat (0.5)
+
+* **Ejecución de código**: Ajustes → Sistema → «Chat: internet, skills, agentes y código». Cada ejecución es un
+  contenedor nuevo sin red ni privilegios (imagen `spark-ai-hub/sandbox`, se construye con `scripts/sah.sh build`).
+  Ajusta el tiempo (5–900 s) y la memoria por ejecución; hay como máximo 4 a la vez.
+* **Voz**: usa los modelos de audio instalados (Whisper para dictar, MMS-TTS para leer). Para inglés instala
+  `facebook/mms-tts-eng` en Descubrir modelos. Se activa/desactiva en «Voz y conectores».
+* **Conectores**: solo llegan a direcciones públicas salvo las redes o servidores que añadas en «Redes privadas para
+  conectores» (p. ej. `192.168.1.0/24` o `nas.laboratorio.local`). El propio Spark y sus contenedores nunca se permiten.
+* **Entrar con Google o Microsoft**: Ajustes → Acceso y correo → «Entrar con Google o Microsoft». Cada tarjeta trae los
+  pasos y la dirección de redirección que hay que copiar en la consola del proveedor. Las cuentas nuevas siguen el modo
+  de registro (con aprobación, abierto o cerrado).
+* **Respuestas más rápidas (MTP)** y **ventana de contexto**: Biblioteca → (modelo) → «Ventana de contexto».
+* **Uso**: página Uso → «Todo el equipo» (solo cifras, nunca contenido).
+
+## 11. Si algo falla
 
 docs/TROUBLESHOOTING.md · `scripts/sah.sh logs <servicio>` · Monitorización → Contenedores → logs.

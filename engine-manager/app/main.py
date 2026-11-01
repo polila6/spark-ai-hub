@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Literal
@@ -47,6 +48,7 @@ IMAGES = {
     "vllm": os.environ.get("SAH_VLLM_IMAGE", "nvcr.io/nvidia/vllm:26.09-py3"),
     "comfyui": os.environ.get("SAH_COMFYUI_IMAGE", "spark-ai-hub/comfyui:0.42.5"),
     "mlworker": os.environ.get("SAH_MLWORKER_IMAGE", "spark-ai-hub/mlworker:0.1.0"),
+    "sandbox": os.environ.get("SAH_SANDBOX_IMAGE", "spark-ai-hub/sandbox:0.1.0"),
 }
 CONTAINER_NAMES = {"vllm": "sah-vllm", "comfyui": "sah-comfyui", "mlworker": "sah-mlworker"}
 VLLM_PREFIX = "sah-vllm-"  # one container per served model: sah-vllm-<slug(alias)>, reachable by name on the engines network
@@ -92,6 +94,7 @@ class VllmStart(BaseModel):
     tool_call_parser: Literal["hermes", "llama3_json", "mistral", "openai", "qwen3_coder", "pythonic"] | None = None
     reasoning_parser: Literal["qwen3", "deepseek_r1", "openai_gptoss"] | None = None
     enforce_eager: bool = False
+    speculative_tokens: int = Field(default=0, ge=0, le=4)  # MTP speculative decoding (models with MTP heads)
     task: Literal["generate", "embed"] = "generate"
 
     @field_validator("model_path")
@@ -146,6 +149,8 @@ def vllm_spec(p: VllmStart) -> dict:
         cmd += ["--reasoning-parser", p.reasoning_parser]
     if p.enforce_eager:
         cmd += ["--enforce-eager"]
+    if p.speculative_tokens and p.task == "generate":
+        cmd += ["--speculative-config", json.dumps({"method": "mtp", "num_speculative_tokens": p.speculative_tokens})]
     if p.task == "embed":
         cmd += ["--runner", "pooling"]
     spec = _common("vllm", vllm_container_name(p.served_model_name))
@@ -262,6 +267,82 @@ def _start(engine: str, spec: dict) -> dict:
         raise HTTPException(500, f"docker error: {e.explanation}")
     jlog(event="engine.start", engine=engine, image=image, cmd=spec.get("command"))
     return _describe(c)
+
+
+# ------------------------------------------------------------------ code sandbox
+
+RUN_ID = re.compile(r"^[0-9a-f]{32}$")
+SANDBOX_SLOTS = threading.BoundedSemaphore(int(os.environ.get("SAH_SANDBOX_CONCURRENCY", "4")))
+
+
+class SandboxRun(BaseModel):
+    run_id: str
+    language: Literal["python", "bash", "node"] = "python"
+    timeout_s: int = Field(default=120, ge=5, le=900)
+    memory_mb: int = Field(default=2048, ge=256, le=16384)
+    cpus: float = Field(default=4, ge=0.5, le=16)
+
+    @field_validator("run_id")
+    @classmethod
+    def _rid(cls, v: str) -> str:
+        if not RUN_ID.match(v):
+            raise ValueError("run_id must be 32 hex characters")
+        return v
+
+
+ENTRY = {"python": ["python", "/work/.main.py"], "bash": ["bash", "/work/.main.sh"], "node": ["node", "/work/.main.js"]}
+
+
+def sandbox_spec(p: SandboxRun) -> dict:
+    """No network, read-only root, non-root, no capabilities, CPU/memory/pids limits; only /work is writable."""
+    return dict(
+        image=IMAGES["sandbox"], command=ENTRY[p.language], name=f"sah-sandbox-{p.run_id[:12]}", detach=True,
+        network_mode="none", user="1000:1000", working_dir="/work", read_only=True,
+        tmpfs={"/tmp": "size=512m,mode=1777"},
+        volumes={f"{HOST_DATA}/sandbox/{p.run_id}": {"bind": "/work", "mode": "rw"}},
+        environment={"HOME": "/tmp", "MPLBACKEND": "Agg", "PYTHONUNBUFFERED": "1", "OPENBLAS_NUM_THREADS": "4"},
+        mem_limit=f"{p.memory_mb}m", memswap_limit=f"{p.memory_mb}m", pids_limit=512,
+        nano_cpus=int(p.cpus * 1e9), cap_drop=["ALL"], security_opt=["no-new-privileges:true"],
+        labels={"sah.managed": "true", "sah.engine": "sandbox", "com.docker.compose.project": PROJECT},
+        log_config={"type": "json-file", "config": {"max-size": "5m", "max-file": "1"}},
+    )
+
+
+@app.post("/sandbox/run", dependencies=[Depends(auth)])
+def sandbox_run(p: SandboxRun):
+    """Run one program to completion (or until the time limit) and return its exit code and output."""
+    if not SANDBOX_SLOTS.acquire(timeout=60):
+        raise HTTPException(429, "all sandbox slots are busy")
+    t0 = time.time()
+    c = None
+    try:
+        try:
+            client.images.get(IMAGES["sandbox"])
+        except NotFound:
+            raise HTTPException(424, f"image {IMAGES['sandbox']} not present; build it first")
+        c = client.containers.run(**sandbox_spec(p))
+        timed_out = False
+        try:
+            res = c.wait(timeout=p.timeout_s)
+            code = res.get("StatusCode", -1)
+        except Exception:  # requests ReadTimeout: time limit reached
+            timed_out, code = True, -1
+            c.kill()
+        c.reload()
+        oom = bool(c.attrs.get("State", {}).get("OOMKilled"))
+        out = c.logs(stdout=True, stderr=False).decode(errors="replace")
+        err = c.logs(stdout=False, stderr=True).decode(errors="replace")
+        jlog(event="sandbox.run", run=p.run_id, language=p.language, code=code, seconds=round(time.time() - t0, 2),
+             timed_out=timed_out, oom=oom)
+        return {"exit_code": code, "timed_out": timed_out, "oom_killed": oom, "seconds": round(time.time() - t0, 2),
+                "stdout": out[-20000:], "stderr": err[-20000:]}
+    finally:
+        if c is not None:
+            try:
+                c.remove(force=True)
+            except APIError:
+                pass
+        SANDBOX_SLOTS.release()
 
 
 # ------------------------------------------------------------------ routes

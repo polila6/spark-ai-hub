@@ -103,6 +103,7 @@ SAH_DATA_ROOT="$DATA_ROOT" bash scripts/init-secrets.sh | grep -v "initial passw
 say "5/6 Pulling and building images (first time: 20–40 min, ~40 GB download)"
 docker pull "${SAH_VLLM_IMAGE:-nvcr.io/nvidia/vllm:26.09-py3}"
 docker compose build
+docker compose -f compose.yaml -f compose.optional.yaml --profile sandbox build sandbox   # code execution for the chat
 if [[ $STUDIOS == 1 ]]; then
   docker compose -f compose.yaml -f compose.optional.yaml --profile engines build comfyui mlworker
 else

@@ -87,6 +87,7 @@ class VllmAdapter(EngineAdapter):
             "tool_call_parser": params.get("tool_call_parser"),
             "reasoning_parser": params.get("reasoning_parser"),
             "enforce_eager": bool(params.get("enforce_eager")),
+            "speculative_tokens": int(params.get("speculative_tokens") or 0),
             "task": "embed" if model.modality == "embedding" else "generate",
         }
         if params.get("quantization"):

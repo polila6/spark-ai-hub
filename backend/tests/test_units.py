@@ -344,3 +344,83 @@ def test_parser_defaults_for_known_families():
     assert parser_defaults("openai/gpt-oss-20b", {"model_type": "gpt_oss"})["reasoning_parser"] == "openai_gptoss"
     assert parser_defaults("meta-llama/Llama-3.1-8B-Instruct", {"architectures": ["LlamaForCausalLM"]})["tool_call_parser"] == "llama3_json"
     assert parser_defaults("google/gemma-3-4b-it", {"model_type": "gemma3"}) == {}
+
+
+def test_scheduled_task_next_run_and_description():
+    from datetime import datetime, timezone
+
+    from app.services import tasks
+
+    s = tasks.validate({"freq": "daily", "time": "08:30", "weekdays": [0, 1, 2, 3, 4]}, "Europe/Madrid")
+    friday_evening = datetime(2026, 11, 6, 20, 0, tzinfo=timezone.utc)  # Fri 21:00 in Madrid
+    nxt = tasks.next_run(s, "Europe/Madrid", friday_evening)
+    assert nxt == datetime(2026, 11, 9, 7, 30, tzinfo=timezone.utc)  # Monday 08:30 CET
+    w = tasks.validate({"freq": "weekly", "weekday": 4, "time": "18:00"}, "Europe/Madrid")
+    assert tasks.next_run(w, "Europe/Madrid", datetime(2026, 11, 1, 12, tzinfo=timezone.utc)).isoformat().startswith("2026-11-06T17:00")
+    summer = tasks.next_run(tasks.validate({"freq": "monthly", "day": 15, "time": "09:00"}, "Europe/Madrid"),
+                            "Europe/Madrid", datetime(2026, 6, 1, tzinfo=timezone.utc))
+    assert summer == datetime(2026, 6, 15, 7, 0, tzinfo=timezone.utc)  # CEST keeps the wall-clock time
+    h = tasks.validate({"freq": "hourly", "minute": 5, "every": 6}, "UTC")
+    assert tasks.next_run(h, "UTC", datetime(2026, 11, 1, 7, 10, tzinfo=timezone.utc)).hour == 12
+    assert tasks.describe(s) == "de lunes a viernes a las 08:30"
+    import pytest
+    with pytest.raises(tasks.TaskError):
+        tasks.validate({"freq": "daily", "time": "25:00"}, "UTC")
+
+
+def test_canvas_edits_are_exact():
+    import pytest
+
+    from app.models import CanvasDoc
+    from app.services import canvas
+
+    d = CanvasDoc(content="Hola Ana.\nUn saludo.\nUn saludo.", title="t")
+    assert canvas.apply_edits(d, [{"find": "Hola Ana.", "replace": "Estimada Ana:"}]).startswith("Estimada Ana:")
+    with pytest.raises(canvas.CanvasError):
+        canvas.apply_edits(d, [{"find": "Un saludo.", "replace": "x"}])  # ambiguous
+    assert canvas.apply_edits(d, [{"find": "Un saludo.", "replace": "x", "all": True}]).count("x") == 2
+    with pytest.raises(canvas.CanvasError):
+        canvas.apply_edits(d, [{"find": "no está", "replace": "x"}])
+
+
+def test_voice_reads_prose_only():
+    from app.services.voice import speakable
+
+    t = speakable("## Título\n- uno con **negrita** y [enlace](https://x.org)\n```py\nprint(1)\n```\nFin $x^2$ https://a.b")
+    assert "Título" in t and "negrita" in t and "enlace" in t and "https" not in t and "print" not in t and "**" not in t
+
+
+def test_connector_validation_and_private_addresses(monkeypatch):
+    import pytest
+
+    from app.services import connectors
+
+    assert connectors.validate("github", {"repo": "anthropics/skills", "path": "skills", "extra": 1}) == {"repo": "anthropics/skills", "path": "skills"}
+    for kind, cfg in [("github", {"repo": "nope"}), ("zotero", {"library_id": "abc"}), ("webdav", {"url": "ftp://x"}), ("smb", {"host": "h"})]:
+        with pytest.raises(connectors.ConnectorError):
+            connectors.validate(kind, cfg)
+    monkeypatch.setattr(connectors, "get_setting", lambda db, k: ["192.168.1.0/24", "nas.lab"])
+    fake = lambda ip: (lambda *a, **k: [(2, 1, 6, "", (ip, 0))])  # noqa: E731
+    monkeypatch.setattr(connectors.socket, "getaddrinfo", fake("192.168.1.20"))
+    assert connectors.resolve(None, "files.local", 445) == "192.168.1.20"
+    monkeypatch.setattr(connectors.socket, "getaddrinfo", fake("10.0.0.5"))
+    with pytest.raises(connectors.ConnectorError):
+        connectors.resolve(None, "other.local", 445)
+    assert connectors.resolve(None, "nas.lab", 445) == "10.0.0.5"  # allowed by host name
+    for bad in ("127.0.0.1", "169.254.169.254", "0.0.0.0"):
+        monkeypatch.setattr(connectors.socket, "getaddrinfo", fake(bad))
+        with pytest.raises(connectors.ConnectorError):
+            connectors.resolve(None, "nas.lab", 445)  # never, even when listed
+
+
+def test_oidc_id_token_claims_and_parsers():
+    import base64
+    import json
+
+    from app.routers.oidc import _claims
+    from app.services.compat import parser_defaults
+
+    payload = base64.urlsafe_b64encode(json.dumps({"sub": "1", "email": "a@b.org"}).encode()).rstrip(b"=").decode()
+    assert _claims(f"x.{payload}.sig")["email"] == "a@b.org"
+    q = parser_defaults("Qwen/Qwen3.5-35B-A3B-FP8", {"text_config": {"model_type": "qwen3_5_moe", "mtp_num_hidden_layers": 1}})
+    assert q["speculative_tokens"] == 2

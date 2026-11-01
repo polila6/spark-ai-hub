@@ -113,7 +113,12 @@ Note: unsafe methods with a session cookie need CSRF; with a Bearer key no CSRF 
 `/models` (list, detail, patch, load, unload, check, smoke-test, shares, delete, import) · `/huggingface` (search, models,
 card, refs, plan, install) · `/downloads` (list, approve, pause, resume, cancel) · `/recommendations` · `/jobs` (list,
 detail, events, cancel, retry, test, stream/updates SSE) · `/benchmarks` (suites, run, list, detail, export) ·
-`/comparisons` · `/playground` (conversations, messages SSE — body fields `context_limit`, `auto_compact`, `web`; `conversations/{id}/context`, `/compact`, `DELETE /summary`; prompts, export) · `/skills` (list, catalog, install from GitHub/URL, create, patch, update, delete) · `/agents` (built-in + custom sub-agents CRUD) · `/media` (workflows, install, uploads,
+`/comparisons` · `/playground` (conversations, messages SSE — body fields `context_limit`, `auto_compact`, `web`, `research`; `conversations/{id}/context`, `/compact`, `DELETE /summary`; prompts, export) · `/skills` (list, catalog, install from GitHub/URL, create, patch, update, delete) · `/agents` (built-in + custom sub-agents CRUD) · `/canvas` (list by conversation, get, create, PUT with
+`base_version`, `restore/{version}`, `export` md/docx/pdf/html/odt/code, delete) · `/tasks` (scheduled tasks CRUD,
+`run`) · `/connectors` (WebDAV/GitHub/Zotero/SMB CRUD, `test`, `sync`) · `/voice` (status, `transcribe` multipart,
+`speak` → audio/wav) · `/usage` (`days`, `scope=me|all`) · `/auth/oidc` (`providers`, `{provider}/start`,
+`{provider}/callback`) · `/models/{id}/context` (GET window info and KV capacity; POST `max_model_len`,
+`speculative_tokens`, reloads in the background) · `/media` (workflows, install, uploads,
 generate, artifacts, audio/transcribe, audio/tts) · `/datasets` · `/science` (adapters, models, models/from-hf) ·
 `/experiments` (CRUD, run) · `/api-keys` (CRUD, usage) · `/storage` (overview, hf-cache, gc) · `/admin` (settings,
 hf-token status, audit, backups, restore-test, diagnostics, bundle).

@@ -14,7 +14,7 @@ import re
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
@@ -24,10 +24,11 @@ from sqlalchemy import select
 from ..config import get_settings
 from ..db import SessionLocal
 from ..engines import EngineError
-from ..models import (AgentProfile, Artifact, Conversation, Job, JobStatus, Memory, Message, Project, RegisteredModel,
+from ..models import (AgentProfile, Artifact, CanvasDoc, Conversation, Job, JobStatus, Memory, Message, Project, RegisteredModel,
                       SchedClass, User, UserFile, Visibility)
 from ..settings_store import get_setting
-from . import dataq, kb, llm, scheduler, web, workflows
+from . import canvas as canvas_svc
+from . import dataq, kb, llm, sandbox, scheduler, web, workflows
 from . import skills as skills_svc
 from . import files as files_svc
 from .jobs import JobError, create_job, request_cancel
@@ -62,6 +63,7 @@ class Turn:
     context_limit: int | None = None  # tokens; None = the model's full window
     auto_compact: bool = True
     web: bool = True
+    research: bool = False  # "Deep research" switch: the assistant calls deep_research
 
 
 # ------------------------------------------------------------------ helpers
@@ -378,6 +380,95 @@ SKILL_TOOLS = [
         "parameters": {"type": "object", "properties": {"source": {"type": "string"}}, "required": ["source"]}}},
 ]
 
+CODE_TOOLS = [
+    {"type": "function", "function": {
+        "name": "run_code",
+        "description": "Run a program in an isolated sandbox (no internet, ~2 min, Python 3.12 with numpy, pandas, "
+                       "scipy, scikit-learn, sympy, matplotlib/seaborn, openpyxl, python-docx, python-pptx, reportlab, "
+                       "pypdf; Node with docx and pptxgenjs; pandoc and LibreOffice headless). Use it for calculations, "
+                       "data analysis, charts, and to create or convert files (Word, Excel, PowerPoint, PDF, CSV, PNG). "
+                       "The working folder is /work: input files are in /work/in/, skill files in /work/skills/<name>/. "
+                       "Save every result file in /work (e.g. /work/grafico.png): new files are given to the user "
+                       "automatically. Print the key results to stdout.",
+        "parameters": {"type": "object", "properties": {
+            "language": {"type": "string", "enum": ["python", "bash", "node"]},
+            "code": {"type": "string", "description": "Complete program"},
+            "files": {"type": "array", "items": {"type": "string"},
+                      "description": "Attached or drive files to copy into /work/in/ (file id or file name)"},
+            "skills": {"type": "array", "items": {"type": "string"},
+                       "description": "Installed skills whose scripts you need, copied to /work/skills/<name>/"}},
+            "required": ["code"]}}},
+]
+
+CANVAS_TOOLS = [
+    {"type": "function", "function": {
+        "name": "canvas_write",
+        "description": "Open a canvas next to the chat with a document (Markdown) or a code file the user will read, edit "
+                       "and export (Word, PDF, Markdown). Use it for reports, articles, letters, plans, long answers the "
+                       "user wants to iterate on, and complete programs. Writes a NEW canvas; to change the current one "
+                       "use canvas_edit.",
+        "parameters": {"type": "object", "properties": {
+            "title": {"type": "string"},
+            "content": {"type": "string", "description": "Full content (Markdown for documents)"},
+            "kind": {"type": "string", "enum": ["document", "code"]},
+            "language": {"type": "string", "description": "For code: python, javascript, sql, latex..."}},
+            "required": ["title", "content"]}}},
+    {"type": "function", "function": {
+        "name": "canvas_edit",
+        "description": "Change the current canvas with exact find/replace edits (copy `find` literally from the canvas). "
+                       "To rewrite everything pass `content` instead of edits.",
+        "parameters": {"type": "object", "properties": {
+            "edits": {"type": "array", "items": {"type": "object", "properties": {
+                "find": {"type": "string"}, "replace": {"type": "string"}, "all": {"type": "boolean"}},
+                "required": ["find", "replace"]}},
+            "content": {"type": "string", "description": "New full content (replaces everything)"},
+            "title": {"type": "string"}}}}},
+]
+
+RESEARCH_TOOLS = [
+    {"type": "function", "function": {
+        "name": "deep_research",
+        "description": "In-depth research on a question: plans sub-questions, runs several researcher agents in "
+                       "parallel on the web (and the user's documents), and writes a long cited report into a canvas "
+                       "the user can export to Word/PDF. Takes a few minutes. Use it when the user asks for a thorough "
+                       "investigation, state of the art, market/literature review or a report with many sources.",
+        "parameters": {"type": "object", "properties": {
+            "question": {"type": "string", "description": "The research question with all relevant context"},
+            "depth": {"type": "string", "enum": ["quick", "standard", "deep"],
+                      "description": "quick = 3 sub-questions, standard = 5, deep = 7"},
+            "use_documents": {"type": "boolean", "description": "Also search the user's documents"}},
+            "required": ["question"]}}},
+]
+
+TASK_TOOLS = [
+    {"type": "function", "function": {
+        "name": "schedule_task",
+        "description": "ALWAYS call this when the user asks for something recurring or at a later time (\"cada lunes…\", \"todos los días a las…\", \"recuérdame…\"). Creates a scheduled task: the assistant will run `prompt` automatically on a schedule (e.g. "
+                       "'every Monday at 9 summarise new arXiv papers on X') in its own chat, notify the user and "
+                       "optionally e-mail the answer. Confirm the details with the user in your reply.",
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string"},
+            "prompt": {"type": "string", "description": "Self-contained instruction to run each time"},
+            "freq": {"type": "string", "enum": ["hourly", "daily", "weekly", "monthly"]},
+            "time": {"type": "string", "description": "HH:MM (24 h, user's local time)"},
+            "weekdays": {"type": "array", "items": {"type": "integer"}, "description": "daily: 0=Monday … 6=Sunday"},
+            "weekday": {"type": "integer", "description": "weekly: 0=Monday … 6=Sunday"},
+            "day": {"type": "integer", "description": "monthly: day 1–28"},
+            "email": {"type": "boolean", "description": "Also send the answer by e-mail"}},
+            "required": ["name", "prompt", "freq"]}}},
+]
+
+RESEARCH_PLAN_PROMPT = (
+    "Plan an in-depth research. Split the question into {n} complementary sub-questions that together cover it "
+    "(background, current state, data/figures, comparisons, risks or open problems, as relevant). Answer ONLY with "
+    'JSON: {{"title": "report title", "subquestions": [{{"q": "...", "why": "..."}}]}}. Language of the question.')
+RESEARCH_REPORT_PROMPT = (
+    "Write a rigorous research report in Markdown, in the language of the question, from the researchers' findings "
+    "below. Structure: # Title, a short executive summary, sections with ## headings (use tables where useful), "
+    "conclusions and open questions, and a final '## Fuentes' / '## Sources' list. Cite every fact with the number "
+    "of its source like [3]; use ONLY the numbered sources given; never invent facts, figures or URLs; say what "
+    "could not be verified. Length: {words} words approximately.")
+
 BUILTIN_AGENTS = {
     "investigador": {"description": "Investiga en internet: busca en varias fuentes, lee las páginas clave y devuelve "
                                     "un informe con hechos verificados y URLs.",
@@ -395,7 +486,7 @@ BUILTIN_AGENTS = {
     "analista": {"description": "Analiza archivos de datos (CSV, Excel, Parquet, SQLite) con consultas SQL.",
                  "instructions": "Eres un analista de datos. Usa describe_data y query_data para responder con cifras "
                                  "exactas; muestra tablas en Markdown y explica el método. No inventes datos.",
-                 "tools": ["describe_data", "query_data", "read_document"]},
+                 "tools": ["describe_data", "query_data", "read_document", "run_code"]},
     "revisor": {"description": "Revisa críticamente un texto, plan, código o respuesta: errores, huecos y mejoras.",
                 "instructions": "Eres un revisor exigente. Analiza lo que te pasan, señala errores, supuestos dudosos, "
                                 "riesgos y omisiones, y propone mejoras concretas priorizadas.",
@@ -407,13 +498,16 @@ BUILTIN_AGENTS = {
                           "use_skill", "read_skill_file"]},
 }
 SUB_AGENT_TOOLS = {"web_search", "fetch_url", "search_knowledge", "read_document", "describe_data", "query_data",
-                   "use_skill", "read_skill_file"}
+                   "use_skill", "read_skill_file", "run_code"}
 
 TOOL_LABELS = {"generate_image": "Generando imagen", "edit_image": "Editando imagen", "search_knowledge": "Buscando en tus documentos",
                "read_document": "Leyendo documento", "describe_data": "Analizando datos", "query_data": "Consultando datos",
                "save_memory": "Guardando en memoria", "web_search": "Buscando en internet", "fetch_url": "Leyendo página web",
                "use_skill": "Cargando skill", "read_skill_file": "Leyendo archivo de skill", "find_skills": "Buscando skills",
-               "install_skill": "Instalando skill", "delegate_task": "Agente trabajando", "compact_context": "Contexto compactado"}
+               "install_skill": "Instalando skill", "delegate_task": "Agente trabajando", "compact_context": "Contexto compactado",
+               "run_code": "Ejecutando código", "canvas_write": "Escribiendo en el lienzo",
+               "canvas_edit": "Editando el lienzo", "deep_research": "Investigación a fondo",
+               "schedule_task": "Programando tarea"}
 
 
 def agent_profiles(db, user: User) -> dict[str, dict]:
@@ -457,7 +551,9 @@ class Runner:
         self.ratio = CHARS_PER_TOKEN
         self.agents: dict[str, dict] = {}
         self.skill_names: list[str] = []
-        self.flags = {"web": False, "skills": False, "agents": False, "auto_install": False}
+        self.flags = {"web": False, "skills": False, "agents": False, "auto_install": False, "code": False}
+        self.project_id: uuid.UUID | None = None
+        self.canvas_id: uuid.UUID | None = None
         self.lock = threading.Lock()
         self.summary: str | None = None
         self.ctx = 8192
@@ -507,9 +603,40 @@ class Runner:
             extra = (" Si una tarea especializada lo merece y no hay skill adecuada, busca con find_skills e instálala con "
                      "install_skill." if self.flags["auto_install"] else
                      " Puedes buscar skills con find_skills; para instalarlas, el usuario debe hacerlo en la página Skills.")
-            lines.append(("Las skills son solo instrucciones: no puedes ejecutar sus scripts; aplica sus pautas con tus "
-                          "herramientas o muestra el código al usuario." if es else
-                          "Skills are instructions only: you cannot run their scripts.") + extra)
+            lines.append((("Si una skill trae scripts, ejecútalos con run_code(skills=[nombre]); estarán en "
+                           "/work/skills/<nombre>/." if es else "Run a skill's scripts with run_code(skills=[name]); "
+                           "they are in /work/skills/<name>/.") if self.flags["code"] else
+                          ("Las skills son solo instrucciones: no puedes ejecutar sus scripts; aplica sus pautas con tus "
+                           "herramientas o muestra el código al usuario." if es else
+                           "Skills are instructions only: you cannot run their scripts.")) + extra)
+        if tools_on and self.flags["code"]:
+            lines.append("Código: run_code ejecuta Python, bash o Node en un entorno aislado sin internet. Úsalo para "
+                         "cálculos exactos, análisis y gráficos de datos, y para crear o convertir archivos (Word, Excel, "
+                         "PowerPoint, PDF, imágenes). Guarda los resultados en /work: el usuario los recibe como archivos "
+                         "descargables (no escribas enlaces). Si falla, lee el error, corrige y vuelve a intentarlo." if es else
+                         "Code: run_code runs Python, bash or Node in an isolated sandbox without internet, for exact "
+                         "calculations, data analysis, charts and creating/converting files. Save results in /work: the "
+                         "user receives them as downloads (do not write links). If it fails, fix it and retry.")
+        if tools_on:
+            docs = canvas_svc.for_conversation(db, user.id, conv.id)
+            self.canvas_id = docs[0].id if docs else None
+            lines.append("Lienzo: con canvas_write abres junto al chat un documento o un programa que el usuario puede "
+                         "editar y exportar a Word/PDF; úsalo para informes, artículos, cartas, planes o código largo, y "
+                         "en el chat da solo un resumen breve. Para cambiarlo usa canvas_edit." if es else
+                         "Canvas: canvas_write opens a document or program next to the chat that the user can edit and "
+                         "export; use it for reports, articles, letters, plans or long code, and keep the chat answer "
+                         "short. Change it with canvas_edit.")
+            if docs:
+                d = docs[0]
+                lines.append((f"Lienzo actual «{d.title}» (versión {d.version}, puede tener cambios del usuario):\n"
+                              if es else f"Current canvas «{d.title}» (version {d.version}, may contain user edits):\n")
+                             + d.content[:30000] + ("\n[…recortado…]" if len(d.content) > 30000 else ""))
+        if tools_on and self.flags["web"] and self.t.research:
+            lines.append("El usuario ha activado «Investigación a fondo»: llama a deep_research con su pregunta completa "
+                         "(añade el contexto de la conversación) y después resume en pocas líneas los hallazgos clave; "
+                         "el informe completo queda en el lienzo." if es else
+                         "The user enabled deep research: call deep_research with the full question, then summarise the "
+                         "key findings briefly; the full report is in the canvas.")
         if tools_on and self.flags["agents"]:
             lines.append(("Subagentes (delegate_task): trabajan en paralelo con su propio contexto y te devuelven un "
                           "informe. Úsalos para tareas largas o separables (p. ej. investigar varios temas a la vez); "
@@ -891,9 +1018,11 @@ class Runner:
             content = sk.content[:24000]
             name, src = sk.name, sk.source_url
         note = ("\n\nBundled files (read with read_skill_file): " + ", ".join(files)) if files else ""
+        tail = (f"(To run its scripts use run_code with skills=[\"{name}\"]; they are in /work/skills/{name}/.)"
+                if self.flags["code"] else "(Scripts cannot be executed here: apply the guidance with your tools or give "
+                                           "the code to the user.)")
         return {"ok": True, "summary": f"Skill «{name}» cargada", "skill": {"name": name, "source_url": src},
-                "content": f"# Skill: {name}\n{content}{note}\n\n(Scripts cannot be executed here: apply the guidance "
-                           "with your tools or give the code to the user.)"}
+                "content": f"# Skill: {name}\n{content}{note}\n\n{tail}"}
 
     def tool_read_skill_file(self, call_id: str, args: dict) -> dict:
         with SessionLocal() as db:
@@ -1012,6 +1141,12 @@ class Runner:
                 last = step == SUB_MAX_STEPS - 1
                 text, calls, _ = self._llm_step(messages, specs if specs and not last else None, 2048,
                                                 thinking=False)
+                if not calls and step == 0 and "web_search" in tools and (name == "investigador" or args.get("_must_search")):
+                    # a researcher must look things up instead of answering from memory
+                    messages += [{"role": "assistant", "content": text or ""},
+                                 {"role": "user", "content": "Antes de responder busca con web_search y lee las mejores "
+                                                             "fuentes con fetch_url; cita cada dato con su URL."}]
+                    continue
                 if not calls:
                     break
                 assistant_msg, results = self._calls_to_msg(text, calls)
@@ -1041,6 +1176,193 @@ class Runner:
                 "agent": {"name": name, "task": task[:500], "steps": steps, "report": text[:20000]},
                 "sources": uniq[:15], "content": f"Report from agent '{name}':\n{text[:16000]}"}
 
+    def tool_run_code(self, call_id: str, args: dict) -> dict:
+        code = str(args.get("code") or "")
+        if not code.strip():
+            raise AgentError("Falta el código")
+        lang = str(args.get("language") or "python")
+        inputs: list[UserFile] = []
+        for ref in (args.get("files") or [])[:20]:
+            ref = str(ref).strip()
+            f = next((x for x in self.files.values() if x.filename == ref or str(x.id) == ref), None)
+            if f is None:
+                try:
+                    f = self._file(ref)
+                except AgentError:
+                    raise AgentError(f"No encuentro el archivo «{ref}». Adjuntos: "
+                                     + (", ".join(x.filename for x in self.files.values()) or "ninguno"))
+            inputs.append(f)
+        with SessionLocal() as db:
+            user = db.get(User, self.t.user_id)
+            skills = []
+            for n in (args.get("skills") or [])[:5]:
+                sk = skills_svc.find(db, user, str(n))
+                if not sk:
+                    raise AgentError(f"No hay ninguna skill «{n}» instalada")
+                skills.append(sk)
+            self.emit({"type": "tool_progress", "id": call_id, "message": "Ejecutando en el entorno aislado…"})
+            try:
+                res = sandbox.run(db, user, code=code[:200_000], language=lang, inputs=inputs, skills=skills,
+                                  project_id=self.project_id)
+            except sandbox.SandboxError as e:
+                raise AgentError(e.message, e.remediation)
+        ok = res["exit_code"] == 0 and not res["timed_out"]
+        state = ("se pasó del tiempo límite" if res["timed_out"] else "sin memoria" if res.get("oom_killed")
+                 else "terminó bien" if ok else f"terminó con error {res['exit_code']}")
+        files = res["files"]
+        summary = f"Código {state} en {res['seconds']:.1f} s" + (f" · {len(files)} archivo(s)" if files else "")
+        listing = "\n".join(f"- {f['filename']} ({f['kind']}, {f['size_bytes']} bytes)" for f in files)
+        content = (f"exit_code={res['exit_code']} timed_out={res['timed_out']} oom={res.get('oom_killed')}\n"
+                   f"--- stdout ---\n{res['stdout'][-8000:]}\n--- stderr ---\n{res['stderr'][-4000:]}\n"
+                   + (f"--- files given to the user (shown with download links; do not write links) ---\n{listing}"
+                      if files else "--- no new files in /work ---"))
+        return {"ok": ok, "summary": summary,
+                "code": {"language": lang, "code": code[:20000], "stdout": res["stdout"][-6000:],
+                         "stderr": res["stderr"][-3000:], "exit_code": res["exit_code"], "timed_out": res["timed_out"],
+                         "seconds": res["seconds"], "files": files},
+                "content": content}
+
+    def _canvas_result(self, d, created: bool) -> dict:
+        info = {"id": str(d.id), "title": d.title, "version": d.version, "kind": d.kind, "created": created}
+        self.canvas_id = d.id
+        return {"ok": True, "summary": f"«{d.title}» v{d.version}", "canvas": info,
+                "content": f"Canvas «{d.title}» saved as version {d.version} and shown to the user next to the chat. "
+                           "Do not repeat its content in the chat; give a short summary."}
+
+    def tool_canvas_write(self, call_id: str, args: dict) -> dict:
+        content = str(args.get("content") or "")
+        if not content.strip():
+            raise AgentError("El lienzo está vacío")
+        with SessionLocal() as db:
+            user = db.get(User, self.t.user_id)
+            try:
+                d = canvas_svc.create(db, user, title=str(args.get("title") or "Documento"), content=content,
+                                      kind=str(args.get("kind") or "document"), language=args.get("language"),
+                                      conversation_id=self.t.conversation_id)
+            except canvas_svc.CanvasError as e:
+                raise AgentError(e.message)
+            db.commit()
+            return self._canvas_result(d, True)
+
+    def tool_canvas_edit(self, call_id: str, args: dict) -> dict:
+        if not self.canvas_id:
+            raise AgentError("No hay lienzo en esta conversación: créalo con canvas_write")
+        with SessionLocal() as db:
+            d = db.get(CanvasDoc, self.canvas_id)
+            if not d or d.owner_id != self.t.user_id:
+                raise AgentError("Lienzo no encontrado")
+            try:
+                new = str(args["content"]) if args.get("content") else canvas_svc.apply_edits(d, list(args.get("edits") or []))
+                canvas_svc.update(db, d, content=new, author="assistant", title=args.get("title"))
+            except canvas_svc.CanvasError as e:
+                raise AgentError(e.message)
+            db.commit()
+            return self._canvas_result(d, False)
+
+    def _complete(self, messages: list[dict], max_tokens: int) -> str:
+        body = {"messages": messages, "max_tokens": max_tokens, "temperature": 0.3}
+        if self.model is not None and self.model.backend == "vllm":
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        inst = scheduler.ensure_loaded(self.t.model_id, wait_s=1800)
+        scheduler.begin_request(inst.id)
+        try:
+            r = llm.chat_once(self.model, body)
+        finally:
+            scheduler.end_request(inst.id)
+        text = (r.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+
+    def tool_deep_research(self, call_id: str, args: dict) -> dict:
+        question = str(args.get("question") or "").strip()[:6000]
+        if not question:
+            raise AgentError("Falta la pregunta")
+        if "investigador" not in self.agents:
+            raise AgentError("La investigación a fondo necesita la búsqueda en internet y los agentes activados.")
+        n = {"quick": 3, "standard": 5, "deep": 7}.get(str(args.get("depth") or "standard"), 5)
+        self.emit({"type": "tool_progress", "id": call_id, "progress": 0.03, "message": "Planificando la investigación…"})
+        raw = self._complete([{"role": "system", "content": RESEARCH_PLAN_PROMPT.format(n=n)},
+                              {"role": "user", "content": question}], 1500)
+        try:
+            plan = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
+            subs = [str(x.get("q") if isinstance(x, dict) else x).strip() for x in plan.get("subquestions", [])][:n]
+            title = str(plan.get("title") or question[:80])
+        except (ValueError, AttributeError):
+            subs, title = [question], question[:80]
+        subs = [x for x in subs if x] or [question]
+        self.emit({"type": "tool_progress", "id": call_id, "progress": 0.08,
+                   "message": f"{len(subs)} líneas de investigación en paralelo"})
+        jobs = [{"agent": "investigador", "task": f"{q}\n\nForma parte de una investigación más amplia sobre: {question[:1500]}"}
+                for q in subs]
+        if args.get("use_documents") and "documentalista" in self.agents:
+            jobs.append({"agent": "documentalista", "task": f"Busca en los documentos del usuario todo lo relevante para: {question[:2000]}"})
+        results: list[dict] = [None] * len(jobs)  # type: ignore[list-item]
+        done = 0
+        with ThreadPoolExecutor(max_workers=max(1, self.max_parallel)) as ex:
+            futs = {ex.submit(self._exec, call_id, "delegate_task", j): i for i, j in enumerate(jobs)}
+            for fut in as_completed(futs):
+                results[futs[fut]] = fut.result()
+                done += 1
+                self.emit({"type": "tool_progress", "id": call_id, "progress": 0.1 + 0.7 * done / len(jobs),
+                           "message": f"{done}/{len(jobs)} investigaciones terminadas"})
+        sources: list[dict] = []
+        blocks = []
+        for j, r in zip(jobs, results):
+            local = []
+            for src in r.get("sources") or []:
+                if src["url"] not in [x["url"] for x in sources]:
+                    sources.append(src)
+                local.append(next(i for i, x in enumerate(sources, 1) if x["url"] == src["url"]))
+            report = (r.get("agent") or {}).get("report") or r.get("summary") or ""
+            blocks.append(f"### {j['task'].splitlines()[0]}\n(sources: {', '.join(f'[{i}]' for i in local) or 'none'})\n{report[:9000]}")
+        if not any((r.get("agent") or {}).get("report") for r in results):
+            raise AgentError("Los agentes no pudieron investigar (¿búsqueda web disponible?)")
+        numbered = "\n".join(f"[{i}] {x.get('title') or x['url']} — {x['url']}" for i, x in enumerate(sources[:60], 1))
+        self.emit({"type": "tool_progress", "id": call_id, "progress": 0.85, "message": "Redactando el informe…"})
+        words = {3: 1200, 5: 2000, 7: 3000}.get(n, 2000)
+        report = self._complete([
+            {"role": "system", "content": RESEARCH_REPORT_PROMPT.format(words=words)},
+            {"role": "user", "content": f"Question: {question}\nSuggested title: {title}\n\nNumbered sources:\n{numbered}"
+                                        f"\n\nFindings by sub-question:\n\n" + "\n\n".join(blocks)}], min(12000, words * 3))
+        if not report:
+            raise AgentError("No se pudo redactar el informe")
+        with SessionLocal() as db:
+            user = db.get(User, self.t.user_id)
+            d = canvas_svc.create(db, user, title=title, content=report, conversation_id=self.t.conversation_id)
+            db.commit()
+            res = self._canvas_result(d, True)
+        steps = [{"name": "delegate_task", "label": f"{j['agent']}: {j['task'].splitlines()[0][:120]}",
+                  "ok": r.get("ok", True), "summary": r.get("summary", "")} for j, r in zip(jobs, results)]
+        return {**res, "summary": f"{len(jobs)} agentes · {len(sources)} fuentes · informe «{title}»",
+                "research": {"title": title, "subquestions": subs, "steps": steps}, "sources": sources[:40],
+                "content": f"Deep research finished. The full report «{title}» ({len(report.split())} words, "
+                           f"{len(sources)} sources) is in the canvas next to the chat. Reply with a short summary of the "
+                           f"key findings (5–8 bullets) and invite the user to read/export the canvas. Report:\n{report[:12000]}"}
+
+    def tool_schedule_task(self, call_id: str, args: dict) -> dict:
+        from ..models import ScheduledTask
+        from . import tasks as tasks_svc
+
+        sched = {k: args[k] for k in ("freq", "time", "weekdays", "weekday", "day") if args.get(k) is not None}
+        with SessionLocal() as db:
+            user = db.get(User, self.t.user_id)
+            tz = (user.preferences or {}).get("timezone") or "Europe/Madrid"
+            try:
+                sched = tasks_svc.validate(sched, tz)
+                nxt = tasks_svc.next_run(sched, tz)
+            except tasks_svc.TaskError as e:
+                raise AgentError(e.message)
+            t = ScheduledTask(owner_id=user.id, name=str(args.get("name") or "Tarea")[:120], prompt=str(args.get("prompt"))[:20000],
+                              schedule=sched, timezone=tz, model_alias=self.model.alias if self.model else None,
+                              options={"web": self.flags["web"], "email": bool(args.get("email"))},
+                              project_id=self.project_id, next_run_at=nxt)
+            db.add(t)
+            db.commit()
+            when = tasks_svc.describe(sched, self.t.lang)
+            local = nxt.astimezone(tasks_svc._tz(tz)).strftime("%d/%m/%Y %H:%M")
+            return {"ok": True, "summary": f"«{t.name}» · {when}", "task": {"id": str(t.id), "name": t.name, "when": when, "next": local},
+                    "content": f"Task created: «{t.name}», {when}; next run {local} ({tz}). The user can edit or delete it "
+                               "on the Tasks page."}
+
     # -------------------------------------------------------------- tool plumbing
 
     def _tool_allowed(self, name: str) -> bool:
@@ -1050,10 +1372,14 @@ class Runner:
             return self.flags["skills"]
         if name == "delegate_task":
             return self.flags["agents"]
+        if name == "run_code":
+            return self.flags["code"]
+        if name == "deep_research":
+            return self.flags["web"] and self.flags["agents"]
         return True
 
     def _all_specs(self) -> list[dict]:
-        specs = TOOLS + WEB_TOOLS + SKILL_TOOLS
+        specs = TOOLS + WEB_TOOLS + SKILL_TOOLS + CODE_TOOLS + CANVAS_TOOLS + RESEARCH_TOOLS + TASK_TOOLS
         if self.agents:
             specs = specs + [_delegate_spec(self.agents)]
         return specs
@@ -1179,7 +1505,9 @@ class Runner:
             self.flags = {"web": tools_on and self.t.web and bool(get_setting(db, "web_search_enabled")),
                           "skills": tools_on and bool(get_setting(db, "skills_enabled")),
                           "agents": tools_on and bool(get_setting(db, "agents_enabled")),
-                          "auto_install": bool(get_setting(db, "skills_auto_install"))}
+                          "auto_install": bool(get_setting(db, "skills_auto_install")),
+                          "code": tools_on and bool(get_setting(db, "code_exec_enabled"))}
+            self.project_id = conv.project_id
             self.agents = agent_profiles(db, user) if self.flags["agents"] else {}
             if not self.flags["web"]:
                 self.agents.pop("investigador", None)

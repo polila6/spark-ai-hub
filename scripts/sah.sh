@@ -12,8 +12,8 @@ case "${1:-status}" in
             docker ps -q --filter label=sah.managed=true | xargs -r docker stop; $DC down ;;
   restart)  shift; $DC restart "$@" ;;
   logs)     shift; $DC logs -f --tail 200 "$@" ;;
-  build)    $DC build ;;
-  build-engines) $DC -f compose.yaml -f compose.optional.yaml --profile engines build comfyui mlworker ;;
+  build)    $DC build && $DC -f compose.yaml -f compose.optional.yaml --profile sandbox build sandbox ;;
+  build-engines) $DC -f compose.yaml -f compose.optional.yaml --profile engines --profile sandbox build comfyui mlworker sandbox ;;
   backup)   $DC exec -T backend python - <<'PY'
 from app.db import SessionLocal
 from app.models import Role, SchedClass, User

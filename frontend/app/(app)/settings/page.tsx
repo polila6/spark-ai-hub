@@ -78,20 +78,22 @@ function Access() {
   const { data, mutate } = useSWR("/api/v1/admin/settings");
   const { data: outbox, mutate: mutOut } = useSWR("/api/v1/admin/mail/outbox?limit=20", { refreshInterval: 15000 });
   const [s, setS] = useState<any>(null);
-  const [secret, setSecret] = useState({ smtp_password: "", tailscale_api_key: "" });
+  const EMPTY_SECRETS = { smtp_password: "", tailscale_api_key: "", oidc_google_client_secret: "", oidc_microsoft_client_secret: "", oidc_generic_client_secret: "" };
+  const [secret, setSecret] = useState<Record<string, string>>(EMPTY_SECRETS);
   const [testTo, setTestTo] = useState("");
   const [err, setErr] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => { if (data) { setS(data); setTestTo((x) => x || data.smtp_from || ""); } }, [data]);
   if (!s) return null;
   const set = (k: string, v: any) => setS({ ...s, [k]: v });
-  const KEYS = ["signup_mode", "signup_allowed_domains", "terms_text", "terms_version", "tailscale_share_url", "tailscale_device_id", "mail_enabled", "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_from", "smtp_from_name"];
+  const KEYS = ["signup_mode", "signup_allowed_domains", "terms_text", "terms_version", "tailscale_share_url", "tailscale_device_id", "mail_enabled", "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_from", "smtp_from_name",
+    "oidc_google_client_id", "oidc_microsoft_client_id", "oidc_microsoft_tenant", "oidc_generic_name", "oidc_generic_issuer", "oidc_generic_client_id"];
   async function save(extra: any = {}) {
     setErr(null);
     const body: any = { ...extra };
     for (const k of KEYS) if (JSON.stringify(s[k]) !== JSON.stringify(data[k])) body[k] = s[k];
     for (const [k, v] of Object.entries(secret)) if (v) body[k] = v;
-    try { await api("/api/v1/admin/settings", { method: "PUT", json: body }); setSecret({ smtp_password: "", tailscale_api_key: "" }); push("ok", L("Guardado", "Saved")); mutate(); } catch (e) { setErr(e); }
+    try { await api("/api/v1/admin/settings", { method: "PUT", json: body }); setSecret(EMPTY_SECRETS); push("ok", L("Guardado", "Saved")); mutate(); } catch (e) { setErr(e); }
   }
   return (
     <div className="space-y-4">
@@ -131,6 +133,35 @@ function Access() {
   { "src": ["autogroup:member"], "dst": ["*"], "ip": ["*"] },
   { "src": ["autogroup:shared"], "dst": ["spark"], "ip": ["tcp:443"] }
 ]`}</Code></div>
+        </CardBody>
+      </Card>
+      <Card><CardHeader title={L("Entrar con Google o Microsoft", "Sign in with Google or Microsoft")} icon={<KeyRound className="h-4 w-4" />}
+        subtitle={L("Opcional. Las cuentas nuevas siguen el modo de registro de abajo (con aprobación, abierto o cerrado) y los dominios permitidos.", "Optional. New accounts follow the sign-up mode below (approval, open or closed) and the allowed domains.")} />
+        <CardBody className="space-y-5 text-sm">
+          {([["google", "Google", [L("Abre console.cloud.google.com → APIs y servicios → Pantalla de consentimiento de OAuth: tipo «Interno» si tu organización usa Google Workspace (solo tu dominio), si no «Externo».", "Open console.cloud.google.com → APIs & Services → OAuth consent screen: “Internal” if your organisation uses Google Workspace, otherwise “External”."), L("Credenciales → Crear credenciales → ID de cliente de OAuth → Aplicación web.", "Credentials → Create credentials → OAuth client ID → Web application."), L("En «URIs de redireccionamiento autorizados» pega la dirección de abajo y copia aquí el ID y el secreto.", "Under “Authorized redirect URIs” paste the address below and copy the ID and secret here.")]],
+             ["microsoft", "Microsoft", [L("Abre entra.microsoft.com → Aplicaciones → Registros de aplicaciones → Nuevo registro.", "Open entra.microsoft.com → Applications → App registrations → New registration."), L("Tipo de cuenta: «Solo esta organización» (recomendado). URI de redirección: plataforma «Web» con la dirección de abajo.", "Account type: “This organisation only” (recommended). Redirect URI: “Web” platform with the address below."), L("Copia el «Id. de aplicación (cliente)» y el «Id. de directorio (inquilino)»; en Certificados y secretos crea un secreto y cópialo.", "Copy the “Application (client) ID” and the “Directory (tenant) ID”; under Certificates & secrets create a secret and copy it.")]],
+             ["generic", L("Otro proveedor (OpenID Connect)", "Other provider (OpenID Connect)"), [L("Keycloak, Authentik, Okta, el SSO de tu universidad… Registra un cliente confidencial con la dirección de redirección de abajo y escribe aquí su «issuer».", "Keycloak, Authentik, Okta, your university SSO… Register a confidential client with the redirect address below and enter its issuer here.")]]] as [string, string, string[]][]).map(([id, name, steps]) => {
+            const cbId = id === "generic" ? "oidc" : id;
+            const configured = id === "google" ? s.oidc_google_client_id : id === "microsoft" ? s.oidc_microsoft_client_id : s.oidc_generic_client_id;
+            return (
+              <details key={id} className="rounded-xl border border-border p-3" open={!!configured}>
+                <summary className="cursor-pointer font-medium">{name} {configured && <Badge tone="ok">{L("configurado", "configured")}</Badge>}</summary>
+                <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-muted">{steps.map((x, i) => <li key={i}>{x}</li>)}</ol>
+                <div className="mt-2"><p className="text-xs text-muted">{L("Dirección de redirección (cópiala tal cual):", "Redirect address (copy it as is):")}</p><Code>{`${typeof window !== "undefined" ? window.location.origin : ""}/api/v1/auth/oidc/${cbId}/callback`}</Code></div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  {id === "generic" && <><Field label={L("Nombre del botón", "Button name")}><Input value={s.oidc_generic_name ?? ""} onChange={(e) => set("oidc_generic_name", e.target.value || null)} placeholder="SSO Universidad" /></Field>
+                    <Field label="Issuer"><Input value={s.oidc_generic_issuer ?? ""} onChange={(e) => set("oidc_generic_issuer", e.target.value || null)} placeholder="https://sso.ejemplo.org/realms/main" /></Field></>}
+                  <Field label="Client ID"><Input value={s[`oidc_${id}_client_id`] ?? ""} onChange={(e) => set(`oidc_${id}_client_id`, e.target.value || null)} /></Field>
+                  <Field label={L("Secreto", "Secret")} hint={s[`oidc_${id}_client_secret`] === "__set__" ? L("Guardado (cifrado). Escribe para cambiarlo.", "Stored (encrypted). Type to change it.") : L("Se guarda cifrado", "Stored encrypted")}>
+                    <Input type="password" autoComplete="new-password" value={secret[`oidc_${id}_client_secret`]} onChange={(e) => setSecret({ ...secret, [`oidc_${id}_client_secret`]: e.target.value })} /></Field>
+                  {id === "microsoft" && <Field label={L("Inquilino (tenant)", "Tenant")} hint={L("El Id. de directorio limita el acceso a tu organización. «organizations» = cualquier cuenta de trabajo (no se vinculan cuentas existentes por correo).", "The directory ID limits access to your organisation. “organizations” = any work account (existing accounts are not linked by e-mail).")}>
+                    <Input value={s.oidc_microsoft_tenant ?? ""} onChange={(e) => set("oidc_microsoft_tenant", e.target.value || null)} placeholder="organizations" /></Field>}
+                </div>
+                {configured && <Button size="sm" variant="ghost" className="mt-2" onClick={() => { set(`oidc_${id}_client_id`, null); }}>{L("Quitar este proveedor (y guarda)", "Remove this provider (then save)")}</Button>}
+              </details>
+            );
+          })}
+          <Notice tone="muted">{L("Si alguien ya tiene cuenta con el mismo correo, se vincula automáticamente cuando el proveedor garantiza ese correo (Google, o Microsoft limitado a tu organización). Los botones aparecen en la pantalla de entrada.", "If someone already has an account with the same e-mail, it is linked automatically when the provider vouches for it (Google, or Microsoft limited to your organisation). The buttons appear on the sign-in page.")}</Notice>
         </CardBody>
       </Card>
       <Card><CardHeader title={L("Registro de cuentas y normas", "Sign-up and terms")} icon={<UserCheck className="h-4 w-4" />} />
@@ -187,18 +218,33 @@ function System() {
         <Field label={L("Embeddings (conocimiento)", "Embeddings (knowledge)")}><Select value={s.embedding_model ?? ""} onChange={(e) => set("embedding_model", e.target.value || null)}><option value="">{L("automático", "automatic")}</option>{models?.filter((m: any) => m.capabilities?.includes("embeddings") && !m.capabilities?.includes("chat")).map((m: any) => <option key={m.id}>{m.alias}</option>)}</Select></Field>
         <Field label={L("Imágenes en el chat", "Images in chat")}><Select value={s.chat_image_model ?? "auto"} onChange={(e) => set("chat_image_model", e.target.value)}><option value="auto">{L("automático (Qwen-Image si está)", "automatic (Qwen-Image if present)")}</option><option value="qwen-image">Qwen-Image</option><option value="sd15">SD 1.5 ({L("rápido", "fast")})</option></Select></Field>
       </CardBody></Card>
-      <Card><CardHeader title={L("Chat: internet, skills y agentes", "Chat: web, skills and agents")} subtitle={L("Las búsquedas salen a internet a través del buscador privado del Spark (SearXNG); las páginas internas, el tailnet y la red local nunca se abren. Las skills son texto: nunca se ejecuta su código.", "Searches go out through the Spark's private search engine (SearXNG); internal pages, the tailnet and the local network are never fetched. Skills are text: their code is never executed.")} /><CardBody className="space-y-4">
+      <Card><CardHeader title={L("Chat: internet, skills, agentes y código", "Chat: web, skills, agents and code")} subtitle={L("Las búsquedas salen a internet a través del buscador privado del Spark (SearXNG); las páginas internas, el tailnet y la red local nunca se abren. El código (de skills o del asistente) solo se ejecuta en el entorno aislado, si está activado.", "Searches go out through the Spark's private search engine (SearXNG); internal pages, the tailnet and the local network are never fetched. Code (from skills or the assistant) only runs in the isolated sandbox, when enabled.")} /><CardBody className="space-y-4">
         <div className="flex flex-wrap gap-6">
           <Switch checked={!!s.web_search_enabled} onChange={(v) => set("web_search_enabled", v)} label={L("Búsqueda web en el chat", "Web search in chat")} />
           <Switch checked={!!s.skills_enabled} onChange={(v) => set("skills_enabled", v)} label="Skills" />
           <Switch checked={!!s.skills_auto_install} onChange={(v) => set("skills_auto_install", v)} label={L("El asistente puede instalar skills solo", "The assistant may install skills by itself")} />
           <Switch checked={!!s.agents_enabled} onChange={(v) => set("agents_enabled", v)} label={L("Subagentes", "Sub-agents")} />
+          <Switch checked={!!s.code_exec_enabled} onChange={(v) => set("code_exec_enabled", v)} label={L("Ejecutar código (entorno aislado sin red)", "Run code (isolated, no network)")} />
         </div>
+        {s.code_exec_enabled && <div className="grid gap-3 sm:grid-cols-3">
+          {num("code_exec_timeout_s", L("Tiempo máximo por ejecución (s)", "Time limit per run (s)"), L("5–900 s", "5–900 s"))}
+          {num("code_exec_memory_mb", L("Memoria por ejecución (MB)", "Memory per run (MB)"), L("256–16384 MB; hasta 4 ejecuciones a la vez", "256–16384 MB; up to 4 runs at once"))}
+          <p className="self-end text-xs text-muted">{L("Cada ejecución es un contenedor nuevo sin internet, sin privilegios y con disco de solo lectura salvo su carpeta de trabajo. Los archivos que crea van a Mis archivos → «Resultados de código».", "Each run is a fresh container without internet or privileges, read-only except its work folder. Files it creates go to My files → “Code results”.")}</p>
+        </div>}
         <div className="grid gap-3 sm:grid-cols-3">
           {num("max_parallel_agents", L("Agentes en paralelo (1–6)", "Parallel agents (1–6)"), L("Cada agente es una petición más al modelo general (admite 8 a la vez)", "Each agent is one more request to the general model (8 at once)"))}
           <div className="sm:col-span-2"><Field label={L("Fuentes del catálogo de skills (GitHub, una por línea)", "Skill catalog sources (GitHub, one per line)")} tip="owner/repo o owner/repo/ruta">
             <Textarea rows={3} value={(s.skill_sources ?? []).join("\n")} onChange={(e) => set("skill_sources", e.target.value.split("\n").map((x) => x.trim()).filter(Boolean))} /></Field></div>
         </div>
+      </CardBody></Card>
+      <Card><CardHeader title={L("Voz y conectores", "Voice and connectors")} subtitle={L("La voz usa los modelos de audio locales (Whisper para dictar, MMS-TTS para leer). Los conectores traen documentos de Nextcloud, GitHub, Zotero o carpetas de red.", "Voice uses the local audio models (Whisper to dictate, MMS-TTS to read aloud). Connectors bring documents from Nextcloud, GitHub, Zotero or network shares.")} /><CardBody className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="flex items-end"><Switch checked={!!s.voice_enabled} onChange={(v) => set("voice_enabled", v)} label={L("Voz en el chat", "Voice in chat")} /></div>
+          <Field label={L("Modelo para dictar", "Dictation model")}><Select value={s.voice_asr_model ?? ""} onChange={(e) => set("voice_asr_model", e.target.value || null)}><option value="">{L("automático", "automatic")}</option>{models?.filter((m: any) => m.task === "automatic-speech-recognition").map((m: any) => <option key={m.id}>{m.alias}</option>)}</Select></Field>
+          <Field label={L("Voz para leer", "Read-aloud voice")} hint={L("Automático = la del idioma del usuario (instala mms-tts-eng para inglés)", "Automatic = the user's language (install mms-tts-eng for English)")}><Select value={s.voice_tts_model ?? ""} onChange={(e) => set("voice_tts_model", e.target.value || null)}><option value="">{L("automático", "automatic")}</option>{models?.filter((m: any) => ["text-to-speech", "text-to-audio"].includes(m.task)).map((m: any) => <option key={m.id}>{m.alias}</option>)}</Select></Field>
+        </div>
+        <Field label={L("Redes privadas para conectores (una por línea)", "Private networks for connectors (one per line)")} hint={L("Por seguridad, los conectores solo llegan a direcciones públicas. Añade aquí el NAS o la red interna que sí pueden usar, p. ej. 192.168.1.0/24 o nas.laboratorio.local. Nunca se permiten el propio Spark ni sus contenedores.", "For safety, connectors only reach public addresses. Add the NAS or internal network they may use, e.g. 192.168.1.0/24 or nas.lab.local. The Spark itself and its containers are never allowed.")}>
+          <Textarea rows={3} value={(s.connector_private_hosts ?? []).join("\n")} onChange={(e) => set("connector_private_hosts", e.target.value.split("\n").map((x) => x.trim()).filter(Boolean))} /></Field>
       </CardBody></Card>
       <Card><CardHeader title="Almacenamiento, logs y alertas" /><CardBody className="grid gap-3 sm:grid-cols-3">
         {num("storage_min_free_gb", "Espacio libre mínimo (GB)")}{num("storage_warn_percent", "Aviso de disco (%)")}{num("temperature_alert_c", "Alerta de temperatura (°C)")}

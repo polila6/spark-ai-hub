@@ -37,7 +37,12 @@ export const GUIDES: Record<string, GuideDef> = {
       b("Pide que busque en internet («busca las últimas novedades de…», «¿qué precio tiene…?»): consulta varias fuentes, lee las páginas y cita los enlaces. El interruptor «Internet» bajo el mensaje lo activa o desactiva para ese chat.", "Ask it to search the web (“find the latest news on…”, “how much does … cost?”): it checks several sources, reads the pages and cites the links. The “Web” switch under the message turns it on or off for that chat."),
       b("Para tareas largas pide agentes: «lanza un investigador para … y otro para …». Trabajan en paralelo y verás sus pasos en directo; el asistente une sus informes.", "For long tasks ask for agents: “run one researcher for … and another for …”. They work in parallel and you see their steps live; the assistant merges their reports."),
       b("Si la tarea es especializada («ayúdame a escribir un documento técnico»), el asistente busca una skill (instrucciones expertas), la instala y la sigue. Las verás en la página Skills.", "For specialised tasks (“help me write a technical document”) the assistant finds a skill (expert instructions), installs it and follows it. You will see them on the Skills page."),
-      b("El indicador «Contexto 8k/64k» de arriba muestra cuánto de la conversación ve el modelo. Púlsalo para cambiar el tamaño de la ventana, activar la compactación automática o «Compactar ahora».", "The “Context 8k/64k” indicator at the top shows how much of the conversation the model sees. Click it to change the window size, turn on automatic compaction or “Compact now”."),
+      b("El indicador «Contexto 8k/256k» de arriba muestra cuánto de la conversación ve el modelo. Púlsalo para cambiar el tamaño de la ventana, activar la compactación automática o «Compactar ahora».", "The “Context 8k/256k” indicator at the top shows how much of the conversation the model sees. Click it to change the window size, turn on automatic compaction or “Compact now”."),
+      b("Cálculos, gráficos y archivos: pide «calcula…», «haz un gráfico de…» o «créame un Excel/Word/PowerPoint con…». El asistente escribe y ejecuta código en un entorno aislado (sin internet); verás el código, la salida y los archivos para descargar. También quedan en Mis archivos → «Resultados de código».", "Calculations, charts and files: ask “calculate…”, “plot…” or “create an Excel/Word/PowerPoint with…”. The assistant writes and runs code in an isolated sandbox (no internet); you see the code, the output and the files to download. They are also in My files → “Code results”."),
+      b("Lienzo: pide «escríbelo en el lienzo» (informes, cartas, artículos, código). Se abre a la derecha: puedes editarlo, ver versiones, pedir cambios abajo («hazlo más formal») y exportarlo a Word, PDF, Markdown o HTML.", "Canvas: ask “write it in the canvas” (reports, letters, articles, code). It opens on the right: edit it, see versions, ask for changes below (“make it more formal”) and export to Word, PDF, Markdown or HTML."),
+      b("Investigación a fondo: activa el interruptor bajo el mensaje y pregunta. Varios agentes investigan en paralelo (unos minutos) y recibes un informe con fuentes numeradas en el lienzo, listo para exportar.", "Deep research: turn on the switch under the message and ask. Several agents research in parallel (a few minutes) and you get a report with numbered sources in the canvas, ready to export."),
+      b("Voz: pulsa 🎤 para dictar (se transcribe en el Spark, no en internet) y «Escuchar» bajo una respuesta para oírla. «Leer respuestas» las lee solas al terminar.", "Voice: press 🎤 to dictate (transcribed on the Spark, not on the internet) and “Listen” under an answer to hear it. “Read answers” reads them automatically."),
+      b("Tareas: di «cada lunes a las 9, resúmeme…» y el asistente crea una tarea programada (página Tareas).", "Tasks: say “every Monday at 9, summarise…” and the assistant creates a scheduled task (Tasks page)."),
     ],
     tips: [
       b("El modelo marcado con ★ es el general: está siempre cargado para todos y responde al instante. Si eliges otro que no está en memoria, verás cuánta memoria necesita y qué modelos inactivos se descargarían antes de confirmar.", "The model marked ★ is the general one: always loaded for everyone, it answers instantly. If you pick another that is not in memory, you see the memory it needs and which idle models would be unloaded before confirming."),
@@ -105,6 +110,27 @@ export const GUIDES: Record<string, GuideDef> = {
     ],
     tips: [b("Tu cuota de espacio aparece arriba. Los archivos de datos (CSV, Excel, SQLite) se consultan con SQL desde el chat.", "Your storage quota is shown at the top. Data files (CSV, Excel, SQLite) are queried with SQL from the chat.")],
   },
+  tasks: {
+    title: b("Tareas programadas", "Scheduled tasks"),
+    intro: b("El asistente trabaja solo a la hora que digas: resúmenes de novedades, vigilancia de webs, informes periódicos… Cada tarea tiene su propio chat con todos los resultados.", "The assistant works on its own on schedule: news digests, monitoring, periodic reports… Each task has its own chat with all results."),
+    steps: [
+      b("Pulsa «Nueva tarea» (o usa un ejemplo) y escribe las instrucciones completas, como si fuera un mensaje nuevo cada vez.", "Click “New task” (or use an example) and write the full instructions, as if it were a new message each time."),
+      b("Elige cuándo: cada hora, días de la semana a una hora, un día de la semana o un día del mes.", "Choose when: hourly, some weekdays at a time, one weekday or one day of the month."),
+      b("Activa «Puede buscar en internet» si necesita información actual, e «Investigación a fondo» si quieres un informe completo.", "Turn on “May search the web” for current information, and “Deep research” for a full report."),
+      b("Pulsa «Ejecutar ahora» para probarla. Cuando termina recibes un aviso en la campana (y por correo si lo marcas). «Ver resultados» abre su chat.", "Click “Run now” to test it. When it finishes you get a bell notice (and an e-mail if ticked). “Results” opens its chat."),
+    ],
+    tips: [b("También puedes crearlas desde el chat: «todos los días laborables a las 8:30, busca noticias sobre … y resúmelas».", "You can also create them from the chat: “every weekday at 8:30, find news about … and summarise them”."),
+      b("Para recibir el correo, un administrador debe configurar el correo saliente (Ajustes → Acceso y correo).", "To receive e-mails, an administrator must configure outgoing mail (Settings → Access and mail).")],
+  },
+  usage: {
+    title: b("Uso", "Usage"),
+    intro: b("Cuánto usas el Spark: tokens leídos y generados, modelos, proyectos, trabajos de imagen/vídeo/audio y almacenamiento.", "How much you use the Spark: input and output tokens, models, projects, image/video/audio jobs and storage."),
+    steps: [
+      b("Elige el periodo arriba a la derecha (7, 30, 90 días o un año).", "Pick the period at the top right (7, 30, 90 days or a year)."),
+      b("«Tokens este mes» muestra tu cuota mensual si el administrador la ha fijado.", "“Tokens this month” shows your monthly quota if the administrator set one."),
+      b("Administradores y gestores pueden ver «Todo el equipo» con el uso por persona (solo cifras, nunca el contenido).", "Administrators and managers can see “Everyone” with usage per person (numbers only, never content)."),
+    ],
+  },
   knowledge: {
     title: b("Base de conocimiento", "Knowledge base"),
     intro: b("Colecciones de documentos indexados para búsqueda semántica (por significado) y por palabras. El chat (search_knowledge) y el servidor MCP buscan aquí y citan la fuente.",
@@ -114,6 +140,7 @@ export const GUIDES: Record<string, GuideDef> = {
       b("Añade documentos desde Mis archivos o subiéndolos aquí.", "Add documents from My files or by uploading them here."),
       b("Prueba la búsqueda en «Probar búsqueda» para ver qué fragmentos encontraría el asistente.", "Try “Test search” to see which passages the assistant would find."),
       b("En el chat pregunta normalmente; el asistente decide cuándo buscar y cita [archivo, p. N].", "In the chat just ask; the assistant decides when to search and cites [file, p. N]."),
+      b("Conectores (abajo): trae documentos de Nextcloud/WebDAV, GitHub, Zotero o una carpeta de red. Cada uno explica dónde sacar la contraseña de aplicación, el token o la clave; se sincronizan solos cada hora o cada día.", "Connectors (below): bring documents from Nextcloud/WebDAV, GitHub, Zotero or a network share. Each one explains where to get the app password, token or key; they re-sync hourly or daily."),
     ],
     tips: [b("Las colecciones de proyectos compartidos contigo también aparecen aquí.", "Collections of projects shared with you also appear here.")],
   },
@@ -260,6 +287,7 @@ export const GUIDES: Record<string, GuideDef> = {
       b("Tailscale (automático, opcional): crea una API key en Settings → Keys de Tailscale, pégala con el ID del equipo y pulsa «Comprobar»: cada invitación creará una invitación de Tailscale para ese email.", "Tailscale (automatic, optional): create an API key in Tailscale Settings → Keys, paste it with the device ID and click “Check”: every invitation will create a Tailscale invite for that e-mail."),
       b("Seguridad: en la política de Tailscale (Access controls) limita a los invitados al puerto 443 del Spark (ejemplo en la guía PDF del administrador).", "Security: in the Tailscale policy (Access controls) restrict shared users to port 443 of the Spark (example in the admin PDF guide)."),
       b("Registro: «con aprobación» (cualquiera con acceso a la red lo solicita y tú/gestores aprobáis), «abierto» o «cerrado» (solo invitaciones).", "Sign-up: “approval” (anyone with network access requests it and you/managers approve), “open” or “closed” (invitations only)."),
+      b("Entrar con Google o Microsoft (opcional): abre la tarjeta del proveedor, sigue sus 3 pasos, copia la dirección de redirección en su consola y pega aquí el ID y el secreto. Aparecerá el botón en la pantalla de entrada.", "Sign in with Google or Microsoft (optional): open the provider card, follow its 3 steps, copy the redirect address into its console and paste the ID and secret here. The button appears on the sign-in page."),
     ],
   },
   android: {

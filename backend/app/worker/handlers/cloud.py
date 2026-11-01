@@ -144,3 +144,34 @@ class AccountExport(Handler):
                    "Descarga el ZIP con todos tus datos.", link=notify_link)
             db.commit()
         ctx.set_result({"artifact": art})
+
+
+@register
+class ConnectorSync(Handler):
+    """Synchronise one knowledge connector (WebDAV, GitHub, Zotero, SMB) into its collection."""
+
+    type = "connector_sync"
+
+    def run(self, ctx: JobContext) -> None:
+        from ...models import KbConnector
+        from ...services import connectors
+
+        with SessionLocal() as db:
+            c = db.get(KbConnector, uuid.UUID(ctx.params["connector_id"]))
+            if c is None or c.owner_id != ctx.owner_id:
+                ctx.set_result({"skipped": "connector deleted"})
+                return
+            try:
+                stats = connectors.sync(db, c, progress=lambda v, m: ctx.progress(v, m))
+            except connectors.ConnectorError as e:
+                db.rollback()
+                c = db.get(KbConnector, c.id)
+                c.status, c.status_message = "error", e.message
+                c.last_sync_at = datetime.now(timezone.utc)
+                db.commit()
+                raise
+            if stats.get("added") or stats.get("updated"):
+                notify(db, c.owner_id, "connector", f"«{c.name}» sincronizado: {stats['added']} nuevos, {stats['updated']} "
+                       f"actualizados", link="/knowledge?tab=connectors", email=False)
+                db.commit()
+        ctx.set_result(stats)

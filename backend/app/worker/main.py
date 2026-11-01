@@ -110,11 +110,41 @@ def _maintenance() -> None:
         except Exception as e:  # noqa: BLE001
             log.warning("worker.sweep_failed", error=str(e))
         try:
+            from ..services import tasks
+
+            tasks.dispatch_due()
+        except Exception as e:  # noqa: BLE001
+            log.warning("worker.tasks_failed", error=str(e))
+        try:
+            _connectors_due()
+        except Exception as e:  # noqa: BLE001
+            log.warning("worker.connectors_failed", error=str(e))
+        try:
             from .maintenance import periodic
 
             periodic()
         except Exception as e:  # noqa: BLE001
             log.warning("worker.periodic_failed", error=str(e))
+
+
+def _connectors_due() -> None:
+    from ..models import Job, JobStatus, KbConnector, SchedClass, User
+    from ..services import connectors
+    from ..services.jobs import JobError, create_job
+
+    with SessionLocal() as db:
+        for c in connectors.due(db):
+            busy = db.query(Job).filter(Job.type == "connector_sync", Job.status.in_([JobStatus.queued, JobStatus.running]),
+                                        Job.params["connector_id"].astext == str(c.id)).count()
+            if busy:
+                continue
+            try:
+                create_job(db, db.get(User, c.owner_id), "connector_sync", {"connector_id": str(c.id)},
+                           title=f"Sincronizar {c.name}", sched_class=SchedClass.batch)
+            except JobError as e:
+                c.status, c.status_message = "error", e.message
+                db.commit()
+        _ = KbConnector
 
 
 def _execute(job_id) -> None:
