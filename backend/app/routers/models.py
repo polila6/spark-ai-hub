@@ -10,16 +10,17 @@ from sqlalchemy.orm import Session
 
 from ..audit import audit
 from ..db import get_db
-from ..deps import Principal, current_principal, not_found, require_admin, require_researcher, visible_filter
+from ..deps import (Principal, current_principal, not_found, require_admin, require_manager, require_researcher,
+                    visible_filter)
 from ..engines import EngineError, get_engine
 from ..models import ModelInstallation, ModelStatus, RegisteredModel, RuntimeInstance, SharedResource, Visibility
-from ..services import llm, registry, scheduler
+from ..services import compat, llm, registry, scheduler
 
 router = APIRouter(prefix="/api/v1/models", tags=["models"])
 
 VLLM_PARAM_KEYS = {"max_model_len", "gpu_memory_utilization", "max_num_seqs", "dtype", "kv_cache_dtype",
                    "quantization", "trust_remote_code", "enable_tool_calling", "tool_call_parser", "reasoning_parser",
-                   "enforce_eager", "load_timeout_s", "speculative_tokens"}
+                   "enforce_eager", "load_timeout_s", "speculative_tokens", "profile"}
 OLLAMA_PARAM_KEYS = {"keep_alive"}
 
 
@@ -75,6 +76,117 @@ def list_models(p: Principal = Depends(current_principal), db: Session = Depends
                         "last_used_at": i.last_used_at} if i else None
         out.append(d)
     return out
+
+
+# ------------------------------------------------------------------ main (general) model
+# Declared before /{model_id} so "main" is not parsed as a model id.
+
+
+class MainIn(BaseModel):
+    model_id: uuid.UUID | None = None
+    install: dict | None = None  # "download and make main": body of POST /api/v1/huggingface/install
+    force: bool = False  # switch even if it does not fit now (it loads as soon as memory is free)
+
+
+@router.get("/main")
+def main_model_status(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Current main model (state, memory, context window), the last switch and a pending download-to-main."""
+    from ..services import main_model
+
+    return {**main_model.overview(db), "can_change": p.is_manager}
+
+
+@router.get("/main/plan")
+def main_model_plan(model_id: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """load-plan for making this model main: the previous main counts as freeable memory."""
+    from ..services import main_model
+
+    m = _get_visible(db, p, model_id)
+    return main_model.plan_switch(db, m)
+
+
+def _main_error(code: str, message: str, status: int = 409, **extra):
+    return HTTPException(status, detail={"code": code, "message": message, **extra})
+
+
+@router.post("/main")
+def set_main_model(body: MainIn, request: Request, p: Principal = Depends(require_manager), db: Session = Depends(get_db)):
+    """Make a model the main one: pin it, unpin the previous main, set the default alias and load it in the background.
+    With `install` (or a model still downloading) the switch is recorded as pending and happens when the install ends."""
+    from ..services import main_model
+
+    if not body.model_id and not body.install:
+        raise _main_error("invalid", "model_id or install is required", 422)
+    if body.install:
+        from .huggingface import InstallIn, install as hf_install
+
+        try:
+            spec = InstallIn(**{"visibility": "public", **body.install})
+        except Exception as e:  # noqa: BLE001 - pydantic validation error
+            raise _main_error("invalid", f"Invalid install request: {e}", 422)
+        if spec.engine and spec.engine not in main_model.LLM_BACKENDS:
+            raise _main_error("not_llm", "Only a language model (vLLM/Ollama) can be the main model", 400)
+        try:
+            res = hf_install(spec, request, p, db)
+        except HTTPException as e:
+            d = e.detail if isinstance(e.detail, dict) else {}
+            if d.get("code") != "already_registered":  # already installed: fall through and switch to it
+                raise
+            res = {"model_id": d["model_id"]}
+        model_id = uuid.UUID(res["model_id"])
+    else:
+        model_id = body.model_id
+    m = db.get(RegisteredModel, model_id)
+    if not m:
+        raise not_found("model")
+    downloading = m.status in main_model.NOT_DOWNLOADED
+    if not main_model.is_llm(m.backend, m.capabilities, m.modality, installed=not downloading):
+        raise _main_error("not_llm", f"{m.alias} is not a chat language model (vLLM/Ollama); it cannot be the main model", 400)
+    if downloading:
+        from ..models import DownloadStatus
+
+        task = main_model._latest_task(db, m.id)
+        if task is None or task.status not in (DownloadStatus.pending, DownloadStatus.running, DownloadStatus.verifying,
+                                               DownloadStatus.paused):
+            raise _main_error("not_downloaded", f"{m.alias} has no active download; install it first")
+        if task.job_id is None and task.status == DownloadStatus.pending:  # a researcher request: approve it now
+            from .huggingface import _start_download
+
+            _start_download(db, task, p.user)
+        marker = main_model.set_pending(db, m, p.id)
+        audit(db, "models.main_pending", actor=p.user, request=request, target_type="model", target_id=str(m.id),
+              details={"alias": m.alias, "repo": m.repo_id})
+        return {"ok": True, "pending": True, **marker, "download_task_id": str(task.id)}
+    if m.status not in main_model.SWITCHABLE:
+        raise _main_error("not_installed", f"{m.alias} is {m.status.value}; it cannot be the main model")
+    if m.status == ModelStatus.failed:
+        from ..models import DownloadStatus
+
+        task = main_model._latest_task(db, m.id)
+        if task and task.status != DownloadStatus.completed:
+            raise _main_error("install_failed", f"The installation of {m.alias} failed: "
+                                                f"{task.error or m.status_message or task.status.value}. Retry it in Downloads")
+    plan = main_model.plan_switch(db, m)
+    if not plan["fits"] and not body.force:
+        raise _main_error("does_not_fit", f"{m.alias} does not fit in memory right now: "
+                                          f"{plan.get('reason') or 'not enough free memory'}", plan=plan)
+    res = main_model.make_main(db, m, p.id)
+    audit(db, "models.main", actor=p.user, request=request, target_type="model", target_id=str(m.id),
+          details={"from": res["previous"], "to": m.alias, "forced": body.force and not plan["fits"],
+                   "settings": res["settings"]})
+    return {"ok": True, "pending": False, **res, "plan": plan}
+
+
+@router.delete("/main/pending")
+def cancel_pending_main(request: Request, p: Principal = Depends(require_manager), db: Session = Depends(get_db)):
+    """Forget the download-to-main marker (the download itself continues; cancel it in Downloads)."""
+    from ..services import main_model
+
+    pend = main_model.clear_pending(db, p.id)
+    if pend:
+        audit(db, "models.main_pending_cancel", actor=p.user, request=request, target_type="model",
+              target_id=pend.get("model_id"), details={"alias": pend.get("alias")})
+    return {"ok": True, "cleared": bool(pend)}
 
 
 @router.get("/{model_id}")
@@ -256,11 +368,13 @@ def context_info(model_id: uuid.UUID, p: Principal = Depends(current_principal),
     native = _native_context(m)
     loaded = bool(db.scalar(select(RuntimeInstance.id).where(RuntimeInstance.model_id == m.id)))
     kv = _kv_tokens(m) if loaded else None
-    top = native or 262144
-    return {"supported": True, "current": current, "native_max": native, "loaded": loaded, "kv_cache_tokens": kv,
+    yarn = compat.yarn_max(m.repo_id, _config(m))
+    top = yarn or native or 262144
+    return {"supported": True, "current": current, "native_max": native, "yarn_max": yarn, "loaded": loaded,
+            "kv_cache_tokens": kv,
             "max_num_seqs": int(params.get("max_num_seqs") or 16), "can_manage": _can_manage(p, m),
             "mtp_available": _has_mtp(m), "speculative_tokens": int(params.get("speculative_tokens") or 0),
-            "presets": [{"tokens": n, "fits_at_once": (kv // n) if kv else None}
+            "presets": [{"tokens": n, "fits_at_once": (kv // n) if kv else None, "yarn": bool(native and n > native)}
                         for n in sorted({*(x for x in CONTEXT_PRESETS if x <= top), current, *([native] if native else [])})]}
 
 
@@ -274,8 +388,9 @@ def set_context(model_id: uuid.UUID, body: ContextIn, request: Request, p: Princ
     if m.backend != "vllm":
         raise HTTPException(400, detail={"code": "not_vllm", "message": "Only vLLM models have a configurable window"})
     native = _native_context(m)
-    if body.max_model_len and native and body.max_model_len > native:
-        raise HTTPException(422, detail={"code": "too_long", "message": f"Este modelo admite como máximo {native} tokens"})
+    limit = compat.yarn_max(m.repo_id, _config(m)) or native
+    if body.max_model_len and limit and body.max_model_len > limit:
+        raise HTTPException(422, detail={"code": "too_long", "message": f"Este modelo admite como máximo {limit} tokens"})
     if body.speculative_tokens and not _has_mtp(m):
         raise HTTPException(422, detail={"code": "no_mtp", "message": "Este modelo no trae capas MTP"})
     old = (m.runtime_config.params if m.runtime_config else {}) or {}

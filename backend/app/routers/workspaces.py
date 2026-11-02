@@ -94,7 +94,13 @@ def create_workspace(body: WsIn, p: Principal = Depends(require_researcher), db:
 @router.patch("/{wid}")
 def rename_workspace(wid: uuid.UUID, body: WsIn, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
     ws = _ws(db, p, wid)
-    ws.name, ws.description = body.name.strip(), body.description
+    name = body.name.strip()
+    if db.scalar(select(Workspace.id).where(Workspace.owner_id == p.id, Workspace.name == name, Workspace.id != ws.id)):
+        raise HTTPException(409, detail={"code": "exists", "message": "Ya tienes un workspace con ese nombre"})
+    ws.name, ws.description = name, body.description
+    conv = db.get(Conversation, ws.conversation_id) if ws.conversation_id else None
+    if conv is not None and (conv.title or "").startswith("🧰 "):  # the assistant's chat keeps the workspace name
+        conv.title = f"🧰 {name}"[:255]
     db.commit()
     return ws_svc.public(ws)
 
@@ -243,8 +249,16 @@ def runs(wid: uuid.UUID, p: Principal = Depends(current_principal), db: Session 
 
 @router.delete("/{wid}/runs")
 def clear_runs(wid: uuid.UUID, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
-    ws_svc.clear_runs(_ws(db, p, wid))
+    ws_svc.clear_runs(_ws(db, p, wid), keep_running=True)
     return {"ok": True}
+
+
+@router.post("/{wid}/runs/{rid}/stop")
+def stop_run(wid: uuid.UUID, rid: str, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    try:
+        return ws_svc.stop_run(_ws(db, p, wid), rid)
+    except ws_svc.WorkspaceError as e:
+        raise _err(e)
 
 
 @router.get("/{wid}/zip")

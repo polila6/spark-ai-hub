@@ -50,7 +50,19 @@ Recomendación: para vLLM, prioriza los modelos de la matriz NVIDIA para DGX Spa
   por trabajo; si no cabe, el trabajo espera con el motivo visible.
 * Modo **híbrido** (por defecto): el *modelo residente preferido* se queda cargado; el resto se descarga tras 15 min sin uso.
 * Ajustes → Sistema → Planificador: modo, tiempos de inactividad, reserva del sistema (14 GB), trabajos GPU-heavy simultáneos.
-* Cargar/descargar manualmente: **Biblioteca** → Cargar / Descargar de memoria.
+* Cargar/descargar manualmente: botones **Cargar** / **Descargar** en cada modelo de la Biblioteca y en su ficha (con
+  estado, tiempo estimado y memoria; si no se puede, dice por qué y qué habría que descargar).
+* **Modelo principal** (tarjeta arriba en Modelos, solo administradores/gestores): elige entre los descargados, los
+  recomendados o cualquier repositorio de Hugging Face. «Hacer principal» lo fija, desfija el anterior (que pasa a
+  descargarse cuando haga falta sitio) y cambia el modelo por defecto del chat, la API y las herramientas. «Descargar
+  y hacer principal» cambia solo cuando acaba la descarga.
+* **Perfiles de arranque**: algunos modelos necesitan una compilación especial de vLLM. Qwen3.8-Flash-Next FP4
+  (`nvidia/Qwen3.8-Flash-Next-FP4-Local`) usa la imagen comunitaria `eugr/spark-vllm-b12x` (fijada por digest) con los
+  parámetros fijos del gestor de motores. El primer arranque **afina los kernels unos 45 min** (se guarda en
+  `/srv/spark-ai-hub/cache/vllm/b12x`; los siguientes tardan ~5 min). Ocupa 70 GiB y reserva ~90 GiB con la caché de
+  contexto (625k tokens).
+* **Ventana de contexto**: Modelos → (modelo) → «Ventana de contexto». En los Qwen, los tamaños por encima de la
+  ventana nativa activan YaRN (hasta 4×): más texto, algo menos de calidad en conversaciones cortas.
 
 ## 6. Copias de seguridad
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import uuid
@@ -104,6 +105,15 @@ def hf_snapshot_dir(model: RegisteredModel) -> Path | None:
     if not model.path:
         return None
     return get_settings().hf_cache_dir / model.path
+
+
+def hf_config(model: RegisteredModel) -> dict:
+    """The snapshot's config.json ({} when missing or unreadable)."""
+    snap = hf_snapshot_dir(model)
+    try:
+        return json.loads((snap / "config.json").read_text()) if snap else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def check_consistency(model: RegisteredModel, deep: bool = False) -> dict:

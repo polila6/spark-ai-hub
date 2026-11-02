@@ -119,10 +119,43 @@ detail, events, cancel, retry, test, stream/updates SSE) · `/benchmarks` (suite
 `run`) · `/connectors` (WebDAV/GitHub/Zotero/SMB CRUD, `test`, `sync`) · `/voice` (status, `transcribe` multipart,
 `speak` → audio/wav) · `/usage` (`days`, `scope=me|all`) · `/auth/oidc` (`providers`, `{provider}/start`,
 `{provider}/callback`) · `/models/{id}/context` (GET window info and KV capacity; POST `max_model_len`,
-`speculative_tokens`, reloads in the background) · `/media` (workflows, install, uploads,
+`speculative_tokens`, reloads in the background) · `/models/main` (see below) · `/media` (workflows, install, uploads,
 generate, artifacts, audio/transcribe, audio/tts) · `/datasets` · `/science` (adapters, models, models/from-hf) ·
 `/experiments` (CRUD, run) · `/api-keys` (CRUD, usage) · `/storage` (overview, hf-cache, gc) · `/admin` (settings,
 hf-token status, audit, backups, restore-test, diagnostics, bundle).
+
+### Main (general) model
+
+The main model is the chat LLM kept resident for everyone (`pinned` + settings `preferred_resident_model` /
+`default_model`; `chat_default_model` and `harness_default_model` follow it when they pointed at the previous main).
+
+| Endpoint | Role | Description |
+|---|---|---|
+| `GET /api/v1/models/main` | any | `{alias, model, switch, pending, mode, idle_timeout_min, can_change}` — `model` is the registry entry plus `state` (`loaded`/`loading`/`unloading`/`stopped`), `reserved_gb`, `measured_gb`, `started_at`, `expected_load_seconds`; `switch` is the last switch (`state`: `loading`/`waiting`/`ready`/`failed`, `error`); `pending` is a model being downloaded to become main (with `download` progress and `error` if the install failed) |
+| `GET /api/v1/models/main/plan?model_id=` | any | load-plan for making that model main: like `/{id}/load-plan` but the current main counts as freeable (`unload_previous`, `previous`, `previous_alias`) |
+| `POST /api/v1/models/main` | admin/manager | body `{model_id}` or `{install: <POST /huggingface/install body>}`, optional `force`. Installed model → pins it, unpins the previous main, updates the default settings, makes it public and loads it in the background (the previous main is unloaded only if the room is needed). Not downloaded yet (or `install`) → starts/approves the install and records a pending marker (`pending: true`); the switch happens automatically when the install job succeeds. Errors: `400 not_llm`, `409 does_not_fit` (with `plan`; retry with `force: true`), `409 not_downloaded`, `409 install_failed`, `409 not_installed`, install errors (`blocked`, `license_ack_required`) |
+| `DELETE /api/v1/models/main/pending` | admin/manager | forget the pending marker (the download continues) |
+
+### Chat message actions
+
+| Endpoint | Description |
+|---|---|
+| `POST /api/v1/playground/conversations/{cid}/messages/{mid}/regenerate` | `mid` must be a user message. Same body as `/messages` with optional `content` (`null` = answer again, text = edit the message); attachments are kept. Deletes every later message and streams the new answer (SSE, background turn like `/messages`). `409 turn_running` while a reply is running |
+| `POST /api/v1/playground/conversations/{cid}/messages/{mid}/truncate` | "Resume from here": keeps `mid`, deletes what follows → `{ok, deleted, summary_cleared}` |
+
+`/messages` streams a `{"type": "user_message", "message_id": N}` event when the turn starts. The context summary is
+cleared when it covered an edited or deleted message.
+
+### Workspace terminal
+
+| Endpoint | Description |
+|---|---|
+| `POST /api/v1/workspaces/{wid}/run` | body `{command, timeout_s?, background?}`; `command` may span several lines (run by bash as a script; CRLF normalised) |
+| `GET /api/v1/workspaces/{wid}/runs` | background runs (survive leaving the page) |
+| `POST /api/v1/workspaces/{wid}/runs/{rid}/stop` | stops a background run (its container exits with code 130) |
+| `DELETE /api/v1/workspaces/{wid}/runs` | clears the finished runs (running ones are kept) |
+
+Audited as `models.main`, `models.main_pending`, `models.main_pending_cancel`.
 
 Pagination: `limit`/`offset` on large lists. Errors: `{"error": {"code", "message", ...}, "request_id"}`; every response
 carries `X-Request-ID` for log correlation.

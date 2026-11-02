@@ -156,3 +156,19 @@ def running_for_user(user_id) -> list[dict]:
         else:
             r.srem(f"sah:turns:user:{user_id}", cid)
     return sorted(out, key=lambda x: x["started_at"])
+
+
+def rewind_plan(msgs: list[tuple[int, str]], mid: int, summary_upto: int | None, edited: bool = False) -> dict:
+    """What rewinding a chat to message `mid` changes (pure; the router applies it).
+
+    `msgs` are the conversation's (id, role) in order. Every message after `mid` is deleted; `edited` means the text of
+    `mid` itself changes too. The compaction summary covers the messages with id <= summary_upto, so it is stale (and must
+    be dropped; the next turn re-compacts if the history is still too long) when it covers any changed message.
+    """
+    ids = [i for i, _ in msgs]
+    if mid not in ids:
+        raise KeyError(mid)
+    delete = [i for i in ids if i > mid]
+    first_changed = mid if edited else (delete[0] if delete else None)
+    stale = summary_upto is not None and first_changed is not None and summary_upto >= first_changed
+    return {"delete": delete, "clear_summary": stale, "role": dict(msgs)[mid]}

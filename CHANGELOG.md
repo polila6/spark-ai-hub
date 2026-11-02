@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.9.0 — 2026-11-02
+New main model, a simple way to choose it, message actions in the chat and a redesigned Workspace.
+
+* **Qwen3.8-Flash-Next FP4 as the general model** (`nvidia/Qwen3.8-Flash-Next-FP4-Local`: 125B MoE, 6B active,
+  vision and tools, NVIDIA's quantization-aware FP4 for local hardware). It needs a community DGX Spark vLLM build
+  with the b12x kernels: the engine manager now has fixed **launch profiles** (image pinned by digest, environment and
+  flags allow-listed; nothing comes from the caller). The 51B-parameter n-gram table is read from disk with io_uring,
+  allowed by a seccomp profile that is Docker's default plus the three io_uring calls (not `seccomp=unconfined`).
+  Measured on the Spark: 70.3 GiB resident, FP8 KV cache for 625k tokens, 256k context, MTP (4 draft tokens),
+  ~45 tok/s. The first start autotunes the kernels (~45 min, cached afterwards in `cache/vllm/b12x`).
+* **Longer windows with YaRN**: Qwen models can go beyond their native window (up to 4×, 1M at most); the context card
+  marks those sizes "YaRN" and explains the trade-off (better for long texts, slightly worse on short chats).
+* **Main model** card on the Models page: current model, state, memory and context; pick another one among the
+  downloaded models, the recommended ones or any Hugging Face repository ("Download and make main" switches by itself
+  when the download ends, with progress, speed and ETA). New API: `GET/POST /api/v1/models/main`,
+  `GET /api/v1/models/main/plan`, `DELETE /api/v1/models/main/pending`.
+* **Load / Unload buttons** on every model (library and detail page) with live state, ETA and memory, and the reason
+  when an action is not possible.
+* Model loads: a profile can allow a long first start (2 h); a load in progress survives a worker restart (the hub
+  waits for the running container instead of restarting it).
+* **Chat message actions**: copy any message, copy code blocks, edit a sent message and regenerate, regenerate the
+  last answer, reply quoting a selected piece of an answer, and "resume from here" (deletes what follows). Same actions
+  in the Workspace assistant. New API: `POST …/messages/{id}/regenerate`, `POST …/messages/{id}/truncate`; the
+  context summary is invalidated when it covered removed messages. Your own messages are selectable again (the
+  selection colour was the bubble colour).
+* **Workspace redesigned**: workspace switcher (rename, sizes, last used), resizable and collapsible panels, file
+  tree with icons, context menu, drag & drop to folders and move, editor tabs with unsaved marks and Ctrl+S, conflict
+  warning when a file changes on the server, and a **multi-line terminal** (Enter runs, Shift+Enter new line, Tab
+  indents, history) with run history, exit codes, duration and a **Stop** button for background runs. Mobile: panels
+  become tabs.
+
 ## 0.8.1 — 2026-11-01
 Connectors verified against real servers; voice fixes.
 

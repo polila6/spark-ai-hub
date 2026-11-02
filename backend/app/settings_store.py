@@ -15,6 +15,7 @@ DEFAULTS: dict[str, Any] = {
     "model_idle_timeout_min": 15,
     "on_demand_idle_timeout_min": 2,
     "preferred_resident_model": None,
+    "pending_main_model": None,  # {model_id, alias, ...}: becomes the main model when its install finishes
     "system_reserve_gb": 14.0,
     "max_concurrent_gpu_jobs": 1,
     "max_concurrent_video_jobs": 1,

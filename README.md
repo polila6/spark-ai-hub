@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.8.1-76b900">
+  <img alt="version" src="https://img.shields.io/badge/version-0.9.0-76b900">
   <img alt="platform" src="https://img.shields.io/badge/platform-DGX%20Spark%20(GB10%2C%20aarch64)-76b900">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="stack" src="https://img.shields.io/badge/stack-FastAPI%20%C2%B7%20Next.js%20%C2%B7%20vLLM%20%C2%B7%20Docker-555">
@@ -31,7 +31,7 @@
 
 ## Why
 
-A DGX Spark has 128 GB of unified memory: enough for a 35B model with a 256k-token context, an image model and
+A DGX Spark has 128 GB of unified memory: enough for a 125B MoE model in FP4 with a 256k-token context, embeddings and
 embeddings at the same time. What it lacks is the *platform*: accounts, a chat people actually like, a shared model
 library, an API for coding agents, and something that decides what stays in memory. **Spark AI Hub is that platform.**
 Install it with one command, invite your colleagues, and everybody gets a private ChatGPT-style workspace and an API key —
@@ -44,7 +44,8 @@ without sending a single prompt to an external AI service.
 ## ✨ Features
 
 ### Chat that does real work
-- **One general model always loaded** (default: Qwen3.5-35B-A3B FP8, vision + tools, **256k context**), others load on demand.
+- **One general model always loaded** (recommended: Qwen3.8-Flash-Next FP4, vision + tools, **256k context**, ~45 tok/s;
+  or the lighter Qwen3.5-35B-A3B FP8), chosen in one click on the **Main model** card; others load on demand.
 - **Attach anything**: images, PDFs (scanned ones too), Word, PowerPoint, Excel/CSV, code. Ask questions over data with sandboxed SQL.
 - **Web search** through a private [SearXNG](https://github.com/searxng/searxng) inside the hub; pages and PDFs are read and cited. SSRF-safe: internal addresses are never fetched.
 - **Agents**: the assistant delegates to sub-agents (researcher, writer, analyst, reviewer, or your own) — several **in parallel**, with live progress and a report each.
@@ -145,8 +146,9 @@ secrets, pulls the vLLM image, builds and starts everything, and prints the addr
 Then, in the web app:
 
 1. **Log in** as `admin` with the password from `/srv/spark-ai-hub/config/secrets/admin_password` and change it.
-2. **Discover models** → search `Qwen3.5-35B-A3B-FP8` → **Install**. When it is ready, open it in the **Library** and
-   click **Pin resident**: it becomes the general model everyone uses by default.
+2. **Models** → **Main model** card → **Change** → pick `nvidia/Qwen3.8-Flash-Next-FP4-Local` (96 GiB download; its
+   first start autotunes the kernels for ~45 min) or the lighter `Qwen/Qwen3.5-35B-A3B-FP8` → **Download and make
+   main**. It switches by itself when the download ends and becomes the model everyone uses by default.
 3. **Users** → invite colleagues by e-mail, or allow sign-up requests (Settings → Access and mail).
 4. **Connect tools** → create an API key and copy the configuration for your editor or agent.
 
@@ -174,7 +176,7 @@ Any OpenAI-compatible client works with `https://<your-spark>/v1` and a personal
 ```python
 from openai import OpenAI
 client = OpenAI(base_url="https://your-spark.your-tailnet.ts.net/v1", api_key="sah-...")
-print(client.chat.completions.create(model="qwen3.5-35b-a3b-fp8",
+print(client.chat.completions.create(model="qwen3.8-flash-next-fp4",
       messages=[{"role": "user", "content": "Hello from my DGX Spark"}]).choices[0].message.content)
 ```
 
@@ -188,10 +190,10 @@ print(client.chat.completions.create(model="qwen3.5-35b-a3b-fp8",
       "npm": "@ai-sdk/openai-compatible",
       "name": "Spark AI Hub",
       "options": { "baseURL": "https://your-spark.your-tailnet.ts.net/v1", "apiKey": "{env:SPARK_API_KEY}" },
-      "models": { "qwen3.5-35b-a3b-fp8": { "name": "Qwen3.5 35B (Spark)", "limit": { "context": 262144, "output": 16384 } } }
+      "models": { "qwen3.8-flash-next-fp4": { "name": "Qwen3.8 Flash Next (Spark)", "limit": { "context": 262144, "output": 32768 } } }
     }
   },
-  "model": "spark/qwen3.5-35b-a3b-fp8"
+  "model": "spark/qwen3.8-flash-next-fp4"
 }
 ```
 

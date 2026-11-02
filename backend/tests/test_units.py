@@ -518,6 +518,25 @@ def test_dead_turns_are_closed_and_deleted_chats_stop(monkeypatch):
     assert turns.running_for_user("u1") == [] and fake.exists(turns._k("c1", ":cancel"))
 
 
+
+def test_chat_rewind_plan_deletes_later_messages_and_stale_summary():
+    from app.services import turns
+
+    msgs = [(1, "user"), (2, "assistant"), (3, "user"), (4, "assistant"), (5, "user"), (6, "assistant")]
+    # resume from 4: 5 and 6 go; a summary up to 2 (or 4) does not cover them and stays
+    assert turns.rewind_plan(msgs, 4, 2) == {"delete": [5, 6], "clear_summary": False, "role": "assistant"}
+    assert turns.rewind_plan(msgs, 4, 4)["clear_summary"] is False
+    assert turns.rewind_plan(msgs, 4, 5)["clear_summary"] is True  # it summarised a deleted message
+    # edit user message 3 and answer again: 4..6 go; a summary that covered 3 is stale, one up to 2 is not
+    assert turns.rewind_plan(msgs, 3, 3, edited=True) == {"delete": [4, 5, 6], "clear_summary": True, "role": "user"}
+    assert turns.rewind_plan(msgs, 3, 2, edited=True)["clear_summary"] is False
+    assert turns.rewind_plan(msgs, 3, 3, edited=False)["clear_summary"] is False  # plain regenerate keeps the text
+    # last message: nothing to delete, nothing stale; no summary at all is never cleared
+    assert turns.rewind_plan(msgs, 6, 6) == {"delete": [], "clear_summary": False, "role": "assistant"}
+    assert turns.rewind_plan(msgs, 1, None, edited=True)["clear_summary"] is False
+    with pytest.raises(KeyError):
+        turns.rewind_plan(msgs, 99, None)  # not a message of this chat
+
 def test_webdav_listing_reads_every_propstat_and_recurses(monkeypatch):
     import httpx
 
@@ -543,3 +562,89 @@ def test_webdav_listing_reads_every_propstat_and_recurses(monkeypatch):
     items = connectors.WebDav(None, {"url": "https://cloud.example.org/dav/docs/"}, None).list()
     assert sorted((i["path"], i["etag"], i["size"]) for i in items) == [
         ("informe.md", "Sun, 01 Nov 2026", 42), ("sub/nota uno.txt", "e1", 7)]
+
+
+def test_workspace_terminal_scripts_keep_lines_and_can_stop(tmp_path):
+    import subprocess
+    import threading
+    import time
+
+    from app.services import workspace as w
+
+    work = tmp_path / "work"
+    work.mkdir()
+
+    def go(cmd, stop_after=None):
+        (tmp_path / w.STOP_FILE).unlink(missing_ok=True)
+        main, script = w.bash_scripts(cmd, str(tmp_path), str(work))
+        (tmp_path / ".main.sh").write_text(main)
+        (tmp_path / ".cmd.sh").write_text(script)
+        if stop_after:
+            threading.Timer(stop_after, (tmp_path / w.STOP_FILE).touch).start()
+        t0 = time.time()
+        p = subprocess.run(["bash", str(tmp_path / ".main.sh")], capture_output=True, text=True, timeout=20)
+        return p.returncode, p.stdout, p.stderr, time.time() - t0
+
+    code, out, err, _ = go("echo uno\nfor i in 1 2; do\n  echo l$i\ndone\necho mal >&2\npwd\nexit 3")
+    assert (code, out, err) == (3, f"uno\nl1\nl2\n{work}\n", "mal\n")  # a multi-line script, exit code kept
+    assert go("echo a\r\necho b")[1] == "a\nb\n"  # pasted Windows line endings
+    assert go("python3 - <<'PY'\nprint('doc', 1 + 1)\nPY")[1] == "doc 2\n"  # heredocs work
+    code, _, err, secs = go("exec sleep 30", stop_after=0.5)
+    assert code == w.STOP_EXIT and "detenido" in err and secs < 5
+
+
+def test_workspace_runs_stop_and_clear_keep_running(tmp_path, monkeypatch):
+    import json
+    import types
+    import uuid
+
+    import pytest
+
+    from app import redis_client
+    from app.models import Workspace
+    from app.services import workspace as w
+
+    fake = _FakeRedis()
+    monkeypatch.setattr(redis_client, "get_redis", lambda: fake)
+    monkeypatch.setattr(w, "get_settings", lambda: types.SimpleNamespace(data_root=tmp_path))
+    ws = Workspace(id=uuid.uuid4(), owner_id=uuid.uuid4(), name="t")
+    busy, done = uuid.uuid4().hex, uuid.uuid4().hex
+    for rid, status in ((busy, "running"), (done, "done")):
+        fake.set(w._rkey(ws.id, rid), json.dumps({"id": rid, "status": status, "command": "x",
+                                                  "started_at": "2099-01-01T00:00:00+00:00"}))
+        fake.rpush(w._rkey(ws.id), rid)
+    (tmp_path / "sandbox" / busy).mkdir(parents=True)
+    assert w.stop_run(ws, busy)["stop_requested"] is True
+    assert (tmp_path / "sandbox" / busy / w.STOP_FILE).exists()
+    assert "stop_requested" not in w.stop_run(ws, done)  # finished: nothing to stop
+    for bad in ("../../etc", uuid.uuid4().hex):  # not a run of this workspace
+        with pytest.raises(w.WorkspaceError):
+            w.stop_run(ws, bad)
+    w.clear_runs(ws, keep_running=True)
+    assert [r["id"] for r in w.list_runs(ws)] == [busy]
+
+
+def test_main_model_pure_helpers():
+    from app.services.main_model import adjust_plan, is_llm, settings_changes
+
+    assert is_llm("vllm", ["chat", "completion"], "text")
+    assert not is_llm("vllm", ["embeddings"], "embedding")
+    assert not is_llm("comfyui", ["image"], "image")
+    assert is_llm("ollama", [], "text", installed=False)  # Ollama capabilities are only known after the pull
+    assert not is_llm("ollama", [], "text", installed=True)
+    ch = settings_changes({"chat_default_model": "old", "harness_default_model": "other"}, "old", "new")
+    assert ch == {"preferred_resident_model": "new", "default_model": "new", "chat_default_model": "new"}
+    assert settings_changes({"chat_default_model": None}, None, "new") == {"preferred_resident_model": "new", "default_model": "new"}
+    base = {"model": "new", "need_gb": 60.0, "free_gb": 20.0, "schedulable_gb": 114.0, "resident": False,
+            "evict": [{"name": "idle", "reserved_gb": 10.0, "idle_seconds": 900}], "fits": False,
+            "blocked_by": [{"name": "old", "reserved_gb": 40.0, "in_use": False, "protected": True}]}
+    prev = {"name": "old", "reserved_gb": 40.0, "idle_seconds": 5, "in_use": False}
+    out = adjust_plan(base, prev)
+    assert out["fits"] and out["unload_previous"] and [e["name"] for e in out["evict"]] == ["idle", "old"]
+    assert out["blocked_by"] == []
+    assert not adjust_plan({**base, "need_gb": 80.0}, prev)["fits"]  # 20 + 10 + 40 < 80
+    assert not adjust_plan({**base, "need_gb": 200.0}, prev)["fits"]  # larger than the whole budget
+    fits = adjust_plan({**base, "fits": True, "evict": []}, prev)
+    assert fits["fits"] and not fits["unload_previous"]
+    small = adjust_plan({**base, "need_gb": 25.0}, prev)  # the idle model alone frees enough: keep the old main
+    assert small["fits"] and not small["unload_previous"] and [e["name"] for e in small["evict"]] == ["idle"]

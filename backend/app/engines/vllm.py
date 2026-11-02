@@ -6,7 +6,7 @@ import time
 
 import httpx
 
-from ..services import orchestrator
+from ..services import compat, orchestrator, registry
 from .base import EngineAdapter, EngineError, Health, LoadResult
 
 
@@ -92,11 +92,20 @@ class VllmAdapter(EngineAdapter):
         }
         if params.get("quantization"):
             body["quantization"] = params["quantization"]
-        try:
-            orchestrator.start_vllm(body)
-        except orchestrator.OrchestratorError as e:
-            raise EngineError(f"vLLM start failed: {e}", remediation="Check the vLLM image is pulled") from e
+        if params.get("profile"):
+            body["profile"] = params["profile"]
+        rope = compat.yarn_scaling(registry.hf_config(model), body["max_model_len"])
+        if rope:  # window beyond the native one → static YaRN
+            body["rope_scaling"] = rope
         base = self.base_for(model.alias)
+        # A container still starting for this model (e.g. the worker restarted mid-load) is waited for, not restarted:
+        # a first start can spend a long time autotuning kernels. Unloads remove the container, so it is current.
+        running = any(i.get("model") == model.alias and i.get("state") == "running" for i in self.instances())
+        if not running:
+            try:
+                orchestrator.start_vllm(body)
+            except orchestrator.OrchestratorError as e:
+                raise EngineError(f"vLLM start failed: {e}", remediation="Check the vLLM image is pulled") from e
         deadline = time.time() + float(params.get("load_timeout_s") or 1800)
         while time.time() < deadline:
             time.sleep(5)

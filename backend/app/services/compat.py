@@ -37,6 +37,23 @@ NVIDIA_SPARK_VLLM = {
 NVIDIA_CUSTOM_IMAGE = {"google/gemma-4-31B-it", "google/gemma-4-26B-A4B-it", "google/gemma-4-E4B-it",
                        "google/gemma-4-E2B-it", "nvidia/Gemma-4-31B-IT-NVFP4"}
 
+# Models served with a fixed launch recipe (engine-manager VLLM_PROFILES: community vLLM image, kernels, flags).
+VLLM_PROFILE_REPOS = {
+    "nvidia/Qwen3.8-Flash-Next-FP4-Local": {
+        "profile": "qwen38_flash_next",
+        "architectures": {"Qwen4ExpForConditionalGeneration"},
+        # 96 GiB on disk; 70.3 GiB resident measured on the Spark (the n-gram table is read from disk with io_uring).
+        "resident_gb": 70.5,
+        "note": "Served by the community DGX Spark vLLM build (b12x kernels); the n-gram table is read from disk",
+        "params": {"enable_tool_calling": True, "tool_call_parser": "qwen3_xml", "reasoning_parser": "qwen3",
+                   "speculative_tokens": 4, "max_num_seqs": 8, "kv_cache_dtype": "fp8", "max_model_len": 262144,
+                   # the first start autotunes the b12x kernels (~45 min, cached afterwards)
+                   "load_timeout_s": 7200,
+                   # 0.74 × 121.7 GiB ≈ 90 GiB: 70.3 weights + ~19 for KV cache (FP8, ~1M tokens), activations, graphs
+                   "gpu_memory_utilization": 0.74},
+    },
+}
+
 BYTES_PER_PARAM = {
     "fp32": 4.0, "bf16": 2.0, "fp16": 2.0, "fp8": 1.0, "int8": 1.0, "w8a8": 1.0,
     "nvfp4": 0.56, "mxfp4": 0.53, "int4": 0.56, "awq": 0.56, "gptq": 0.56, "bnb-4bit": 0.6,
@@ -168,8 +185,45 @@ def estimate(
     return e
 
 
+def native_context(config: dict | None) -> int | None:
+    c = (config or {}).get("text_config") or config or {}
+    return int(c["max_position_embeddings"]) if c.get("max_position_embeddings") else None
+
+
+def yarn_max(repo_id: str | None, config: dict | None) -> int | None:
+    """Longest window reachable with YaRN for families that document it (Qwen3.x: up to 4× native, 1M at most)."""
+    c = config or {}
+    mtype = f"{c.get('model_type', '')} {(c.get('text_config') or {}).get('model_type', '')}".lower()
+    native = native_context(config)
+    if not native or not (any(k in mtype for k in ("qwen3", "qwen4")) or "qwen3" in (repo_id or "").lower()):
+        return None
+    return min(4 * native, 1_048_576)
+
+
+def yarn_scaling(config: dict | None, max_len: int) -> dict | None:
+    """Static YaRN rope parameters for a window longer than the native one (engine-manager RopeScaling)."""
+    tc = (config or {}).get("text_config")
+    c = tc or config or {}
+    native = native_context(config)
+    if not native or max_len <= native:
+        return None
+    rope = dict(c.get("rope_parameters") or c.get("rope_scaling") or {})
+    out = {"rope_type": "yarn", "factor": round(max_len / native, 3), "original_max_position_embeddings": native,
+           "in_text_config": bool(tc)}
+    theta = rope.get("rope_theta") or c.get("rope_theta")
+    if theta:
+        out["rope_theta"] = float(theta)
+    for k in ("partial_rotary_factor", "mrope_interleaved", "mrope_section"):
+        if rope.get(k) is not None:
+            out[k] = rope[k]
+    return out
+
+
 def parser_defaults(repo_id: str, config: dict | None) -> dict:
     """vLLM tool-calling / reasoning parsers for well-known model families (so tools work right after install)."""
+    if repo_id in VLLM_PROFILE_REPOS:
+        prof = VLLM_PROFILE_REPOS[repo_id]
+        return {"profile": prof["profile"], **prof["params"]}
     rid = repo_id.lower()
     c = config or {}
     mtype = f"{c.get('model_type', '')} {(c.get('text_config') or {}).get('model_type', '')}".lower()
@@ -236,8 +290,17 @@ def analyse(
                        concurrency=concurrency)
         reasons, lim = [], list(common_warn)
         supported = vllm_architectures()
+        prof = VLLM_PROFILE_REPOS.get(repo_id)
+        if prof and set(archs) <= prof["architectures"]:
+            supported = supported | prof["architectures"]
+            if prof.get("resident_gb"):
+                est.weights_gb, est.total_gb = prof["resident_gb"], round(prof["resident_gb"] + (est.kv_cache_gb or 0) + 4.0, 2)
+                est.basis.append(f"resident weights ≈ {prof['resident_gb']} GB (part of the checkpoint stays on disk)")
         arch_ok = bool(archs) and (not supported or all(a in supported for a in archs))
         conf = 0.5
+        if prof:
+            reasons.append(prof["note"])
+            conf = 0.8
         if repo_id in NVIDIA_SPARK_VLLM:
             reasons.append("Listed in NVIDIA DGX Spark vLLM support matrix")
             conf = 0.85

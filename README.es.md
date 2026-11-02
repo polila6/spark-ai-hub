@@ -16,7 +16,7 @@
 
 ## Qué es
 
-Un DGX Spark tiene 128 GB de memoria unificada: cabe un modelo de 35B con 256k tokens de contexto, un modelo de imagen y
+Un DGX Spark tiene 128 GB de memoria unificada: cabe un modelo MoE de 125B en FP4 con 256k tokens de contexto, los embeddings y
 los embeddings a la vez. Lo que le falta es la *plataforma*: cuentas de usuario, un chat agradable, una biblioteca de
 modelos compartida, una API para agentes de programación y algo que decida qué se queda en memoria. **Spark AI Hub es
 esa plataforma.** Se instala con un comando, invitas a tus compañeros y cada uno tiene su espacio privado tipo ChatGPT y
@@ -26,7 +26,9 @@ su clave API, sin enviar ni un prompt a servicios de IA externos.
 
 ## Funciones
 
-- **Chat**: modelo general siempre cargado (Qwen3.5-35B-A3B FP8, visión y herramientas, **256k de contexto**); adjunta
+- **Chat**: modelo general siempre cargado (recomendado: Qwen3.8-Flash-Next FP4, visión y herramientas, **256k de
+  contexto**, ~45 tok/s; se elige en un clic en la tarjeta **Modelo principal**); edita, copia, regenera o retoma
+  cualquier mensaje; adjunta
   imágenes, PDF (también escaneados), Word, PowerPoint, Excel/CSV y código; genera y edita imágenes; las respuestas
   siguen aunque cierres la pestaña.
 - **Búsqueda en internet** con un SearXNG privado dentro del propio hub; lee páginas y PDF y cita las fuentes. Nunca abre
@@ -79,8 +81,9 @@ secretos, construye y arranca todo, y te muestra la dirección y el acceso de ad
 Después, en la web:
 
 1. Entra como `admin` con la contraseña de `/srv/spark-ai-hub/config/secrets/admin_password` y cámbiala.
-2. **Descubrir modelos** → busca `Qwen3.5-35B-A3B-FP8` → **Instalar**. En la **Biblioteca**, ábrelo y pulsa
-   **Fijar residente**: será el modelo general.
+2. **Modelos** → tarjeta **Modelo principal** → **Cambiar** → elige `nvidia/Qwen3.8-Flash-Next-FP4-Local` (96 GiB; el
+   primer arranque afina los kernels unos 45 min) o el más ligero `Qwen/Qwen3.5-35B-A3B-FP8` → **Descargar y hacer
+   principal**. Cambia solo al terminar la descarga y será el modelo de todos por defecto.
 3. **Usuarios** → invita por correo o permite solicitudes de registro (Ajustes → Acceso y correo).
 4. **Conectar herramientas** → crea una clave API y copia la configuración de tu editor o agente.
 

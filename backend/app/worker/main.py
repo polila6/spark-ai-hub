@@ -106,6 +106,12 @@ def _maintenance() -> None:
         except Exception as e:  # noqa: BLE001
             log.warning("worker.resident_failed", error=str(e))
         try:
+            from ..services import main_model
+
+            main_model.check_pending()
+        except Exception as e:  # noqa: BLE001
+            log.warning("worker.pending_main_failed", error=str(e))
+        try:
             scheduler.sweep_idle()
         except Exception as e:  # noqa: BLE001
             log.warning("worker.sweep_failed", error=str(e))

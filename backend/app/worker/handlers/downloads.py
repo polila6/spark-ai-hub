@@ -229,6 +229,7 @@ def _install(ctx: JobContext, model_id: uuid.UUID) -> None:
         owner = model.owner_id
     ctx.progress(1.0, "Installed", force=True)
     ctx.set_result({"model_id": str(model_id), "installed": True})
+    _maybe_make_main(ctx, model_id)
     if smoke:
         with SessionLocal() as db:
             from ...models import SchedClass, User
@@ -285,6 +286,7 @@ class OllamaPull(Handler):
             raise
         ctx.log("Ollama verified layer digests (sha256) during pull")
         register_ollama_details(model_id)
+        _maybe_make_main(ctx, model_id)
         with SessionLocal() as db:
             t = db.get(DownloadTask, task_id)
             t.status = DownloadStatus.completed
@@ -342,6 +344,14 @@ def register_ollama_details(model_id: uuid.UUID) -> None:
                       details={"capabilities": mapped, "ollama_capabilities": sorted(caps)})
         _notify_ready(db, model)
         db.commit()
+
+
+def _maybe_make_main(ctx: JobContext, model_id: uuid.UUID) -> None:
+    """Complete a "download and make main" request (pending-main marker) once the install succeeded."""
+    from ...services import main_model
+
+    if main_model.on_installed(model_id):
+        ctx.log("Installed model is now the main model; loading it in the background")
 
 
 def _notify_ready(db, model) -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import mimetypes
 import os
+import re
 import shutil
 import stat
 import uuid
@@ -331,19 +332,50 @@ def _snapshot(base: Path) -> dict[str, tuple[int, int]]:
     return out
 
 
-def run(db: Session, ws: Workspace, command: str, *, language: str = "bash", timeout_s: int | None = None) -> dict:
-    """Run a command (or a whole script) in the sandbox with the workspace as /work. Returns output + changed files."""
+STOP_FILE = ".stop"
+STOP_EXIT = 130
+
+
+def normalize_command(command: str) -> str:
+    """Commands typed or pasted in the browser: Windows line endings would reach bash as a stray $'\\r'."""
+    return command.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def bash_scripts(command: str, job: str = "/job", work: str = "/work") -> tuple[str, str]:
+    """(.main.sh, .cmd.sh) for a terminal command: any number of lines, run as one bash script.
+
+    The command runs as a child of .main.sh (PID 1 in the sandbox), which watches for job/.stop: the backend
+    creates it to stop the run, PID 1 then exits and the container stops with everything started inside it."""
+    stop = f"{job}/{STOP_FILE}"
+    main = (f"cd {work}\n"
+            f"trap 'kill \"$child\" 2>/dev/null; echo \"[detenido por el usuario]\" >&2; exit {STOP_EXIT}' USR1\n"
+            f"bash {job}/.cmd.sh &\n"
+            "child=$!\n"
+            f"( while [ ! -e {stop} ] && kill -0 $$; do sleep 0.5; done; "
+            f"[ -e {stop} ] && kill -USR1 $$ ) >/dev/null 2>&1 &\n"
+            "wait \"$child\"\n")
+    return main, f"cd {work}\n{normalize_command(command)}\n"
+
+
+def run(db: Session, ws: Workspace, command: str, *, language: str = "bash", timeout_s: int | None = None,
+        run_id: str | None = None) -> dict:
+    """Run a command (or a whole script) in the sandbox with the workspace as /work. Returns output + changed files.
+    With run_id (a terminal run), stop_run() can stop it."""
     if not get_setting(db, "code_exec_enabled"):
         raise SandboxError("La ejecución de código está desactivada.", "Un administrador puede activarla en Ajustes → Sistema.")
     base = ensure(ws)
     _check_quota(db, ws)
     before = _snapshot(base)
-    rid = uuid.uuid4().hex
+    rid = run_id or uuid.uuid4().hex
     job = get_settings().data_root / "sandbox" / rid
     job.mkdir(parents=True)
     try:
-        name = {"python": ".main.py", "node": ".main.js"}.get(language, ".main.sh")
-        (job / name).write_text(command if language != "bash" else f"cd /work\n{command}\n")
+        if language in ("python", "node"):
+            (job / {"python": ".main.py", "node": ".main.js"}[language]).write_text(normalize_command(command))
+        else:
+            main, cmd = bash_scripts(command)
+            (job / ".cmd.sh").write_text(cmd)
+            (job / ".main.sh").write_text(main)
         limit = int(timeout_s or get_setting(db, "workspace_timeout_s") or 600)
         from .sandbox import user_slot
 
@@ -402,11 +434,14 @@ def start_background_run(ws: Workspace, command: str, timeout_s: int | None) -> 
         try:
             with SessionLocal() as db:
                 w = db.get(Workspace, wid)
-                res = run(db, w, command, timeout_s=timeout_s)
+                res = run(db, w, command, timeout_s=timeout_s, run_id=rid)
             out.update(status="done", **{k: res.get(k) for k in ("exit_code", "timed_out", "oom_killed", "seconds",
                                                                    "stdout", "stderr", "changed", "removed")})
         except Exception as e:  # noqa: BLE001  (sandbox/engine errors end up in the terminal)
             out.update(status="done", exit_code=-1, stderr=str(getattr(e, "message", e))[:2000], seconds=0)
+        cur = r.get(_rkey(wid, rid))
+        if cur and json.loads(cur).get("stop_requested"):
+            out["stopped"] = True
         out["finished_at"] = datetime.now(timezone.utc).isoformat()
         r.set(_rkey(wid, rid), json.dumps(out), ex=RUN_TTL)
 
@@ -434,13 +469,44 @@ def list_runs(ws: Workspace) -> list[dict]:
     return out
 
 
-def clear_runs(ws: Workspace) -> None:
+def stop_run(ws: Workspace, rid: str) -> dict:
+    """Stop a terminal run of this workspace: the sandbox sees job/.stop and ends within a second."""
+    import json
+
     from ..redis_client import get_redis
 
     r = get_redis()
+    known = re.fullmatch(r"[0-9a-f]{32}", rid or "") and rid in r.lrange(_rkey(ws.id), 0, -1)
+    if not known or not (raw := r.get(_rkey(ws.id, rid))):
+        raise WorkspaceError("Ese comando ya no existe", 404)
+    rec = json.loads(raw)
+    if rec.get("status") != "running":
+        return rec
+    rec["stop_requested"] = True
+    r.set(_rkey(ws.id, rid), json.dumps(rec), ex=RUN_TTL)
+    job = get_settings().data_root / "sandbox" / rid
+    if job.is_dir():  # not there yet or already gone: nothing is running to stop
+        (job / STOP_FILE).touch()
+    return rec
+
+
+def clear_runs(ws: Workspace, *, keep_running: bool = False) -> None:
+    """Forget the terminal runs (keep_running: those still working stay listed, so they can still be stopped)."""
+    import json
+
+    from ..redis_client import get_redis
+
+    r = get_redis()
+    keep = []
     for rid in r.lrange(_rkey(ws.id), 0, -1):
-        r.delete(_rkey(ws.id, rid))
+        raw = r.get(_rkey(ws.id, rid))
+        if keep_running and raw and json.loads(raw).get("status") == "running":
+            keep.append(rid)
+        else:
+            r.delete(_rkey(ws.id, rid))
     r.delete(_rkey(ws.id))
+    for rid in keep:
+        r.rpush(_rkey(ws.id), rid)
 
 
 def touch(ws: Workspace) -> None:

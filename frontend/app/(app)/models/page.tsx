@@ -1,10 +1,11 @@
 "use client";
-import { Boxes, Download, Pause, Pin, Play, Power, RefreshCw, Star, X } from "lucide-react";
+import { Boxes, Download, Pause, Pin, RefreshCw, Star, X } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import useSWR from "swr";
 import { Guide } from "@/components/guide";
-import { LoadConfirm, MemoryPanel } from "@/components/memory";
+import { MainModelCard, ModelLoadButtons, useMain } from "@/components/main-model";
+import { MemoryPanel, useMemory } from "@/components/memory";
 import { Badge, Button, Card, Empty, ErrorBox, Notice, PageHeader, Progress, Select, Skeleton, StatusBadge, Table, Tabs, Td } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ago, bytes, num, params, rate } from "@/lib/format";
@@ -19,16 +20,8 @@ function ModelsTab() {
   const { data, error, isLoading, mutate } = useSWR(`/api/v1/models${modality ? `?modality=${modality}` : ""}`, { refreshInterval: 5000 });
   const [busy, setBusy] = useState<string | null>(null);
   const favs: string[] = me?.preferences?.favorite_models ?? [];
-  const [plan, setPlan] = useState<any>(null);
-  async function load(m: any) {
-    try {
-      const pl = await api(`/api/v1/models/${m.id}/load-plan`);
-      if (pl.resident) return;
-      setPlan({ ...pl, id: m.id });
-    } catch (e: any) {
-      push("error", e.message);
-    }
-  }
+  const { main, refreshMain } = useMain();
+  const { mem } = useMemory();
   async function act(id: string, path: string, label: string) {
     setBusy(id + path);
     try {
@@ -50,18 +43,13 @@ function ModelsTab() {
         <Button variant="ghost" size="sm" onClick={() => mutate()}><RefreshCw className="h-3.5 w-3.5" />{t("common.refresh")}</Button>
       </div>
       {error && <ErrorBox error={error} />}
-      {plan && <LoadConfirm plan={plan} onCancel={() => setPlan(null)} onConfirm={async () => {
-        const pl = plan;
-        setPlan(null);
-        try { await api(`/api/v1/models/${pl.id}/load?background=true`, { method: "POST" }); push("ok", `${pl.model}: ${t("models.load")}…`); mutate(); } catch (e: any) { push("error", e.message); }
-      }} />}
       {isLoading && <Skeleton className="h-40" />}
       {data && data.length === 0 && <Card><Empty hint="Instala modelos desde «Descubrir modelos»" action={<Link href="/discover"><Button variant="primary" size="sm">{t("nav.discover")}</Button></Link>} /></Card>}
       {data && data.length > 0 && (
         <Card>
           <Table head={["", t("common.model"), t("common.status"), t("models.backend"), t("models.memory"), t("common.size"), t("common.visibility"), t("common.actions")]}>
             {data.map((m: any) => {
-              const llm = ["ollama", "vllm"].includes(m.backend);
+              const inst = mem?.instances?.find((i: any) => i.model_id === m.id);
               const loaded = !!m.runtime;
               const fav = favs.includes(m.id);
               return (
@@ -73,14 +61,13 @@ function ModelsTab() {
                   </Td>
                   <Td><div className="flex flex-col gap-1"><StatusBadge state={m.status} />{m.compat_summary && <StatusBadge state={m.compat_summary} />}</div>{m.status_message && <div className="mt-1 max-w-[220px] truncate text-[11px] text-danger" title={m.status_message}>{m.status_message}</div>}</Td>
                   <Td><Badge>{m.backend}</Badge>{m.pinned && <Badge tone="accent" className="ml-1"><Pin className="h-3 w-3" /></Badge>}</Td>
-                  <Td className="text-xs tabular-nums">{m.runtime?.measured_memory_gb ? `${num(m.runtime.measured_memory_gb)} GB ${t("common.measured")}` : m.measured_memory_gb ? `${num(m.measured_memory_gb)} GB ${t("common.measured")}` : m.estimated_memory_gb ? `~${num(m.estimated_memory_gb)} GB ${t("common.estimated")}` : "—"}
+                  <Td className="text-xs tabular-nums">{inst && ["ready", "busy"].includes(inst.state) ? `${num(inst.measured_gb ?? inst.reserved_gb)} GB ${inst.measured_gb ? t("common.measured") : ""}` : m.runtime?.measured_memory_gb ? `${num(m.runtime.measured_memory_gb)} GB ${t("common.measured")}` : m.measured_memory_gb ? `${num(m.measured_memory_gb)} GB ${t("common.measured")}` : m.estimated_memory_gb ? `~${num(m.estimated_memory_gb)} GB ${t("common.estimated")}` : "—"}
                     {loaded && <div className="text-[11px] text-muted">{ago(m.runtime.last_used_at, lang)}</div>}</Td>
                   <Td className="text-xs tabular-nums">{bytes(m.size_bytes)}</Td>
                   <Td><Badge>{t(`common.${m.visibility}`)}</Badge></Td>
                   <Td>
                     <div className="flex flex-wrap gap-1">
-                      {llm && !loaded && ["installed", "failed"].includes(m.status) && <Button size="sm" variant="outline" loading={busy === m.id + "load"} onClick={() => load(m)}><Play className="h-3.5 w-3.5" />{t("models.load")}</Button>}
-                      {llm && loaded && <Button size="sm" variant="outline" loading={busy === m.id + "unload"} onClick={() => act(m.id, "unload", t("models.unload"))}><Power className="h-3.5 w-3.5" />{t("models.unload")}</Button>}
+                      <ModelLoadButtons m={m} mainAlias={main?.alias} onChanged={() => { mutate(); refreshMain(); }} />
                       {["installed", "ready"].includes(m.status) && <Button size="sm" variant="ghost" loading={busy === m.id + "smoke-test"} onClick={() => act(m.id, "smoke-test", t("models.smoke"))}>{t("models.smoke")}</Button>}
                     </div>
                   </Td>
@@ -175,6 +162,7 @@ export default function LibraryPage() {
     <div>
       <PageHeader title={t("models.title")} subtitle={t("models.subtitle")} icon={<Boxes className="h-5 w-5" />} />
       <Guide id="library" />
+      <MainModelCard />
       <div className="mb-5"><MemoryPanel /></div>
       <Tabs tabs={tabs} />
     </div>

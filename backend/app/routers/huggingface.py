@@ -319,7 +319,7 @@ def install(body: InstallIn, request: Request, p: Principal = Depends(require_re
         registry.set_runtime_params(db, model, {k: v for k, v in rp.items() if v is not None and k in
                                                 ("max_model_len", "gpu_memory_utilization", "max_num_seqs",
                                                  "enable_tool_calling", "tool_call_parser", "reasoning_parser",
-                                                 "speculative_tokens")})
+                                                 "speculative_tokens", "profile", "kv_cache_dtype", "load_timeout_s")})
     task = DownloadTask(model_id=model.id, requested_by=p.id, kind="ollama" if engine == "ollama" else "hf",
                         repo_id=pl["repo_id"], revision=pl["revision"],
                         allow_patterns=None if engine == "ollama" else [f["path"] for f in pl["files"]],

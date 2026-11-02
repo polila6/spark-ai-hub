@@ -12,7 +12,8 @@ import { CanvasChip, CanvasPanel } from "@/components/canvas";
 import { AgentReport, ContextMeter, SkillNote, TOOL_ICONS, WebSources, CodeRun, MicButton, SpeakButton, speakText } from "@/components/assistant";
 import { Guide } from "@/components/guide";
 import { LoadConfirm, MemoryPill } from "@/components/memory";
-import { Badge, Button, Card, ErrorBox, Field, Input, Notice, Select, Switch, Textarea, Tip, cx } from "@/components/ui";
+import { CodeBlock, MSG_GROUP, MessageActions, MessageEditor, SelectionQuote, USER_BUBBLE_SELECTION, quoteMarkdown, quoteStart } from "@/components/message-actions";
+import { Badge, Button, Card, Confirm, ErrorBox, Field, Input, Notice, Select, Switch, Textarea, Tip, cx } from "@/components/ui";
 import { api, streamGet, streamPost, upload } from "@/lib/api";
 import { bytes, num } from "@/lib/format";
 import { useI18n, useL } from "@/lib/i18n";
@@ -38,6 +39,7 @@ function Metrics({ m }: { m: any }) {
 // Generated images are shown by the tool cards; models sometimes also emit markdown images with invented URLs.
 const MD_COMPONENTS = {
   img: ({ src, alt }: any) => (typeof src === "string" && src.startsWith("/api/") ? <img src={src} alt={alt ?? ""} className="max-h-80 rounded-lg" /> : null),
+  pre: CodeBlock,
 };
 
 const TOOL_LABELS_ES: Record<string, string> = { run_code: "Código ejecutado", canvas_write: "Lienzo", canvas_edit: "Lienzo editado", deep_research: "Investigación a fondo",
@@ -174,6 +176,7 @@ function Chat() {
   function applyEvent(convId: string, ev: any) {
     if (viewing.current !== convId) return;
     if (ev.type === "status") setStatus(ev.status);
+    else if (ev.type === "user_message") setMsgs((x) => { const y = [...x]; const j = y.length - 2; if (y[j]?.role === "user") y[j] = { ...y[j], id: ev.message_id }; return y; });
     else if (ev.type === "delta") updLast((l) => ({ ...l, content: l.content + ev.content }));
     else if (ev.type === "reasoning") updLast((l) => ({ ...l, reasoning: (l.reasoning ?? "") + ev.content }));
     else if (ev.type === "warning") updLast((l) => ({ ...l, warnings: [...(l.warnings ?? []), ev.message] }));
@@ -211,6 +214,7 @@ function Chat() {
     setCid(id);
     setErr(null);
     setStatus(null);
+    setEditing(null);
     const history = c.messages.map((m: any) => ({ ...m, reasoning: m.metrics?.reasoning, tools: partsToTools(m.parts) }));
     if (c.model_alias) setModel(c.model_alias);
     if (c.project_id) setProjectId(c.project_id);
@@ -274,22 +278,28 @@ function Chat() {
   const [plan, setPlan] = useState<any>(null);
   const confirmed = useRef<string | null>(null);
 
+  // Before loading a model that is not in memory, show what it costs (memory, idle models unloaded, ETA).
+  async function needsPlan(useSel: any, m: string, then: { text: string; mode: string; run?: (alias?: string) => void }) {
+    if (m !== "chat" || !useSel || useSel.runtime || confirmed.current === useSel.alias) return false;
+    try {
+      const pl = await api(`/api/v1/models/${useSel.id}/load-plan`);
+      if (!pl.resident && (pl.evict.length || !pl.fits || (pl.expected_load_seconds ?? 0) > 45)) { setPlan({ ...pl, ...then }); return true; }
+    } catch { /* the plan is advisory */ }
+    return false;
+  }
+  const turnBody = (useModel: string, useSel: any, m: string) => ({
+    model_alias: useModel, system_prompt: system || undefined, temperature: temp, max_tokens: maxTok, mode: m, tools,
+    thinking: useSel?.backend === "vllm" ? thinking : undefined, aspect, context_limit: ctxLimit || undefined, auto_compact: autoCompact, web, research: research && web,
+  });
+  const pendingMsg = (alias: string): Msg => ({ role: "assistant", content: "", pending: true, model_alias: alias, tools: [], warnings: [] });
+
   async function send(text?: string, forcedMode?: "chat" | "image", modelAlias?: string) {
     const content = (text ?? input).trim();
     const useModel = modelAlias ?? model;
     const useSel = chatModels.find((x: any) => x.alias === useModel);
     if (!content || !useModel || atts.some((a) => a.uploading)) return;
     const m = forcedMode ?? mode;
-    // Before loading a model that is not in memory, show what it costs (memory, idle models unloaded, ETA).
-    if (m === "chat" && useSel && !useSel.runtime && confirmed.current !== useSel.alias) {
-      try {
-        const pl = await api(`/api/v1/models/${useSel.id}/load-plan`);
-        if (!pl.resident && (pl.evict.length || !pl.fits || (pl.expected_load_seconds ?? 0) > 45)) {
-          setPlan({ ...pl, text: content, mode: m });
-          return;
-        }
-      } catch { /* the plan is advisory */ }
-    }
+    if (await needsPlan(useSel, m, { text: content, mode: m })) return;
     setErr(null);
     try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch { /* ignore */ }
     const id = await ensureConv();
@@ -297,14 +307,69 @@ function Chat() {
     const sentAtts = atts.filter((a) => !a.uploading);
     setInput("");
     setAtts([]);
-    setMsgs((x) => [...x, { role: "user", content, attachments: sentAtts }, { role: "assistant", content: "", pending: true, model_alias: useModel, tools: [], warnings: [] }]);
+    setMsgs((x) => [...x, { role: "user", content, attachments: sentAtts }, pendingMsg(useModel)]);
     setStatus("loading");
     await follow(id, (signal) => streamPost(`/api/v1/playground/conversations/${id}/messages`, {
-      content, model_alias: useModel, system_prompt: system || undefined, temperature: temp, max_tokens: maxTok,
-      attachments: sentAtts.map((a) => a.file_id), mode: m, tools, thinking: useSel?.backend === "vllm" ? thinking : undefined, aspect,
-      context_limit: ctxLimit || undefined, auto_compact: autoCompact, web, research: research && web,
+      content, attachments: sentAtts.map((a) => a.file_id), ...turnBody(useModel, useSel, m),
     }, (ev) => applyEvent(id, ev), signal));
   }
+
+  // Answer the user message msgs[i] again (with `text`, it is edited first); the server deletes what came after it.
+  const [editing, setEditing] = useState<number | null>(null);
+  async function regenerate(i: number, text?: string, modelAlias?: string) {
+    const um = msgs[i];
+    const useModel = modelAlias ?? model;
+    const useSel = chatModels.find((x: any) => x.alias === useModel);
+    if (!cid || um?.role !== "user" || um.id == null || !useModel || status) return;
+    if (await needsPlan(useSel, mode, { text: text ?? um.content, mode, run: (alias) => regenerate(i, text, alias) })) return;
+    const id = cid;
+    const before = msgs;
+    let started = false;
+    setErr(null);
+    setEditing(null);
+    viewing.current = id;
+    setMsgs([...msgs.slice(0, i), { ...um, content: text ?? um.content }, pendingMsg(useModel)]);
+    setStatus("loading");
+    await follow(id, async (signal) => {
+      try {
+        await streamPost(`/api/v1/playground/conversations/${id}/messages/${um.id}/regenerate`, { ...turnBody(useModel, useSel, mode), content: text },
+          (ev) => { started = true; applyEvent(id, ev); }, signal);
+      } catch (e: any) {
+        if (!started && e.name !== "AbortError" && viewing.current === id) setMsgs(before);  // refused (e.g. 409): nothing changed
+        throw e;
+      }
+    });
+  }
+
+  // "Resume from here": keep msgs[i] and delete everything after it (asked first).
+  const [rewind, setRewind] = useState<number | null>(null);
+  const [rewinding, setRewinding] = useState(false);
+  async function resumeFrom(i: number) {
+    const m = msgs[i];
+    if (!cid || m?.id == null) return;
+    setRewinding(true);
+    try {
+      const r = await api(`/api/v1/playground/conversations/${cid}/messages/${m.id}/truncate`, { method: "POST" });
+      const kept = msgs.slice(0, i + 1);
+      setMsgs(kept);
+      setCtxUsed([...kept].reverse().find((x) => x.metrics?.context_used)?.metrics?.context_used ?? null);
+      push("ok", L(`${r.deleted} mensajes borrados: sigue desde aquí`, `${r.deleted} messages deleted: continue from here`) + (r.summary_cleared ? L(" (el resumen del contexto se rehará)", " (the context summary will be redone)") : ""));
+      mutConvs();
+      textRef.current?.focus();
+    } catch (e: any) {
+      push("error", e.message);
+    } finally {
+      setRewinding(false);
+      setRewind(null);
+    }
+  }
+
+  function quote(text: string) {
+    const q = quoteMarkdown(text);
+    setInput((x) => (x.trim() ? `${x.trimEnd()}\n\n${q}` : q));
+    requestAnimationFrame(() => { const el = textRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } });
+  }
+  const listRef = useRef<HTMLDivElement>(null);
 
   async function stop() {
     if (cid) await api(`/api/v1/playground/conversations/${cid}/cancel`, { method: "POST" }).catch(() => {});
@@ -318,7 +383,7 @@ function Chat() {
 
   const [drawer, setDrawer] = useState(false);
   const statusLabel = status === "loading" ? t("play.loading_model") : status === "tool" ? L("usando herramientas…", "using tools…") : status === "compacting" ? L("compactando contexto…", "compacting context…") : status === "generating" ? L("generando…", "generating…") : status;
-  const newChat = () => { abort.current?.abort(); viewing.current = null; setCanvas(null); setCid(null); setMsgs([]); setAtts([]); setErr(null); setStatus(null); setCtxUsed(null); };
+  const newChat = () => { abort.current?.abort(); viewing.current = null; setCanvas(null); setCid(null); setMsgs([]); setAtts([]); setErr(null); setStatus(null); setCtxUsed(null); setEditing(null); };
   return (
     <div className={cx("grid h-[calc(100dvh-10.5rem)] gap-4 lg:h-[calc(100vh-7.5rem)]", canvas ? "lg:grid-cols-[250px_minmax(0,1fr)_minmax(0,1.1fr)]" : "lg:grid-cols-[270px_minmax(0,1fr)_290px]")}>
       <h1 className="sr-only">{L("Chat", "Chat")}</h1>
@@ -364,7 +429,7 @@ function Chat() {
           {statusLabel && <Badge tone="info" className="ml-auto"><Loader2 className="h-3 w-3 animate-spin" />{statusLabel}</Badge>}
           <div className={cx("lg:hidden", !statusLabel && "ml-auto")}><MemoryPill /></div>
         </div>
-        <div className="flex-1 space-y-4 overflow-y-auto p-4">
+        <div ref={listRef} className="flex-1 space-y-4 overflow-y-auto p-4">
           {msgs.length === 0 && (
             <div className="mx-auto max-w-2xl pt-4">
               <Guide id="chat" />
@@ -376,27 +441,38 @@ function Chat() {
               </div>
             </div>
           )}
-          {msgs.map((m, i) => (
-            <div key={i} className={cx("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-              <div className={cx("max-w-[88%] rounded-2xl px-4 py-2.5 text-sm", m.role === "user" ? "bg-accent text-accent-fg" : "w-full border border-border bg-elevated/60")}>
+          {msgs.map((m, i) => {
+            const last = i === msgs.length - 1;
+            const prevUser = m.role === "assistant" ? msgs.slice(0, i).map((x, j) => [x, j] as const).reverse().find(([x]) => x.role === "user")?.[1] : undefined;
+            const canRegen = !m.pending && last && cid && (m.role === "user" ? m.id != null : prevUser != null && msgs[prevUser].id != null);
+            return (
+            <div key={i} className={cx("flex flex-col", MSG_GROUP, m.role === "user" ? "items-end" : "items-start")}>
+              {editing === i ? <MessageEditor initial={m.content} busy={!!status} onCancel={() => setEditing(null)} onSave={(txt) => regenerate(i, txt)} /> : (
+              <div className={cx("max-w-[88%] rounded-2xl px-4 py-2.5 text-sm", m.role === "user" ? cx("bg-accent text-accent-fg", USER_BUBBLE_SELECTION) : "w-full border border-border bg-elevated/60")}>
                 {m.role === "user" ? (
                   <>
                     {m.attachments && m.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-1.5">{m.attachments.map((a) => a.kind === "image" ? <a key={a.file_id} href={a.url} target="_blank" rel="noreferrer"><img src={a.url} alt={a.name} className="max-h-40 rounded-lg" /></a> : <span key={a.file_id} className="inline-flex items-center gap-1 rounded-md bg-white/15 px-2 py-0.5 text-xs"><FileText className="h-3 w-3" />{a.name}</span>)}</div>}
-                    <p className="whitespace-pre-wrap">{m.content}</p>
+                    <p className="whitespace-pre-wrap break-words">{m.content}</p>
                   </>
                 ) : (
                   <>
                     {m.warnings?.map((w, j) => <Notice key={j} tone="warn">{w}</Notice>)}
                     {m.reasoning && <details className="mb-2 rounded-lg bg-bg/50 px-3 py-1.5 text-xs text-muted" open={m.pending && !m.content}><summary className="cursor-pointer"><Brain className="mr-1 inline h-3 w-3" />{L("Razonamiento", "Reasoning")}</summary><p className="mt-1 whitespace-pre-wrap">{m.reasoning}</p></details>}
                     {m.tools?.map((tr) => <ToolCard key={tr.id} t={tr} onEdit={editImage} onCanvas={(id, v) => setCanvas({ id, v })} />)}
-                    <div className="prose-chat">{m.content ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.content}</ReactMarkdown> : m.pending && !m.tools?.length && <span className="inline-flex gap-1"><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:.15s]" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:.3s]" /></span>}</div>
+                    <div className="prose-chat" data-quote-scope>{m.content ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.content}</ReactMarkdown> : m.pending && !m.tools?.length && <span className="inline-flex gap-1"><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:.15s]" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:.3s]" /></span>}</div>
                     <Metrics m={m.metrics} />
                     <div className="mt-1 flex items-center gap-3">{m.model_alias && <span className="text-[10px] text-subtle">{m.model_alias}</span>}{voice?.enabled && voice?.read_aloud && m.content && !m.pending && <SpeakButton text={m.content} lang={lang} />}</div>
                   </>
                 )}
-              </div>
+              </div>)}
+              {editing !== i && !m.pending && <MessageActions role={m.role} text={m.content} busy={!!status}
+                onReply={m.role === "assistant" ? () => quote(quoteStart(m.content)) : undefined}
+                onEdit={m.role === "user" && m.id != null && cid ? () => setEditing(i) : undefined}
+                onRegenerate={canRegen ? () => regenerate(m.role === "user" ? i : prevUser!) : undefined}
+                onResume={!last && m.id != null && cid ? () => setRewind(i) : undefined} />}
             </div>
-          ))}
+            );
+          })}
           {err && <ErrorBox error={err} />}
           <div ref={bottom} />
         </div>
@@ -463,8 +539,13 @@ function Chat() {
       </Card>
       {plan && <LoadConfirm plan={plan} defaultName={generalModel && generalModel !== plan.model ? generalModel : undefined}
         onCancel={() => setPlan(null)}
-        onUseDefault={() => { const pl = plan; setPlan(null); setModel(generalModel); send(pl.text, pl.mode, generalModel); }}
-        onConfirm={() => { const pl = plan; confirmed.current = pl.model; setPlan(null); send(pl.text, pl.mode); }} />}
+        onUseDefault={() => { const pl = plan; setPlan(null); setModel(generalModel); if (pl.run) pl.run(generalModel); else send(pl.text, pl.mode, generalModel); }}
+        onConfirm={() => { const pl = plan; confirmed.current = pl.model; setPlan(null); if (pl.run) pl.run(); else send(pl.text, pl.mode); }} />}
+      <SelectionQuote root={listRef} onQuote={quote} />
+      <Confirm open={rewind != null} onOpenChange={(o) => { if (!o && !rewinding) setRewind(null); }} danger busy={rewinding} title={L("Retomar desde aquí", "Resume from here")}
+        text={rewind == null ? "" : L(`Se borrarán ${msgs.length - 1 - rewind} mensajes posteriores a este (no se puede deshacer). ${msgs[rewind]?.role === "user" ? "Después pulsa «Regenerar» en este mensaje o escribe otro." : "Después escribe tu siguiente mensaje."}`,
+          `The ${msgs.length - 1 - rewind} messages after this one will be deleted (cannot be undone). ${msgs[rewind]?.role === "user" ? "Then click “Regenerate” on this message or type another one." : "Then type your next message."}`)}
+        onConfirm={() => { if (rewind != null) resumeFrom(rewind); }} />
     </div>
   );
 }

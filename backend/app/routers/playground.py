@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 import uuid
@@ -21,6 +22,7 @@ from ..services import llm, scheduler, turns
 from .openai_gateway import _record
 
 router = APIRouter(prefix="/api/v1/playground", tags=["playground"])
+log = logging.getLogger(__name__)
 
 
 class ConvIn(BaseModel):
@@ -203,19 +205,56 @@ async def upload_attachment(cid: uuid.UUID, file: UploadFile = File(...), p: Pri
     return files_svc.public(f)
 
 
-@router.post("/conversations/{cid}/messages")
-async def send_message(cid: uuid.UUID, body: SendIn, request: Request, p: Principal = Depends(current_principal),
-                       db: Session = Depends(get_db)):
-    from ..models import UserFile
-    from ..services import agent
-
-    c = _conv(db, p, cid, write=True)
-    q = select(RegisteredModel).where(RegisteredModel.alias == body.model_alias)
+def _chat_model(db: Session, p: Principal, alias: str) -> RegisteredModel:
+    q = select(RegisteredModel).where(RegisteredModel.alias == alias)
     if not p.is_admin:
         q = q.where(visible_filter(RegisteredModel, p, "model"))
     model = db.scalar(q)
     if not model or model.backend not in LLM_ENGINES or "chat" not in (model.capabilities or []):
         raise HTTPException(404, detail={"code": "model_not_found", "message": "Chat model not found or not accessible"})
+    return model
+
+
+def _claim_turn(cid: uuid.UUID, p: Principal, title: str) -> None:
+    """Marks the chat as answering (the "chats working" indicator); one turn per chat at a time."""
+    try:
+        turns.start(cid, p.id, title)
+    except RuntimeError:
+        raise HTTPException(409, detail={"code": "turn_running", "message": "This chat is still answering the previous message"})
+
+
+def _launch(c: Conversation, p: Principal, body: SendIn, model: RegisteredModel, content: str,
+            attachments: list[uuid.UUID], user_mid: int, request: Request) -> StreamingResponse:
+    """Run the answer to the user message `user_mid` (already the last message) in the background and follow it."""
+    from ..services import agent
+
+    params = {k: v for k, v in {"temperature": body.temperature, "top_p": body.top_p, "max_tokens": body.max_tokens,
+                                "stop": body.stop, "seed": body.seed}.items() if v is not None}
+    if body.mode == "image":
+        params["aspect"] = body.aspect
+    lang = (p.user.preferences or {}).get("language") or "es"
+    turn = agent.Turn(user_id=p.id, conversation_id=c.id, model_id=model.id, content=content,
+                      attachments=attachments, system_prompt=body.system_prompt, params=params,
+                      use_tools=body.tools, thinking=body.thinking, mode=body.mode, lang=lang,
+                      context_limit=body.context_limit, auto_compact=body.auto_compact, web=body.web,
+                      research=body.research, workspace_id=body.workspace_id)
+    turns.emit(c.id, {"type": "user_message", "message_id": user_mid})  # the UI needs it to edit/rewind this message
+    threading.Thread(target=_run_turn, args=(turn, p, body.model_alias, c.title), daemon=True).start()
+    return StreamingResponse(_tail(c.id, request, 0), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _turn_settings(body: SendIn) -> dict:
+    return {k: v for k, v in body.model_dump(mode="json").items() if k not in ("content", "attachments")}
+
+
+@router.post("/conversations/{cid}/messages")
+async def send_message(cid: uuid.UUID, body: SendIn, request: Request, p: Principal = Depends(current_principal),
+                       db: Session = Depends(get_db)):
+    from ..models import UserFile
+
+    c = _conv(db, p, cid, write=True)
+    model = _chat_model(db, p, body.model_alias)
     attachments = []
     for fid in body.attachments:
         f = db.get(UserFile, fid)
@@ -223,30 +262,97 @@ async def send_message(cid: uuid.UUID, body: SendIn, request: Request, p: Princi
             raise HTTPException(404, detail={"code": "attachment_not_found", "message": "Attachment not found"})
         attachments.append({"file_id": str(f.id), "name": f.filename, "mime": f.mime, "kind": f.kind,
                             "size_bytes": f.size_bytes, "url": f"/api/v1/files/{f.id}/content"})
-    db.add(Message(conversation_id=c.id, role="user", content=body.content, attachments=attachments or None))
+    msg = Message(conversation_id=c.id, role="user", content=body.content, attachments=attachments or None)
+    db.add(msg)
     if not c.title or c.title == "Nueva conversación":
         c.title = body.content[:60]
     c.model_alias = model.alias
-    c.settings = {k: v for k, v in body.model_dump(mode="json").items() if k not in ("content", "attachments")}
+    c.settings = _turn_settings(body)
     db.commit()
-    params = {k: v for k, v in {"temperature": body.temperature, "top_p": body.top_p, "max_tokens": body.max_tokens,
-                                "stop": body.stop, "seed": body.seed}.items() if v is not None}
-    if body.mode == "image":
-        params["aspect"] = body.aspect
-    lang = (p.user.preferences or {}).get("language") or "es"
-    turn = agent.Turn(user_id=p.id, conversation_id=c.id, model_id=model.id, content=body.content,
-                      attachments=list(body.attachments), system_prompt=body.system_prompt, params=params,
-                      use_tools=body.tools, thinking=body.thinking, mode=body.mode, lang=lang,
-                      context_limit=body.context_limit, auto_compact=body.auto_compact, web=body.web,
-                      research=body.research, workspace_id=body.workspace_id)
-    title = c.title
+    _claim_turn(cid, p, c.title)
+    return _launch(c, p, body, model, body.content, list(body.attachments), msg.id, request)
+
+
+def _chat_message(db: Session, c: Conversation, mid: int) -> Message:
+    m = db.get(Message, mid)
+    if not m or m.conversation_id != c.id:
+        raise not_found("message")
+    return m
+
+
+def _refuse_if_running(cid: uuid.UUID) -> None:
+    if (turns.active(cid) or {}).get("status") == "running":
+        raise HTTPException(409, detail={"code": "turn_running",
+                                         "message": "This chat is still answering: stop it or wait until it finishes"})
+
+
+def _rewind(db: Session, c: Conversation, mid: int, edited: bool = False) -> dict:
+    """Delete every message after `mid` (and the compaction summary if it covered a changed message). No commit."""
+    from sqlalchemy import delete
+
+    rows = db.execute(select(Message.id, Message.role).where(Message.conversation_id == c.id).order_by(Message.id)).all()
+    plan = turns.rewind_plan([(r.id, r.role) for r in rows], mid, c.summary_upto, edited=edited)
+    if plan["delete"]:
+        db.execute(delete(Message).where(Message.conversation_id == c.id, Message.id > mid)
+                   .execution_options(synchronize_session=False))
+    if plan["clear_summary"]:
+        c.summary, c.summary_upto, c.summary_meta = None, None, None
+    c.updated_at = time_now()
+    return plan
+
+
+class RegenIn(SendIn):
+    # None = keep the message text (plain "regenerate"); a string = edit the message first. Attachments are kept.
+    content: str | None = Field(default=None, min_length=1, max_length=200_000)
+
+
+@router.post("/conversations/{cid}/messages/{mid}/regenerate")
+async def regenerate_from(cid: uuid.UUID, mid: int, body: RegenIn, request: Request,
+                          p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Edit (optionally) the user message `mid`, delete everything after it and answer it again (streams like /messages)."""
+    c = _conv(db, p, cid, write=True)
+    m = _chat_message(db, c, mid)
+    if m.role != "user":
+        raise HTTPException(400, detail={"code": "not_user_message", "message": "Only a user message can be edited or answered again"})
+    model = _chat_model(db, p, body.model_alias)
+    _refuse_if_running(cid)
+    edited = body.content is not None and body.content != m.content
+    _claim_turn(cid, p, c.title)  # taken before changing anything: a concurrent send gets 409 instead of a mixed history
     try:
-        turns.start(cid, p.id, title)
-    except RuntimeError:
-        raise HTTPException(409, detail={"code": "turn_running", "message": "This chat is still answering the previous message"})
-    threading.Thread(target=_run_turn, args=(turn, p, body.model_alias, title), daemon=True).start()
-    return StreamingResponse(_tail(cid, request, 0), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        plan = _rewind(db, c, mid, edited=edited)
+        if edited:
+            if c.title == (m.content or "")[:60]:
+                c.title = body.content[:60]
+            m.content = body.content
+        c.model_alias = model.alias
+        c.settings = _turn_settings(body)
+        db.commit()
+    except Exception:
+        db.rollback()
+        turns.finish(cid, p.id, "error")
+        raise
+    log.info("chat rewind: user=%s conversation=%s message=%s edited=%s deleted=%d summary_cleared=%s",
+             p.id, cid, mid, edited, len(plan["delete"]), plan["clear_summary"])
+    file_ids = []
+    for a in m.attachments or []:
+        try:
+            file_ids.append(uuid.UUID(a["file_id"]))
+        except (KeyError, ValueError, TypeError):
+            pass
+    return _launch(c, p, body, model, m.content, file_ids, m.id, request)
+
+
+@router.post("/conversations/{cid}/messages/{mid}/truncate")
+def truncate_after(cid: uuid.UUID, mid: int, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """"Resume from here": keep message `mid` and delete every message after it."""
+    c = _conv(db, p, cid, write=True)
+    _chat_message(db, c, mid)
+    _refuse_if_running(cid)
+    plan = _rewind(db, c, mid)
+    db.commit()
+    log.info("chat truncate: user=%s conversation=%s after=%s deleted=%d summary_cleared=%s",
+             p.id, cid, mid, len(plan["delete"]), plan["clear_summary"])
+    return {"ok": True, "deleted": len(plan["delete"]), "summary_cleared": plan["clear_summary"]}
 
 
 def _run_turn(turn, p: Principal, model_alias: str, title: str) -> None:

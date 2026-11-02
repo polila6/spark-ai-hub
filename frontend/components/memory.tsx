@@ -10,7 +10,7 @@ import { Badge, Button, Card, CardBody, CardHeader, Modal, Notice, Progress, cx 
 const KIND_COLOR: Record<string, string> = { llm: "bg-accent", image: "bg-fuchsia-500", embedding: "bg-sky-500", audio: "bg-amber-500", engine: "bg-slate-500" };
 const KIND_ICON: Record<string, any> = { llm: Brain, image: ImageIcon, embedding: Zap, audio: AudioLines, engine: Cpu };
 
-function mmss(s: number) {
+export function mmss(s: number) {
   const m = Math.floor(s / 60);
   return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 }
@@ -23,7 +23,7 @@ export function useMemory() {
 }
 
 /** Seconds since the snapshot, so countdowns and load progress tick between refreshes. */
-function useTick(dep: any) {
+export function useTick(dep: any) {
   const [t0, setT0] = useState(Date.now());
   const [, setN] = useState(0);
   useEffect(() => { setT0(Date.now()); }, [dep]);
@@ -140,7 +140,7 @@ export function LoadConfirm({ plan, onConfirm, onCancel, onUseDefault, defaultNa
       <div className="space-y-3 text-sm">
         <p>{L("Necesita", "Needs")} <b>{plan.need_gb.toFixed(0)} GB</b> · {L("libres ahora", "free now")} <b>{plan.free_gb.toFixed(0)} GB</b>{eta ? <> · {L("carga en", "loads in")} ≈ <b>{eta} min</b></> : null}</p>
         {plan.fits && plan.evict.length > 0 && <Notice tone="warn">{L("Para hacer sitio se descargarán modelos que nadie está usando:", "To make room these idle models will be unloaded:")} {plan.evict.map((e: any) => `${e.name} (${e.reserved_gb.toFixed(0)} GB)`).join(", ")}.</Notice>}
-        {!plan.fits && <Notice tone="danger">{L("Ahora mismo no cabe: hay modelos en uso o fijados.", "It does not fit right now: models are in use or pinned.")} {plan.blocked_by?.map((b: any) => b.name).join(", ")}</Notice>}
+        {!plan.fits && <Notice tone="danger">{L("Ahora mismo no cabe: hay modelos en uso o fijados.", "It does not fit right now: models are in use or pinned.")} {plan.blocked_by?.map((b: any) => `${b.name} (${Number(b.reserved_gb ?? 0).toFixed(0)} GB${b.in_use ? L(", en uso", ", in use") : b.protected ? L(", fijado", ", pinned") : ""})`).join(", ")}</Notice>}
         {plan.fits && !plan.evict.length && <Notice tone="ok">{L("Cabe sin descargar nada.", "It fits without unloading anything.")}</Notice>}
         <p className="text-xs text-muted">{L(`Si nadie lo usa durante unos minutos se descargará solo.`, "If nobody uses it for a few minutes it unloads by itself.")}</p>
         <div className="flex flex-wrap justify-end gap-2">

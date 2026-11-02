@@ -73,6 +73,14 @@ redaction processor (`hf_…`, `sah-…`, bearer tokens, passwords) — unit-tes
   command parameters. **Residual risk**: docker-group access is root-equivalent on the host if the component is compromised.
 * Control-plane containers run as uid 1000 with `no-new-privileges` and `cap_drop: ALL` (backend, worker, monitor,
   frontend). Exceptions: postgres/redis/caddy official images; Ollama runs as uid 1000 but with GPU; the NGC vLLM image runs as root inside its container.
+* **vLLM launch profiles** (`VLLM_PROFILES` in the engine manager) are the only way to use another vLLM image: the
+  image (pinned by digest), environment and extra flags are fixed in code; callers only choose the profile name.
+  The `qwen38_flash_next` profile uses the community image `eugr/spark-vllm-b12x` (DGX Spark build with the b12x
+  kernels) — a third-party image, reviewed by digest; update it deliberately. It needs io_uring to read the n-gram
+  table from disk: instead of `seccomp=unconfined` (what the model card suggests) the container gets
+  `engine-manager/app/seccomp-io-uring.json` = Docker's default profile (moby/profiles@4b8214f) plus
+  `io_uring_setup`, `io_uring_enter` and `io_uring_register`. Same network isolation, read-only weights and
+  no-new-privileges as the other vLLM containers.
 
 ## Privacy
 

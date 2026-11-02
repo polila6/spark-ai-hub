@@ -10,6 +10,7 @@ import { bytes, dt, num } from "@/lib/format";
 import { useI18n, useL } from "@/lib/i18n";
 import { useMe, useToast } from "@/lib/providers";
 import { kTok } from "@/components/assistant";
+import { ModelLoadButtons, useMain } from "@/components/main-model";
 
 const VLLM_FIELDS: [string, string, string][] = [
   ["max_model_len", "number", "Longitud máxima de contexto (tokens)"],
@@ -48,7 +49,7 @@ function ContextCard({ id, onChanged }: { id: string; onChanged: () => void }) {
           {c.presets.map((p: any) => (
             <button key={p.tokens} type="button" disabled={!c.can_manage} onClick={() => setPick(p.tokens)}
               className={`rounded-xl border px-3 py-2 text-left transition ${sel === p.tokens ? "border-accent bg-accent/10" : "border-border hover:bg-elevated"}`}>
-              <div className="font-semibold tabular-nums">{kTok(p.tokens)}{p.tokens === c.native_max && <span className="ml-1 text-[10px] font-normal text-muted">{L("máx.", "max")}</span>}</div>
+              <div className="flex items-center gap-1 font-semibold tabular-nums">{kTok(p.tokens)}{p.tokens === c.native_max && <span className="text-[10px] font-normal text-muted">{L("máx. nativo", "native max")}</span>}{p.yarn && <Badge tone="warn" className="px-1.5 py-0 text-[9px]">YaRN</Badge>}</div>
               <div className="text-[11px] text-muted">{p.fits_at_once != null ? (p.fits_at_once >= 1 ? L(`${p.fits_at_once} a la vez`, `${p.fits_at_once} at once`) : L("no cabe", "does not fit")) : p.tokens === c.current ? L("actual", "current") : "—"}</div>
             </button>
           ))}
@@ -57,6 +58,7 @@ function ContextCard({ id, onChanged }: { id: string; onChanged: () => void }) {
           {L("Ahora", "Now")}: <b className="text-fg">{kTok(c.current)}</b>{c.native_max ? <> · {L("máximo del modelo", "model maximum")} <b className="text-fg">{kTok(c.native_max)}</b></> : null}
           {c.kv_cache_tokens ? <> · {L("memoria reservada para contexto", "memory reserved for context")}: <b className="text-fg">{kTok(c.kv_cache_tokens)}</b> {L("tokens repartidos entre todas las conversaciones. «N a la vez» = cuántas conversaciones de ese tamaño completo caben juntas; las cortas ocupan solo lo que usan.", "tokens shared by all conversations. “N at once” = how many full-size conversations fit together; short ones only take what they use.")}</> : null}
         </p>
+        {c.presets.some((p: any) => p.yarn) && <p className={`text-xs ${c.native_max && sel > c.native_max ? "text-warn" : "text-muted"}`}><Badge tone="warn" className="mr-1 px-1.5 py-0 text-[9px]">YaRN</Badge>{L("Por encima de la ventana nativa se activa YaRN: permite textos más largos, pero puede rendir algo peor en conversaciones cortas.", "Above the native window YaRN is enabled: longer texts, but slightly worse quality on short conversations.")}</p>}
         {c.kv_cache_tokens && sel > c.kv_cache_tokens && <Notice tone="warn">{L("No cabe ni una conversación de ese tamaño con la memoria reservada: sube «gpu_memory_utilization» en los parámetros avanzados.", "Not even one conversation of that size fits in the reserved memory: raise gpu_memory_utilization in the advanced parameters.")}</Notice>}
         {c.mtp_available && (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-3">
@@ -89,6 +91,7 @@ export default function ModelPage({ params }: { params: Promise<{ id: string }> 
   const [check, setCheck] = useState<any>(null);
   const [del, setDel] = useState(false);
   const [busy, setBusy] = useState("");
+  const { main, refreshMain } = useMain();
   useEffect(() => { if (m?.runtime_params) setRp(m.runtime_params); }, [m?.runtime_params]);
   if (error) return <ErrorBox error={error} />;
   if (!m) return <Skeleton className="h-64" />;
@@ -106,9 +109,7 @@ export default function ModelPage({ params }: { params: Promise<{ id: string }> 
       <PageHeader title={m.alias} subtitle={`${m.repo_id ?? m.engine_ref ?? ""} ${m.revision ? `@ ${m.revision.slice(0, 12)}` : ""}`} icon={<Boxes className="h-5 w-5" />}
         actions={<>
           <StatusBadge state={m.status} />
-          {["ollama", "vllm"].includes(m.backend) && (m.dependencies?.loaded
-            ? <Button variant="outline" loading={busy === "unload"} onClick={() => post("unload", t("models.unload"))}>{t("models.unload")}</Button>
-            : <Button variant="primary" loading={busy === "load"} onClick={() => post("load", t("models.load"))}>{t("models.load")}</Button>)}
+          <ModelLoadButtons m={m} mainAlias={main?.alias} size="md" onChanged={() => { mutate(); refreshMain(); }} />
           <Button variant="ghost" loading={busy === "check"} onClick={async () => setCheck(await post("check", t("models.check")))}>{t("models.check")}</Button>
           {canManage && <Button variant="ghost" onClick={() => setDel(true)}><Trash2 className="h-4 w-4 text-danger" /></Button>}
         </>} />

@@ -49,7 +49,9 @@ class SmokeTest(Handler):
                                   completion_tokens=out["completion_tokens"])
             finally:
                 scheduler.end_request(inst.id)
-            if not was_loaded:
+            with SessionLocal() as db:  # the main model (e.g. just made main after its install) stays loaded
+                keep = bool(db.get(RegisteredModel, model_id).pinned)
+            if not was_loaded and not keep:
                 ctx.progress(0.9, "Unloading (installation does not keep models resident)", force=True)
                 scheduler.unload_model(model_id)
         elif backend == "comfyui":

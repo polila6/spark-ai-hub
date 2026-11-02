@@ -46,6 +46,8 @@ PROJECT = os.environ.get("SAH_COMPOSE_PROJECT", "spark-ai-hub")
 ENGINE_NETWORK = os.environ.get("SAH_ENGINE_NETWORK", f"{PROJECT}_engines")
 IMAGES = {
     "vllm": os.environ.get("SAH_VLLM_IMAGE", "nvcr.io/nvidia/vllm:26.09-py3"),
+    # Community DGX Spark build with the b12x kernels (Qwen3.8-Flash-Next FP4); pinned by digest (nightly-20261026).
+    "vllm_b12x": os.environ.get("SAH_VLLM_B12X_IMAGE", "eugr/spark-vllm-b12x@sha256:57c24fc397c66d4d28a7d0d5f1d792934fd01a70f4574cff6315fb7bc329d5cb"),
     "comfyui": os.environ.get("SAH_COMFYUI_IMAGE", "spark-ai-hub/comfyui:0.42.5"),
     "mlworker": os.environ.get("SAH_MLWORKER_IMAGE", "spark-ai-hub/mlworker:0.1.0"),
     "sandbox": os.environ.get("SAH_SANDBOX_IMAGE", "spark-ai-hub/sandbox:0.1.0"),
@@ -80,6 +82,42 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 MODEL_PATH = re.compile(r"^/models/hf/models--[A-Za-z0-9._-]+--[A-Za-z0-9._-]+/snapshots/[0-9a-f]{40}$")
 
 
+# Fixed launch recipes for models that need a special vLLM build. Image, environment and flags come only from
+# here, never from the caller (the model card's recipe for DGX Spark, with the n-gram table read from disk).
+VLLM_PROFILES: dict[str, dict] = {
+    "qwen38_flash_next": {
+        "image": "vllm_b12x",
+        "seccomp": "seccomp-io-uring.json",  # Docker's default profile + io_uring (B12X_DISK_BACKEND)
+        "environment": {
+            "VLLM_PLE_TABLE_MEMORY": "disk", "B12X_DISK_BACKEND": "io_uring", "CUTE_DSL_ARCH": "sm_121a",
+            "SAFETENSORS_FAST_GPU": "1", "VLLM_WORKER_MULTIPROC_METHOD": "spawn", "VLLM_SSM_CONV_STATE_LAYOUT": "DS",
+            "VLLM_USE_AOT_COMPILE": "1", "VLLM_USE_MEGA_AOT_ARTIFACT": "1", "VLLM_USE_V2_MODEL_RUNNER": "1",
+            "B12X_POLICY_MODE": "auto", "VLLM_MXFP8_LM_HEAD": "1", "VLLM_B12X_MOE_FP4_LAYER_MAX_INPUT_SCALE": "w13",
+            "VLLM_B12X_MOE_FP4_FORCE_A16": "1", "B12X_W4A16_A4_PREFILL": "1",
+            "TRITON_CACHE_DIR": "/root/.cache/triton",
+        },
+        "dtype": "bfloat16", "kv_cache_dtype": "fp8", "quantization": "modelopt_mixed",
+        "args": ["--mamba-cache-mode", "align", "--enable-prefix-caching", "--enable-chunked-prefill",
+                 "--block-size", "16", "--load-format", "b12x", "--max-num-batched-tokens", "4096",
+                 "--gdn-decode-kernel", "b12x", "--linear-backend", "b12x", "--moe-backend", "b12x",
+                 "--no-enable-flashinfer-autotune", "--mm-encoder-tp-mode", "data",
+                 "--compilation-config", '{"pass_config":{"fuse_act_quant":true}}'],
+    },
+}
+
+
+class RopeScaling(BaseModel):
+    """YaRN context extension beyond the native window (static: only enabled when a longer window is asked for)."""
+    rope_type: Literal["yarn"] = "yarn"
+    factor: float = Field(gt=1.0, le=8.0)
+    original_max_position_embeddings: int = Field(ge=2048, le=1_048_576)
+    rope_theta: float | None = Field(default=None, gt=0)
+    partial_rotary_factor: float | None = Field(default=None, gt=0, le=1)
+    mrope_interleaved: bool | None = None
+    mrope_section: list[int] | None = Field(default=None, max_length=8)
+    in_text_config: bool = False  # multimodal configs keep rope parameters under text_config
+
+
 class VllmStart(BaseModel):
     model_path: str
     served_model_name: str
@@ -91,11 +129,13 @@ class VllmStart(BaseModel):
     kv_cache_dtype: Literal["auto", "fp8"] = "auto"
     trust_remote_code: bool = False
     enable_tool_calling: bool = False
-    tool_call_parser: Literal["hermes", "llama3_json", "mistral", "openai", "qwen3_coder", "pythonic"] | None = None
+    tool_call_parser: Literal["hermes", "llama3_json", "mistral", "openai", "qwen3_coder", "qwen3_xml", "pythonic"] | None = None
     reasoning_parser: Literal["qwen3", "deepseek_r1", "openai_gptoss"] | None = None
     enforce_eager: bool = False
     speculative_tokens: int = Field(default=0, ge=0, le=4)  # MTP speculative decoding (models with MTP heads)
     task: Literal["generate", "embed"] = "generate"
+    profile: Literal["qwen38_flash_next"] | None = None
+    rope_scaling: RopeScaling | None = None
 
     @field_validator("model_path")
     @classmethod
@@ -129,6 +169,9 @@ def _common(engine: str, name: str | None = None) -> dict:
 
 
 def vllm_spec(p: VllmStart) -> dict:
+    prof = VLLM_PROFILES.get(p.profile or "", {})
+    if prof:
+        p = p.model_copy(update={k: prof[k] for k in ("dtype", "kv_cache_dtype") if k in prof})
     cmd = [
         "vllm", "serve", p.model_path,
         "--host", "0.0.0.0", "--port", "8000",
@@ -139,8 +182,8 @@ def vllm_spec(p: VllmStart) -> dict:
         "--dtype", p.dtype,
         "--kv-cache-dtype", p.kv_cache_dtype,
     ]
-    if p.quantization:
-        cmd += ["--quantization", p.quantization]
+    if p.quantization or prof.get("quantization"):
+        cmd += ["--quantization", prof.get("quantization") or p.quantization]
     if p.trust_remote_code:
         cmd += ["--trust-remote-code"]
     if p.enable_tool_calling and p.tool_call_parser:
@@ -153,19 +196,31 @@ def vllm_spec(p: VllmStart) -> dict:
         cmd += ["--speculative-config", json.dumps({"method": "mtp", "num_speculative_tokens": p.speculative_tokens})]
     if p.task == "embed":
         cmd += ["--runner", "pooling"]
+    env = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1", "DO_NOT_TRACK": "1"}
+    if p.rope_scaling:
+        rope = p.rope_scaling.model_dump(exclude_none=True, exclude={"in_text_config"})
+        cmd += ["--hf-overrides", json.dumps({"text_config": {"rope_parameters": rope}} if p.rope_scaling.in_text_config
+                                             else {"rope_parameters": rope})]
+        env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
+    cmd += prof.get("args", [])
+    env.update(prof.get("environment", {}))
     spec = _common("vllm", vllm_container_name(p.served_model_name))
     spec["labels"]["sah.vllm.model"] = p.served_model_name
+    if p.profile:
+        spec["labels"]["sah.vllm.profile"] = p.profile
+    if prof.get("seccomp"):
+        spec["security_opt"] = spec["security_opt"] + [f"seccomp={(Path(__file__).parent / prof['seccomp']).read_text()}"]
     spec.update(
-        image=IMAGES["vllm"],
+        image=IMAGES[prof.get("image", "vllm")],
         command=cmd,
-        environment={"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1",
-                     "DO_NOT_TRACK": "1"},
+        environment=env,
         volumes={
             f"{HOST_DATA}/models/hf": {"bind": "/models/hf", "mode": "ro"},
             f"{HOST_DATA}/cache/vllm": {"bind": "/root/.cache", "mode": "rw"},
         },
         shm_size="16g",
-        ulimits=[docker.types.Ulimit(name="memlock", soft=-1, hard=-1)],
+        ulimits=[docker.types.Ulimit(name="memlock", soft=-1, hard=-1),
+                 docker.types.Ulimit(name="stack", soft=67108864, hard=67108864)],
     )
     return spec
 
