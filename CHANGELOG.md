@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.10.0 — 2026-11-02
+Tasks that run until they are done, a live activity panel, messages added to a running task, reliable web reading.
+
+* **Runs until done**: the fixed step caps are gone (the Workspace stopped at 30 steps — all recent tasks with the new
+  model ended there — and the chat at 10). The assistant plans with a new `update_plan` tool, keeps the plan updated
+  and is nudged to continue while items are pending, files were written but not run, or it only announced work.
+  Safety net: `agent_max_steps_*` / `agent_max_minutes_*` settings (Workspace 400 steps / 4 h, chat 40 / 30 min);
+  at the limit it summarises what is done and what is left.
+* **"Think" no longer leaves answers half-done**: reasoning and answer shared `max_tokens`, so a long reasoning ended
+  with `finish=length` and no text, which was "continued" without its reasoning. Thinking steps now get ≥16k tokens;
+  a reasoning-only cut retries with a bigger budget (then without thinking).
+* **Automatic context compression inside a task**: when a long task approaches 70 % of the window, older steps are
+  replaced by a model-written summary (files, results, open problems) and the plan; "context length exceeded"
+  errors compress and retry instead of failing.
+* **Add to a running task**: sending a message while the assistant works no longer cancels or is refused: it is
+  queued and injected into the running task at the next step (`202 {queued:true}`); if the task ends first, a
+  follow-up answer starts by itself.
+* **Live activity panel** (chat and Workspace): plan checklist with progress, streaming reasoning, a timeline of every
+  step (icon, arguments, live timer, ✓/✗, duration, terminal output, changed files, sub-agent reports, sources),
+  context-usage bar and compression notices; collapses into a one-line summary and is rebuilt after a reload.
+* **Web reading**: useful text from 54 typical research URLs went from 39 % to ~79 %: browser and honest-bot header
+  profiles (Wikipedia blocks fake browsers), cookies, retries with backoff and `Retry-After`, anti-bot page detection,
+  scholarly fallbacks (Europe PMC / OpenAlex / Crossref by DOI, PMID, PII) and the Internet Archive, with the source
+  noted; fixed extraction of front pages with many `<article>` elements, header charsets and concurrent PDFs. SearXNG:
+  news search works again (Bing News, DuckDuckGo News, Wikinews), Bing added to web, Europe PMC to science; its
+  settings are regenerated from the template (the installed file had lost its `server` section).
+* **MCP**: `GET /mcp` opens an authenticated SSE stream instead of answering 405 (OpenCode showed it as an error).
+* **Skills and agents are shared**: new skills and custom agents are public by default and existing ones were made
+  public; everyone can use them, only the owner or an admin/manager edits them ("Compartida por …").
+* **Connect → OpenCode**: pick the model, `small_model` is always the same model (no second light model slowing the
+  main one), and the API key is written into the file (create one in place); per-OS instructions.
+
 ## 0.9.1 — 2026-11-02
 Sub-agents that work in the Workspace, and a catalogue of built-in agents and skills.
 

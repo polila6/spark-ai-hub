@@ -56,6 +56,8 @@ def model_public(m: RegisteredModel, include_config: bool = False) -> dict:
 
         d["context_window"] = llm.context_tokens(m)
         d["tools_enabled"] = llm.supports_tools(m)
+        params = (m.runtime_config.params if m.runtime_config else {}) or {}
+        d["reasoning"] = "reasoning" in (m.capabilities or []) or bool(params.get("reasoning_parser"))
     if include_config:
         d["runtime_params"] = m.runtime_config.params if m.runtime_config else {}
         d["compat"] = m.compat

@@ -1,5 +1,5 @@
 "use client";
-import { Bot, Globe, Pencil, Plus, Trash2 } from "lucide-react";
+import { Bot, Globe, Lock, Pencil, Plus, Trash2, Users } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import useSWR from "swr";
@@ -7,14 +7,15 @@ import { Guide } from "@/components/guide";
 import { Badge, Button, Card, Field, Input, Modal, Notice, PageHeader, Select, Skeleton, Switch, Textarea } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useL } from "@/lib/i18n";
-import { isManager, useMe, useToast } from "@/lib/providers";
+import { useToast } from "@/lib/providers";
+
+const ownerName = (o: any) => o?.display_name || o?.username || "?";
 
 type Ag = { id?: string; name: string; description: string; instructions: string; tools: string[]; skills: string[]; visibility: string; enabled: boolean };
-const EMPTY: Ag = { name: "", description: "", instructions: "", tools: ["web_search", "fetch_url"], skills: [], visibility: "private", enabled: true };
+const EMPTY: Ag = { name: "", description: "", instructions: "", tools: ["web_search", "fetch_url"], skills: [], visibility: "public", enabled: true };
 
 function Editor({ value, tools, onClose, onSaved }: { value: Ag; tools: { name: string; label: string }[]; onClose: () => void; onSaved: () => void }) {
   const L = useL();
-  const { me } = useMe();
   const { push } = useToast();
   const [a, setA] = useState<Ag>(value);
   const { data: sk } = useSWR("/api/v1/skills");
@@ -22,7 +23,8 @@ function Editor({ value, tools, onClose, onSaved }: { value: Ag; tools: { name: 
   async function save() {
     setBusy(true);
     try {
-      const json = { ...a, id: undefined };
+      const { name, description, instructions, tools, skills, visibility, enabled } = a;
+      const json = { name, description, instructions, tools, skills, visibility, enabled };
       await api(a.id ? `/api/v1/agents/${a.id}` : "/api/v1/agents", { method: a.id ? "PUT" : "POST", json });
       push("ok", L("Agente guardado", "Agent saved"));
       onSaved();
@@ -43,9 +45,10 @@ function Editor({ value, tools, onClose, onSaved }: { value: Ag; tools: { name: 
         <div className="space-y-3">
           <Field label={L("Skill precargada (opcional)", "Preloaded skill (optional)")} hint={L("Se añade a sus instrucciones", "Added to its instructions")}>
             <Select value={a.skills[0] ?? ""} onChange={(e) => setA({ ...a, skills: e.target.value ? [e.target.value] : [] })}>
-              <option value="">—</option>{(sk?.skills ?? []).map((s: any) => <option key={s.id} value={s.name}>{s.name}</option>)}
+              <option value="">—</option>{Array.from(new Set<string>((sk?.skills ?? []).filter((s: any) => s.enabled).map((s: any) => s.name))).map((n) => <option key={n} value={n}>{n}</option>)}
             </Select></Field>
-          {isManager(me) && <Switch checked={a.visibility === "public"} onChange={(v) => setA({ ...a, visibility: v ? "public" : "private" })} label={L("Disponible para todos los usuarios", "Available to all users")} />}
+          <div><Switch checked={a.visibility === "public"} onChange={(v) => setA({ ...a, visibility: v ? "public" : "private" })} label={L("Compartir con todos los usuarios", "Share with all users")} />
+            <p className="mt-1 text-[11px] text-subtle">{L("Todos podrán usarlo; solo tú (o un administrador) podréis editarlo o borrarlo. Apágalo para que sea privado.", "Everyone can use it; only you (or an administrator) can edit or delete it. Turn it off to keep it private.")}</p></div>
           <Switch checked={a.enabled} onChange={(v) => setA({ ...a, enabled: v })} label={L("Activado", "Enabled")} />
         </div>
       </div>
@@ -56,6 +59,7 @@ function Editor({ value, tools, onClose, onSaved }: { value: Ag; tools: { name: 
 
 export default function AgentsPage() {
   const L = useL();
+  const { push } = useToast();
   const { data, mutate } = useSWR("/api/v1/agents");
   const [edit, setEdit] = useState<Ag | null>(null);
   const [q, setQ] = useState("");
@@ -77,12 +81,17 @@ export default function AgentsPage() {
             {shown.map((a: any) => (
               <Card key={a.id} className="flex flex-col p-4">
                 <div className="flex items-center gap-2"><Bot className="h-4 w-4 text-accent" /><span className="font-medium">{a.name}</span>
-                  {a.builtin ? <Badge tone="ok">{L("Del hub", "Built-in")}</Badge> : a.visibility === "public" ? <Badge tone="accent"><Globe className="h-3 w-3" />{L("para todos", "for everyone")}</Badge> : <Badge>{L("tuyo", "yours")}</Badge>}
-                  {!a.enabled && <Badge tone="warn">{L("desactivado", "disabled")}</Badge>}</div>
+                  {a.builtin ? <Badge tone="ok">{L("Del hub", "Built-in")}</Badge>
+                    : !a.mine ? <Badge tone="info"><Users className="h-3 w-3" />{L(`Compartido por ${ownerName(a.owner)}`, `Shared by ${ownerName(a.owner)}`)}</Badge>
+                    : a.visibility === "public" ? <Badge tone="accent"><Globe className="h-3 w-3" />{L("tuyo · compartido con todos", "yours · shared with everyone")}</Badge>
+                    : <Badge><Lock className="h-3 w-3" />{L("tuyo · privado", "yours · private")}</Badge>}
+                  {!a.enabled && <Badge tone="warn">{L("desactivado", "disabled")}</Badge>}
+                  {a.enabled && a.in_use === false && <Badge tone="warn">{L("no se usa: hay otro con este nombre", "not used: another one has this name")}</Badge>}</div>
                 <p className="mt-1.5 flex-1 text-xs text-muted">{a.description}</p>
                 <div className="mt-2 flex flex-wrap gap-1">{a.tools.length ? a.tools.map((t: string) => <Badge key={t}>{label(t)}</Badge>) : <Badge>{L("sin herramientas (solo razona)", "no tools (reasoning only)")}</Badge>}{a.skills?.map((s: string) => <Badge key={s} tone="info">skill: {s}</Badge>)}</div>
-                {a.mine && <div className="mt-3 flex gap-1"><Button size="sm" variant="ghost" onClick={() => setEdit(a)}><Pencil className="h-3.5 w-3.5" />{L("Editar", "Edit")}</Button>
-                  <Button size="sm" variant="ghost" onClick={async () => { await api(`/api/v1/agents/${a.id}`, { method: "DELETE" }); mutate(); }}><Trash2 className="h-3.5 w-3.5" />{L("Borrar", "Delete")}</Button></div>}
+                {a.can_edit && <div className="mt-3 flex gap-1"><Button size="sm" variant="ghost" onClick={() => setEdit(a)}><Pencil className="h-3.5 w-3.5" />{L("Editar", "Edit")}</Button>
+                  <Button size="sm" variant="ghost" onClick={async () => { try { await api(`/api/v1/agents/${a.id}`, { method: "PUT", json: { name: a.name, description: a.description, instructions: a.instructions, tools: a.tools, skills: a.skills, enabled: a.enabled, visibility: a.visibility === "public" ? "private" : "public" } }); mutate(); } catch (e: any) { push("error", e.message); } }}>{a.visibility === "public" ? <><Lock className="h-3.5 w-3.5" />{L("Hacer privado", "Make private")}</> : <><Globe className="h-3.5 w-3.5" />{L("Compartir", "Share")}</>}</Button>
+                  <Button size="sm" variant="ghost" onClick={async () => { if (!a.mine && !confirm(L(`Es de ${ownerName(a.owner)}: se borrará para todos. ¿Seguro?`, `It belongs to ${ownerName(a.owner)}: it will be deleted for everyone. Sure?`))) return; try { await api(`/api/v1/agents/${a.id}`, { method: "DELETE" }); mutate(); } catch (e: any) { push("error", e.message); } }}><Trash2 className="h-3.5 w-3.5" />{L("Borrar", "Delete")}</Button></div>}
               </Card>
             ))}
           </div>

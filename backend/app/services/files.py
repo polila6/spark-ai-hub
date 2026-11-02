@@ -122,18 +122,21 @@ def extract(path: Path, ext: str) -> list[tuple[int | None, str]]:
     if ext == ".pdf":
         import pypdfium2 as pdfium
 
-        pdf = pdfium.PdfDocument(str(path))
-        try:
-            out = []
-            for i in range(min(len(pdf), MAX_PAGES)):
-                page = pdf[i]
-                tp = page.get_textpage()
-                out.append((i + 1, tp.get_text_bounded().replace("\r\n", "\n").replace("\r", "\n")))
-                tp.close()
-                page.close()
-            return out
-        finally:
-            pdf.close()
+        from .web import _PDFIUM  # pdfium is not thread-safe: one PDF at a time per process
+
+        with _PDFIUM:
+            pdf = pdfium.PdfDocument(str(path))
+            try:
+                out = []
+                for i in range(min(len(pdf), MAX_PAGES)):
+                    page = pdf[i]
+                    tp = page.get_textpage()
+                    out.append((i + 1, tp.get_text_bounded().replace("\r\n", "\n").replace("\r", "\n")))
+                    tp.close()
+                    page.close()
+                return out
+            finally:
+                pdf.close()
     if ext == ".docx":
         _zip_ok(path)
         import docx
@@ -217,16 +220,19 @@ def render_pdf_pages(f: UserFile, max_pages: int = 4, scale: float = 1.4) -> lis
 
     import pypdfium2 as pdfium
 
-    pdf = pdfium.PdfDocument(str(abs_path(f)))
+    from .web import _PDFIUM
+
     out = []
-    try:
-        for i in range(min(len(pdf), max_pages)):
-            img = pdf[i].render(scale=scale).to_pil()
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            out.append(buf.getvalue())
-    finally:
-        pdf.close()
+    with _PDFIUM:
+        pdf = pdfium.PdfDocument(str(abs_path(f)))
+        try:
+            for i in range(min(len(pdf), max_pages)):
+                img = pdf[i].render(scale=scale).to_pil()
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                out.append(buf.getvalue())
+        finally:
+            pdf.close()
     return out
 
 

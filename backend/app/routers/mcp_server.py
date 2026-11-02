@@ -275,8 +275,8 @@ async def _handle(msg: dict, user_id: uuid.UUID) -> dict | None:
     return _rpc_error(mid, -32601, f"Method not found: {method}")
 
 
-@router.post("/mcp")
-async def mcp_post(request: Request):
+def _authenticate(request: Request) -> tuple[uuid.UUID | None, Response | None]:
+    """(owner id, None) for a valid API key with the "inference" scope, else (None, 401/403 response)."""
     from fastapi import HTTPException
 
     with SessionLocal() as db:
@@ -284,12 +284,19 @@ async def mcp_post(request: Request):
             p = api_key_principal(request, db, scope="inference")
         except HTTPException as e:
             d = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
-            return JSONResponse(status_code=e.status_code, content=_rpc_error(None, -32001, d.get("message", "unauthorized")),
-                                headers={"WWW-Authenticate": 'Bearer realm="spark-ai-hub"'})
+            return None, JSONResponse(status_code=e.status_code, content=_rpc_error(None, -32001, d.get("message", "unauthorized")),
+                                      headers={"WWW-Authenticate": 'Bearer realm="spark-ai-hub"'})
         if p is None:
-            return JSONResponse(status_code=401, content=_rpc_error(None, -32001, "Missing API key (Authorization: Bearer sah-...)"),
-                                headers={"WWW-Authenticate": 'Bearer realm="spark-ai-hub"'})
-        uid = p.user.id
+            return None, JSONResponse(status_code=401, content=_rpc_error(None, -32001, "Missing API key (Authorization: Bearer sah-...)"),
+                                      headers={"WWW-Authenticate": 'Bearer realm="spark-ai-hub"'})
+        return p.user.id, None
+
+
+@router.post("/mcp")
+async def mcp_post(request: Request):
+    uid, err = _authenticate(request)
+    if err is not None:
+        return err
     try:
         body = await request.json()
     except ValueError:
@@ -303,12 +310,65 @@ async def mcp_post(request: Request):
     return JSONResponse(res) if res is not None else Response(status_code=202)
 
 
+# GET /mcp: the optional server-to-client SSE stream of the Streamable HTTP transport. This server never sends
+# requests or notifications of its own (all responses go back on the POST), so the stream only carries keep-alive
+# comments. Answering 405 is allowed by the spec, but some clients (OpenCode) log every 405 as an error; an idle stream
+# that is closed cleanly with a reconnection hint keeps them quiet. Bounded in time so restarts are not held up.
+SSE_KEEPALIVE_S = 15
+SSE_MAX_S = 300
+SSE_RETRY_MS = 5000
+SSE_MAX_STREAMS = 64
+_sse_streams = 0
+
+
+def _server_exiting() -> bool:
+    """True once uvicorn received SIGTERM/SIGINT (its handler is a bound method of the Server)."""
+    import signal
+
+    srv = getattr(signal.getsignal(signal.SIGTERM), "__self__", None)
+    return bool(getattr(srv, "should_exit", False))
+
+
+async def _sse_idle_stream(request: Request, prime: bool):
+    global _sse_streams
+    _sse_streams += 1
+    try:
+        # 2025-11-25: an event with an id and empty data primes the client to reconnect with Last-Event-ID. Older
+        # clients try to parse every data field as JSON-RPC, so they only get the retry hint.
+        yield (f"id: {uuid.uuid4().hex}\nretry: {SSE_RETRY_MS}\ndata:\n\n" if prime else f"retry: {SSE_RETRY_MS}\n\n")
+        start = last = time.monotonic()
+        while True:
+            await asyncio.sleep(1)
+            if _server_exiting() or await request.is_disconnected():
+                return
+            now = time.monotonic()
+            if now - start >= SSE_MAX_S:
+                return
+            if now - last >= SSE_KEEPALIVE_S:
+                last = now
+                yield ": keep-alive\n\n"
+    finally:
+        _sse_streams -= 1
+
+
 @router.get("/mcp")
-async def mcp_get():
-    # No server-initiated stream: stateless server, all responses are returned on the POST.
-    return Response(status_code=405, headers={"Allow": "POST"})
+async def mcp_get(request: Request):
+    from fastapi.responses import StreamingResponse
+
+    _uid, err = _authenticate(request)
+    if err is not None:
+        return err
+    if "text/event-stream" not in request.headers.get("accept", "").lower():
+        return JSONResponse(status_code=406, content=_rpc_error(None, -32600, "GET /mcp opens an SSE stream: send "
+                                                                              "Accept: text/event-stream (requests go by POST)"))
+    if _sse_streams >= SSE_MAX_STREAMS:
+        return Response(status_code=405, headers={"Allow": "POST"})  # spec: "no SSE stream offered" for now
+    prime = request.headers.get("mcp-protocol-version", "") >= "2025-11-25"
+    return StreamingResponse(_sse_idle_stream(request, prime), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
 
 
 @router.delete("/mcp")
 async def mcp_delete():
-    return Response(status_code=405, headers={"Allow": "POST"})
+    # Stateless server: there is no session to terminate (the spec allows 405 here).
+    return Response(status_code=405, headers={"Allow": "GET, POST"})

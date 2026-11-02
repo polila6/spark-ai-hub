@@ -4,6 +4,12 @@ sub-agents) executed server-side. Long conversations are compacted automatically
 
 `run_turn` is synchronous (runs in a thread) and reports progress through `emit(event_dict)`; the router streams the
 events to the browser as SSE. Tool results are stored in `Message.parts` so the UI can replay them.
+
+The main loop runs until the task is done, not for a fixed number of steps: the model keeps a plan (update_plan) and is
+nudged to continue while plan items are open, while workspace changes are unverified, or when it stops after only
+announcing work. Admin settings give a generous safety net (steps and wall-clock time) and the user can always stop.
+When the turn's own messages approach the context window they are compacted (summary of the older steps), and
+messages the user sends meanwhile are injected from the turn's inbox (services/turns.py) before the next step.
 """
 from __future__ import annotations
 
@@ -31,17 +37,23 @@ from . import canvas as canvas_svc
 from . import dataq, kb, llm, sandbox, scheduler, web, workflows
 from . import skills as skills_svc
 from . import files as files_svc
+from . import turns as turns_svc
 from .jobs import JobError, create_job, request_cancel
 
-MAX_STEPS = 10
+MAX_STEPS = 40  # fallback of the admin setting agent_max_steps_chat (safety net, not a goal)
 SMALL_MODEL_B = 14  # below this size models get only the core tools: 20+ tool definitions confuse them
 CORE_TOOLS = {"generate_image", "edit_image", "search_knowledge", "read_document", "describe_data", "query_data",
               "save_memory", "web_search", "fetch_url", "use_skill"}
 REMEMBER_RE = re.compile(r"^\s*(?:por favor,?\s*)?(?:recuerda|recuérdalo|apunta|guarda en (?:tu )?memoria|remember)\b[\s,:]*(?:que|that)?\s*(.+)",
                          re.I | re.S)
-WORKSPACE_MAX_STEPS = 30  # write → run → read the error → fix loops need more steps
+WORKSPACE_MAX_STEPS = 400  # fallback of agent_max_steps_workspace: long tasks run until done (or stopped)
+MAX_MINUTES_CHAT, MAX_MINUTES_WORKSPACE = 30, 240  # fallbacks of agent_max_minutes_chat / _workspace
+THINKING_MIN_TOKENS = 16384  # with thinking on, a step needs room for the reasoning AND the answer
+COMPACT_AT = 0.7  # compact the turn's working messages when the prompt passes this share of the window
+COMPACT_KEEP = 0.2  # share of the window kept verbatim (most recent steps) when compacting
+MAX_NUDGES_CHAT, MAX_NUDGES_WORKSPACE = 6, 30  # "continue" reminders per turn (2 in a row at most)
 SUB_MAX_STEPS = 8
-SUB_WS_MAX_STEPS = 24  # a sub-agent that writes and runs code in the workspace needs more steps
+SUB_WS_MAX_STEPS = 60  # a sub-agent that writes and runs code in the workspace needs more steps
 WS_WRITE_TOOLS = {"ws_write", "ws_append", "ws_edit"}
 WS_TOOLS = WS_WRITE_TOOLS | {"ws_list", "ws_read", "ws_run"}
 IMAGE_MAX_SIDE = 1280
@@ -74,6 +86,12 @@ class Turn:
     web: bool = True
     research: bool = False  # "Deep research" switch: the assistant calls deep_research
     workspace_id: uuid.UUID | None = None  # workspace mode: files and commands in the user's persistent workspace
+    user_message_id: int | None = None  # the message being answered: history = messages before it (queued ones after)
+    history_upto: int | None = None  # follow-up turns: history = messages with id < this (default user_message_id)...
+    history_exclude: list[int] = field(default_factory=list)  # ...except these (the queued messages being answered)
+
+    def history_bounds(self) -> tuple[int | None, set[int]]:
+        return (self.history_upto or self.user_message_id), set(self.history_exclude)
 
 
 # ------------------------------------------------------------------ helpers
@@ -98,18 +116,26 @@ def _png_uri(data: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(data).decode()
 
 
-def prior_messages(db, conv_id: uuid.UUID) -> list[Message]:
-    """Conversation messages before the turn being answered (the router stores the new user message first)."""
-    msgs = list(db.scalars(select(Message).where(Message.conversation_id == conv_id).order_by(Message.id)))
+def prior_messages(db, conv_id: uuid.UUID, before_id: int | None = None, exclude: set[int] | None = None) -> list[Message]:
+    """Conversation messages before the turn being answered (the router stores the new user message first).
+
+    With `before_id` (the id of the message being answered) messages queued after it while the turn runs are left
+    out: they reach the model through the inbox, not as history. `exclude`: ids that are not history either (the
+    queued messages a follow-up turn answers)."""
+    q = select(Message).where(Message.conversation_id == conv_id)
+    if before_id is not None:
+        return [m for m in db.scalars(q.where(Message.id < before_id).order_by(Message.id)) if m.id not in (exclude or ())]
+    msgs = list(db.scalars(q.order_by(Message.id)))
     if msgs and msgs[-1].role == "user":
         msgs.pop()
     return msgs
 
 
-def image_refs(db, conv_id: uuid.UUID, extra: list[UserFile] | None = None) -> list[dict]:
+def image_refs(db, conv_id: uuid.UUID, extra: list[UserFile] | None = None, before_id: int | None = None,
+               exclude: set[int] | None = None) -> list[dict]:
     """Stable labels img1..imgN for every image in the conversation (uploads and generated), oldest first."""
     refs: list[dict] = []
-    for m in prior_messages(db, conv_id):
+    for m in prior_messages(db, conv_id, before_id, exclude):
         for a in m.attachments or []:
             if a.get("kind") == "image":
                 refs.append({"source": "file", "id": a["file_id"], "desc": f"subida por el usuario: {a.get('name')}"})
@@ -209,10 +235,20 @@ SUMMARY_PROMPT = (
     "nada. Si recibes un resumen previo, intégralo. Máximo {words} palabras.")
 
 
-def _summarize(model: RegisteredModel, previous: str | None, transcript: str, words: int) -> str:
-    body = {"messages": [{"role": "system", "content": SUMMARY_PROMPT.format(words=words)},
+TASK_SUMMARY_PROMPT = (
+    "Resume el trabajo que un asistente lleva hecho en la tarea actual (sus mensajes, las llamadas a herramientas y "
+    "sus resultados) para que pueda continuarla sin verlo. Conserva: lo que pidió el usuario, lo hecho paso a paso "
+    "(breve), archivos creados o modificados con su ruta exacta y su estado, comandos ejecutados y resultados clave "
+    "(cifras, salidas, datos encontrados, URLs consultadas, file_id), decisiones tomadas, errores que siguen abiertos "
+    "y lo que falta por hacer. Escribe en el idioma de la tarea, en viñetas compactas, sin inventar nada. Si recibes "
+    "un resumen previo, intégralo. Máximo {words} palabras.")
+
+
+def _summarize(model: RegisteredModel, previous: str | None, transcript: str, words: int,
+               prompt: str = SUMMARY_PROMPT, label: str = "Conversación") -> str:
+    body = {"messages": [{"role": "system", "content": prompt.format(words=words)},
                          {"role": "user", "content": (f"Resumen previo:\n{previous}\n\n" if previous else "")
-                          + f"Conversación:\n{transcript}"}],
+                          + f"{label}:\n{transcript}"}],
             "temperature": 0.2, "max_tokens": min(4000, int(words * 2.2))}
     if model.backend == "vllm":
         body["chat_template_kwargs"] = {"enable_thinking": False}
@@ -222,7 +258,8 @@ def _summarize(model: RegisteredModel, previous: str | None, transcript: str, wo
 
 
 def compact_conversation(conv_id: uuid.UUID, model_id: uuid.UUID, ctx: int, budget: int | None = None,
-                         force: bool = False, exclude_last_user: bool = True) -> dict | None:
+                         force: bool = False, exclude_last_user: bool = True, before_id: int | None = None,
+                         exclude: set[int] | None = None) -> dict | None:
     """Summarise the oldest messages so the rest fits. `budget`: tokens available for the history.
 
     Without `force`, nothing happens while the history uses less than half of the budget. The most recent messages
@@ -231,7 +268,7 @@ def compact_conversation(conv_id: uuid.UUID, model_id: uuid.UUID, ctx: int, budg
     budget = budget or int(ctx * 0.6)
     with SessionLocal() as db:
         conv = db.get(Conversation, conv_id)
-        msgs = prior_messages(db, conv_id) if exclude_last_user else list(db.scalars(
+        msgs = prior_messages(db, conv_id, before_id, exclude) if exclude_last_user else list(db.scalars(
             select(Message).where(Message.conversation_id == conv_id).order_by(Message.id)))
         msgs = [m for m in msgs if conv.summary_upto is None or m.id > conv.summary_upto]
         texts = [(m.id, m.role, _message_text(m)) for m in msgs]
@@ -288,6 +325,189 @@ def compact_conversation(conv_id: uuid.UUID, model_id: uuid.UUID, ctx: int, budg
                              "model": model.alias, "compactions": int(meta.get("compactions") or 0) + 1}
         db.commit()
         return {**conv.summary_meta, "summarized_now": len(old), "kept": keep}
+
+
+# ------------------------------------------------------------------ run-until-done loop (pure helpers)
+
+PLAN_STATUSES = ("pending", "in_progress", "completed")
+_PLAN_ALIASES = {"todo": "pending", "to_do": "pending", "not_started": "pending", "open": "pending", "waiting": "pending",
+                 "in-progress": "in_progress", "inprogress": "in_progress", "doing": "in_progress", "active": "in_progress",
+                 "working": "in_progress", "started": "in_progress", "en_curso": "in_progress",
+                 "done": "completed", "complete": "completed", "finished": "completed", "ok": "completed",
+                 "cancelled": "completed", "canceled": "completed", "skipped": "completed", "hecho": "completed"}
+PLAN_MAX_ITEMS = 40
+
+
+def normalize_plan(items) -> list[dict]:
+    """The model's update_plan items as [{content, status}] (status pending|in_progress|completed); tolerant of a
+    JSON string, plain strings and status synonyms. Empty items are dropped; at most PLAN_MAX_ITEMS."""
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except ValueError:
+            items = [x for x in items.splitlines() if x.strip()]
+    if isinstance(items, dict):
+        items = items.get("items") or []
+    out: list[dict] = []
+    for it in items if isinstance(items, list) else []:
+        if isinstance(it, str):
+            content, status = it, "pending"
+        elif isinstance(it, dict):
+            content = it.get("content") or it.get("step") or it.get("title") or it.get("task") or ""
+            status = str(it.get("status") or "pending").strip().lower().replace(" ", "_")
+        else:
+            continue
+        content = re.sub(r"\s+", " ", str(content)).strip()[:300]
+        if not content:
+            continue
+        out.append({"content": content, "status": status if status in PLAN_STATUSES else _PLAN_ALIASES.get(status, "pending")})
+        if len(out) >= PLAN_MAX_ITEMS:
+            break
+    return out
+
+
+def plan_open(plan: list[dict]) -> list[dict]:
+    return [i for i in plan or [] if i.get("status") != "completed"]
+
+
+ANNOUNCE_RE = re.compile(
+    r"(?:^|[\s.;:!¡,(])(?:voy a|vamos a|procedo a|paso a|empiezo (?:a|por|con)|lanzo|ahora (?:voy|paso|lanzo|compilo|"
+    r"ejecuto|reviso|busco|creo|escribo|corrijo|pruebo|abro|leo)|a continuaci[oó]n (?:voy|paso|lanzo|compilo|ejecuto|"
+    r"reviso|busco|creo|escribo|corrijo|pruebo|abro|leo)|let me|i(?:'ll| will) (?:now )?(?:run|compile|check|fix|search|"
+    r"write|create|open|test|start|continue|do|read|look)|next,? i(?:'ll| will))\b", re.I)
+
+
+def announces_work(text: str) -> bool:
+    """The step ended with the model saying what it is about to do ("Voy a compilar.") instead of doing it."""
+    tail = (text or "").strip()[-600:]
+    if not tail or tail.rstrip("*_ )").endswith("?"):
+        return False  # a question to the user is a legitimate end of turn
+    last = re.split(r"\n\s*\n", tail)[-1]
+    return bool(ANNOUNCE_RE.search(last))
+
+
+def continue_reason(text: str, plan: list[dict], unverified: bool, nudges_in_row: int, nudges_total: int,
+                    max_total: int) -> str | None:
+    """Why the loop goes on although the model ended its step without tool calls (None = the turn is done).
+
+    plan: items still pending/in progress; verify: workspace files written but never run/checked since; empty: no
+    answer text at all (e.g. only reasoning); announced: the text promises work that was not done."""
+    if nudges_in_row >= 2 or nudges_total >= max_total:
+        return None
+    if plan_open(plan):
+        return "plan"
+    if unverified:
+        return "verify"
+    if not (text or "").strip():
+        return "empty"
+    if announces_work(text):
+        return "announced"
+    return None
+
+
+def nudge_message(reason: str, plan: list[dict], lang: str = "es") -> str:
+    es = lang != "en"
+    if reason == "plan":
+        pend = "\n".join(f"- [{i['status']}] {i['content']}" for i in plan_open(plan)[:20])
+        return (("Continúa con el plan. Pasos sin completar:\n" + pend + "\nHazlos ahora con las herramientas, sin "
+                 "anunciarlo antes. Si de verdad has terminado (o un paso no se puede hacer), márcalo todo como completado "
+                 "con update_plan y da el resumen final.") if es else
+                ("Continue with the plan. Open steps:\n" + pend + "\nDo them now with the tools, without announcing it "
+                 "first. If you really are done (or a step is impossible), mark everything completed with update_plan "
+                 "and give the final summary."))
+    if reason == "verify":
+        return ("Antes de terminar, comprueba que lo que has escrito funciona: ejecútalo, compílalo o pruébalo con ws_run, "
+                "revisa la salida y corrige los errores. Después da el resumen final." if es else
+                "Before finishing, check that what you wrote works: run, compile or test it with ws_run, read the output "
+                "and fix any error. Then give the final summary.")
+    if reason == "empty":
+        return ("No has escrito la respuesta para el usuario. Si queda trabajo, continúa con las herramientas; si no, "
+                "escribe ya la respuesta final completa." if es else
+                "You have not written the answer for the user. If work remains, continue with the tools; otherwise "
+                "write the complete final answer now.")
+    return ("Has dicho lo que ibas a hacer, pero no lo has hecho. Hazlo ahora llamando a las herramientas. Si ya está "
+            "todo hecho, da el resumen final." if es else
+            "You said what you were going to do but did not do it. Do it now by calling the tools. If everything is "
+            "already done, give the final summary.")
+
+
+def is_context_error(message: str) -> bool:
+    return bool(re.search(r"context length|maximum context|too long|max_tokens|exceed|prompt is too", message or "", re.I))
+
+
+def step_groups(messages: list[dict], start: int) -> list[list[int]]:
+    """Indices of messages[start:] grouped into steps: an assistant message with the tool results that follow it
+    stays together (splitting them breaks the tool-call protocol); every user message is a group of its own."""
+    groups: list[list[int]] = []
+    for i in range(start, len(messages)):
+        role = messages[i].get("role")
+        if role == "tool" and groups and messages[groups[-1][0]].get("role") == "assistant":
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+    return groups
+
+
+def compaction_split(messages: list[dict], start: int, keep_tokens: int, ratio: float = CHARS_PER_TOKEN,
+                     protected: set[int] | None = None, min_keep: int = 2) -> dict | None:
+    """Which of the turn's working messages (messages[start:]) to summarise when the context fills up.
+
+    The most recent steps stay verbatim (whole groups, at least `min_keep`, about `keep_tokens`); everything older is
+    summarised, except `protected` indices (the user's injected messages), which stay as they are. Returns
+    {"old": [...], "protected": [...], "tail": first kept index} or None when there is nothing worth summarising."""
+    protected = protected or set()
+    groups = step_groups(messages, start)
+    if len(groups) <= min_keep:
+        return None
+    kept, acc = 0, 0
+    for g in reversed(groups):
+        size = sum(est_tokens(messages[i], ratio) for i in g)
+        if kept >= min_keep and acc + size > keep_tokens:
+            break
+        acc += size
+        kept += 1
+    old_groups = groups[: len(groups) - kept]
+    old = [i for g in old_groups for i in g if i not in protected]
+    if not any(messages[i].get("role") in ("assistant", "tool") for i in old):
+        return None
+    return {"old": old, "protected": [i for g in old_groups for i in g if i in protected],
+            "tail": groups[len(groups) - kept][0] if kept else len(messages)}
+
+
+def _content_text(c) -> str:
+    if isinstance(c, list):
+        return "\n".join(p.get("text", "") if p.get("type") == "text" else "[imagen]" for p in c if isinstance(p, dict))
+    return str(c or "")
+
+
+def turn_transcript(msgs: list[dict], tool_chars: int = 2500) -> list[str]:
+    """Plain-text pieces of the turn's messages for the summariser (tool results truncated)."""
+    names: dict[str, str] = {}
+    out: list[str] = []
+    for m in msgs:
+        role = m.get("role")
+        if role == "assistant":
+            lines = [f"ASISTENTE: {_content_text(m.get('content'))}".rstrip()]
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                names[tc.get("id") or ""] = fn.get("name") or "?"
+                lines.append(f"→ {fn.get('name')}({str(fn.get('arguments') or '')[:800]})")
+            out.append("\n".join(lines))
+        elif role == "tool":
+            text = _content_text(m.get("content"))
+            out.append(f"RESULTADO de {names.get(m.get('tool_call_id') or '', 'herramienta')}: "
+                       + (text[:tool_chars] + (" […]" if len(text) > tool_chars else "")))
+        else:
+            out.append(f"USUARIO/SISTEMA: {_content_text(m.get('content'))[:3000]}")
+    return out
+
+
+def mechanical_summary(msgs: list[dict]) -> str:
+    """Fallback when the model cannot summarise: one line per tool call with the start of its result."""
+    lines = []
+    for piece in turn_transcript(msgs, tool_chars=200):
+        lines.append("- " + re.sub(r"\s+", " ", piece)[:400])
+    return "\n".join(lines[-120:])
 
 
 # ------------------------------------------------------------------ tools
@@ -513,6 +733,21 @@ TASK_TOOLS = [
             "required": ["name", "prompt", "freq"]}}},
 ]
 
+PLAN_TOOLS = [
+    {"type": "function", "function": {
+        "name": "update_plan",
+        "description": "Create or update your plan (checklist) for a task with several steps. Send the WHOLE list "
+                       "every time. Keep exactly one item in_progress while you work, mark items completed as soon as "
+                       "they are done, and add items when the task grows or the user asks for more. The user sees the "
+                       "plan live. The turn does not end while items are pending or in progress.",
+        "parameters": {"type": "object", "properties": {
+            "items": {"type": "array", "items": {"type": "object", "properties": {
+                "content": {"type": "string", "description": "Concrete step, e.g. 'Compilar informe.tex sin errores'"},
+                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}},
+                "required": ["content", "status"]}}},
+            "required": ["items"]}}},
+]
+
 RESEARCH_PLAN_PROMPT = (
     "Plan an in-depth research. Split the question into {n} complementary sub-questions that together cover it "
     "(background, current state, data/figures, comparisons, risks or open problems, as relevant). Answer ONLY with "
@@ -566,7 +801,8 @@ TOOL_LABELS = {"generate_image": "Generando imagen", "edit_image": "Editando ima
                "run_code": "Ejecutando código", "canvas_write": "Escribiendo en el lienzo",
                "canvas_edit": "Editando el lienzo", "deep_research": "Investigación a fondo",
                "schedule_task": "Programando tarea", "ws_list": "Mirando archivos", "ws_read": "Leyendo archivo",
-               "ws_write": "Escribiendo archivo", "ws_append": "Añadiendo al archivo", "ws_edit": "Editando archivo", "ws_run": "Ejecutando en el workspace"}
+               "ws_write": "Escribiendo archivo", "ws_append": "Añadiendo al archivo", "ws_edit": "Editando archivo", "ws_run": "Ejecutando en el workspace",
+               "update_plan": "Actualizando el plan"}
 
 
 def agent_profiles(db, user: User) -> dict[str, dict]:
@@ -575,7 +811,7 @@ def agent_profiles(db, user: User) -> dict[str, dict]:
     from sqlalchemy import or_
 
     for a in db.scalars(select(AgentProfile).where(AgentProfile.enabled.is_(True), or_(
-            AgentProfile.owner_id == user.id, AgentProfile.visibility == Visibility.public)).order_by(AgentProfile.name)):
+            AgentProfile.owner_id == user.id, AgentProfile.visibility == Visibility.public)).order_by(AgentProfile.name, AgentProfile.created_at, AgentProfile.id)):
         if a.name in out and a.owner_id != user.id:
             continue
         out[a.name] = {"description": a.description, "instructions": a.instructions, "builtin": False,
@@ -635,6 +871,17 @@ class Runner:
         self.dropped = 0
         self.current_user: dict | None = None
         self.max_parallel = 3
+        self.plan: list[dict] = []
+        self.plan_part: dict | None = None  # the {"type": "plan"} entry of self.parts (latest plan, kept after reload)
+        self.protected: set[int] = set()  # id() of injected user messages: compaction keeps them verbatim
+        self.task_summary: str | None = None  # summary of this turn's older steps (mid-turn compaction)
+        self.task_summary_msg: dict | None = None
+        self.unverified = False  # workspace files written and not run/checked since
+        self.spec_tokens = 0
+        self.compactions = 0
+        self.injected = 0
+        self.max_steps = MAX_STEPS
+        self.max_seconds = MAX_MINUTES_CHAT * 60
 
     # -------------------------------------------------------------- context
 
@@ -706,6 +953,12 @@ class Runner:
                           "(/work). Use ws_list/ws_read/ws_write/ws_edit/ws_run to create, check and run code and documents "
                           "HERE (not run_code or the canvas). Write files, run them, check the output and fix until it works. "
                           "Save results with clear names and tell the user where they are."))
+            lines.append(("Trabaja hasta terminar la tarea de verdad: aquí no hay un límite pequeño de pasos. Antes de dar "
+                          "algo por hecho, verifícalo (ejecuta, compila, abre la salida o pasa los tests) y corrige hasta "
+                          "que funcione; no termines con el trabajo a medias ni con «voy a…»." if es else
+                          "Work until the task is really finished: there is no small step limit here. Verify before "
+                          "claiming something works (run, compile, open the output, run the tests) and fix until it does; "
+                          "never stop half-way or with «I will…»."))
             lines.append(("Archivos actuales:\n" if es else "Current files:\n") + listing)
         if tools_on and self.flags["code"] and self.workspace is None:
             lines.append("Código: run_code ejecuta Python, bash o Node en un entorno aislado sin internet. Úsalo para "
@@ -754,6 +1007,21 @@ class Runner:
                     "several times in the same turn, each with different non-overlapping write_paths and all the context "
                     "they need (interfaces, function names, data formats). Then integrate, run and test the whole, and "
                     "fix. Do small changes yourself.")
+        if tools_on and self._tool_allowed("update_plan"):
+            lines.append(
+                "Tareas de varios pasos: antes de empezar crea un plan con update_plan (pasos concretos), mantén "
+                "exactamente un paso «in_progress», márcalo «completed» en cuanto lo termines y actualiza el plan si la "
+                "tarea cambia o el usuario añade algo. No te detengas a mitad: sigue llamando a las herramientas hasta "
+                "completar TODOS los pasos. No anuncies lo que vas a hacer sin hacerlo (llama a la herramienta en la misma "
+                "respuesta). Comprueba los resultados antes de darlos por buenos. Cuando todo esté completado, da un "
+                "resumen final de lo hecho (y dónde está). Si el usuario te escribe mientras trabajas, su mensaje aparece "
+                "marcado como nuevo: incorpóralo al plan y sigue. Para preguntas sencillas no hace falta plan." if es else
+                "Multi-step tasks: first create a plan with update_plan (concrete steps), keep exactly one step "
+                "in_progress, mark it completed as soon as it is done and update the plan when the task changes or the "
+                "user adds something. Do not stop half-way: keep calling tools until ALL steps are completed. Never "
+                "announce what you will do without doing it (call the tool in the same reply). Check results before "
+                "trusting them. When everything is completed, give a final summary. If the user writes while you work, "
+                "the message is marked as new: add it to the plan and go on. Simple questions need no plan.")
         if self.summary:
             lines.append(("Resumen de la parte anterior de esta conversación (los mensajes antiguos ya no están en tu "
                           "contexto; confía en este resumen):\n" if es else "Summary of the earlier conversation:\n")
@@ -836,7 +1104,7 @@ class Runner:
         return parts, warnings
 
     def _history(self, db, conv_id, vision: bool, budget_chars: int, after_id: int | None = None) -> list[dict]:
-        msgs = [m for m in prior_messages(db, conv_id) if after_id is None or m.id > after_id]
+        msgs = [m for m in prior_messages(db, conv_id, *self.t.history_bounds()) if after_id is None or m.id > after_id]
         out: list[dict] = []
         img_idx = 0
         ref_by_id = {r["id"]: r["ref"] for r in self.refs}
@@ -1138,9 +1406,10 @@ class Runner:
         elif len(text) > limit:
             text = text[:limit] + "\n[... página recortada]"
         title = page["title"] or url
-        return {"ok": True, "summary": f"{title[:90]} ({len(page['text']):,} caracteres)".replace(",", "."),
+        via = {"archive": " · copia del Internet Archive", "openalex": " · ficha OpenAlex", "europepmc": " · ficha Europe PMC"}.get(page.get("via") or "", "")
+        return {"ok": True, "summary": f"{title[:90]} ({len(page['text']):,} caracteres){via}".replace(",", "."),
                 "sources": [{"title": title, "url": page["url"], "kind": "web", "snippet": page["text"][:240]}],
-                "content": f"# {title}\nURL: {page['url']}\n\n{text}"}
+                "content": f"# {title}\nURL: {page['url']}\n" + (f"{page['note']}\n" if page.get("note") else "") + f"\n{text}"}
 
     # -------------------------------------------------------------- skills
 
@@ -1713,10 +1982,13 @@ class Runner:
             return False
         if name == "deep_research":
             return self.flags["web"] and self.flags["agents"]
+        if name == "update_plan":
+            return not self.small or self.workspace is not None
         return True
 
     def _all_specs(self) -> list[dict]:
-        specs = TOOLS + WEB_TOOLS + SKILL_TOOLS + CODE_TOOLS + CANVAS_TOOLS + RESEARCH_TOOLS + TASK_TOOLS + WORKSPACE_TOOLS
+        specs = (TOOLS + WEB_TOOLS + SKILL_TOOLS + CODE_TOOLS + CANVAS_TOOLS + RESEARCH_TOOLS + TASK_TOOLS + WORKSPACE_TOOLS
+                 + PLAN_TOOLS)
         if self.agents:
             specs = specs + [_delegate_spec(self.agents)]
         return specs
@@ -1744,10 +2016,13 @@ class Runner:
             return {"ok": False, "summary": f"{type(e).__name__}: {e}"[:300], "content": f"Error: {e}"}
 
     def run_tool(self, call_id: str, name: str, args: dict) -> dict:
+        started = time.time()
         self.emit({"type": "tool_start", "id": call_id, "name": name, "label": TOOL_LABELS.get(name, name),
+                   "started": round(started, 3),
                    "args": {k: v for k, v in args.items() if k not in ("sql", "context")} | ({"sql": args["sql"]} if "sql" in args else {})})
         res = self._exec(call_id, name, args)
         public = {k: v for k, v in res.items() if k != "content"}
+        public["seconds"] = round(time.time() - started, 2)
         self.emit({"type": "tool_result", "id": call_id, "name": name, **public})
         with self.lock:
             self.parts.append({"type": "tool", "name": name, "args": {k: v for k, v in args.items() if k != "context"}, **public})
@@ -1832,6 +2107,149 @@ class Runner:
                     finish = ch["finish_reason"]
         return "".join(out), calls, finish
 
+    # -------------------------------------------------------------- plan, inbox, mid-turn compaction
+
+    def _update_plan(self, args: dict) -> dict:
+        if "_invalid_arguments" in args:
+            return {"ok": False, "content": "Your update_plan call was cut off; send the plan again (shorter items)."}
+        items = normalize_plan(args.get("items"))
+        if not items:
+            return {"ok": False, "content": "The plan is empty: send items=[{content, status}, ...]."}
+        with self.lock:
+            self.plan = items
+            if self.plan_part is None:
+                self.plan_part = {"type": "plan", "items": items}
+                self.parts.append(self.plan_part)
+            else:
+                self.plan_part["items"] = items
+        self.emit({"type": "plan", "items": items})
+        done = sum(1 for i in items if i["status"] == "completed")
+        rest = plan_open(items)
+        return {"ok": True, "content": f"Plan saved ({done}/{len(items)} completed)." + (
+            f" Next: {rest[0]['content']}. Keep working; do not stop until every item is completed." if rest else
+            " Everything is completed: give the final summary to the user.")}
+
+    def _absorb_inbox(self, messages: list[dict], closing: bool = False) -> int:
+        """Append the messages the user sent while the turn runs (see services/turns.py) as user messages.
+
+        `closing`: the model is about to finish, so the inbox is closed atomically when it is empty (later messages get
+        a turn of their own). Returns how many messages were injected."""
+        cid = self.t.conversation_id
+        try:
+            ids = turns_svc.close_inbox(cid) if closing else turns_svc.take_inbox(cid)
+        except Exception:  # noqa: BLE001  (Redis hiccup: the messages stay queued for the follow-up turn)
+            return 0
+        if not ids:
+            return 0
+        es = self.t.lang != "en"
+        n = 0
+        with SessionLocal() as db:
+            for mid in ids:
+                m = db.get(Message, mid)
+                if not m or m.conversation_id != cid or m.role != "user":
+                    continue
+                files = []
+                for a in m.attachments or []:
+                    try:
+                        f = db.get(UserFile, uuid.UUID(a["file_id"]))
+                    except (KeyError, ValueError, TypeError):
+                        continue
+                    if f and f.owner_id == self.t.user_id:
+                        db.expunge(f)
+                        files.append(f)
+                        if f.kind == "image":
+                            self.refs.append({"source": "file", "id": str(f.id), "ref": f"img{len(self.refs) + 1}",
+                                              "desc": f"subida por el usuario mientras trabajabas: {f.filename}"})
+                att, warnings = self._attachment_parts(db, self.model, files, int(self.ctx * 0.15 * self.ratio)) if files \
+                    else ([], [])
+                for w in warnings:
+                    self.emit({"type": "warning", "message": w})
+                text = (("[Mensaje nuevo del usuario mientras trabajabas]: " if es else
+                         "[New message from the user while you were working]: ") + (m.content or "")
+                        + ("\n\n(Incorpóralo a la tarea: si la cambia o la amplía, actualiza el plan con update_plan y "
+                           "sigue; no abandones lo que estabas haciendo salvo que te lo pida.)" if es else
+                           "\n\n(Take it into account: if it changes or extends the task, update the plan with "
+                           "update_plan and go on; do not drop the current work unless asked to.)"))
+                msg = {"role": "user", "content": ([{"type": "text", "text": text}] + att) if att else text}
+                messages.append(msg)
+                self.protected.add(id(msg))
+                self.emit({"type": "user_injected", "message_id": m.id, "content": m.content})
+                with self.lock:
+                    self.parts.append({"type": "user_injected", "message_id": m.id, "content": (m.content or "")[:4000]})
+                n += 1
+        self.injected += n
+        return n
+
+    def _compact_turn(self, messages: list[dict], out_tokens: int, force: bool = False) -> bool:
+        """Mid-turn compaction: when the prompt nears the window, summarise the turn's older steps (the system prompt,
+        the history, the user's requests, the plan and the latest steps stay verbatim). True when it compacted."""
+        before = est_tokens(messages, self.ratio) + self.spec_tokens
+        if not force and before + min(out_tokens, self.ctx // 4) <= self.ctx * COMPACT_AT:
+            return False
+        try:
+            start = next(i for i, m in enumerate(messages) if m is self.current_user) + 1
+        except StopIteration:
+            return False
+        if not force and est_tokens(messages[start:], self.ratio) < self.ctx * 0.25:
+            return False  # the history, not this turn's work, fills the window: _fit trims it
+        protected = {i for i, m in enumerate(messages) if id(m) in self.protected}
+        split = compaction_split(messages, start, int(self.ctx * COMPACT_KEEP), self.ratio, protected)
+        if not split:
+            return False
+        cid = f"call_{uuid.uuid4().hex[:12]}"
+        started = time.time()
+        self.emit({"type": "status", "status": "compacting"})
+        self.emit({"type": "tool_start", "id": cid, "name": "compact_context", "label": TOOL_LABELS["compact_context"],
+                   "started": round(started, 3)})
+        old_msgs = [messages[i] for i in split["old"]]
+        previous = self.task_summary if any(m is self.task_summary_msg for m in old_msgs) else None
+        pieces = turn_transcript([m for m in old_msgs if m is not self.task_summary_msg])
+        words = max(400, min(1500, int(self.ctx * 0.006)))
+        chunk_tokens = max(1500, int(self.ctx * 0.4))
+        summary = previous
+        try:
+            buf: list[str] = []
+            used = 0
+            for piece in pieces:
+                t = est_tokens(piece, self.ratio)
+                if buf and used + t > chunk_tokens:
+                    summary = _summarize(self.model, summary, "\n\n".join(buf), words, TASK_SUMMARY_PROMPT, "Trabajo")
+                    buf, used = [], 0
+                buf.append(piece[: int(chunk_tokens * self.ratio)])
+                used += min(t, chunk_tokens)
+            if buf:
+                summary = _summarize(self.model, summary, "\n\n".join(buf), words, TASK_SUMMARY_PROMPT, "Trabajo")
+        except Exception as e:  # noqa: BLE001  (engine busy/down: a mechanical summary still frees the window)
+            self.emit({"type": "warning", "message": f"No se pudo resumir con el modelo ({getattr(e, 'message', e)}); "
+                                                     "se usa un resumen automático de los pasos."[:400]})
+            summary = ((previous + "\n") if previous else "") + mechanical_summary(old_msgs)
+        if not summary:
+            summary = mechanical_summary(old_msgs)
+        es = self.t.lang != "en"
+        plan_txt = "\n".join(f"- [{i['status']}] {i['content']}" for i in self.plan)
+        note = {"role": "user", "content": (
+            ("[Contexto compactado automáticamente: los pasos anteriores de esta tarea ya no están en tu contexto. "
+             "Resumen de lo hecho hasta ahora:]\n" if es else
+             "[Context compacted automatically: the earlier steps of this task are no longer in your context. Summary "
+             "of the work so far:]\n") + summary
+            + ((("\n\nPlan actual:\n" if es else "\n\nCurrent plan:\n") + plan_txt) if plan_txt else "")
+            + ("\n\nContinúa la tarea desde aquí (no repitas lo ya hecho)." if es else
+               "\n\nContinue the task from here (do not redo what is done).")).strip()}
+        self.task_summary, self.task_summary_msg = summary, note
+        keep_users = [messages[i] for i in split["protected"]]
+        messages[:] = messages[:start] + keep_users + [note] + messages[split["tail"]:]
+        after = est_tokens(messages, self.ratio) + self.spec_tokens
+        self.compactions += 1
+        info = {"before": int(before), "after": int(after)}
+        res = {"ok": True, "summary": (f"Contexto de la tarea compactado: {len(old_msgs)} mensajes resumidos "
+                                       f"(≈{before:,} → {after:,} tokens)").replace(",", "."),
+               "compaction": {**info, "messages": len(old_msgs), "mid_turn": True}, "seconds": round(time.time() - started, 2)}
+        self.emit({"type": "context_compacted", **info})
+        self.emit({"type": "tool_result", "id": cid, "name": "compact_context", **res})
+        with self.lock:
+            self.parts.append({"type": "tool", "name": "compact_context", "args": {}, **res})
+        return True
+
     # -------------------------------------------------------------- main loop
 
     def run(self) -> dict:
@@ -1847,7 +2265,7 @@ class Runner:
                 if f and f.owner_id == user.id:
                     db.expunge(f)
                     files.append(f)
-            self.refs = image_refs(db, conv.id, files)
+            self.refs = image_refs(db, conv.id, files, *self.t.history_bounds())
             self.ctx = effective_context(model, self.t.context_limit)
             tools_on = self.t.use_tools and llm.supports_tools(model) and self.t.mode == "chat"
             self.flags = {"web": tools_on and self.t.web and bool(get_setting(db, "web_search_enabled")),
@@ -1867,6 +2285,11 @@ class Runner:
                 if ws and ws.owner_id == user.id:
                     db.expunge(ws)
                     self.workspace = ws
+            ws_mode = self.workspace is not None
+            self.max_steps = max(1, int(get_setting(db, "agent_max_steps_workspace" if ws_mode else "agent_max_steps_chat")
+                                        or (WORKSPACE_MAX_STEPS if ws_mode else MAX_STEPS)))
+            self.max_seconds = 60 * float(get_setting(db, "agent_max_minutes_workspace" if ws_mode else "agent_max_minutes_chat")
+                                          or (MAX_MINUTES_WORKSPACE if ws_mode else MAX_MINUTES_CHAT))
             self.agents = agent_profiles(db, user) if self.flags["agents"] else {}
             if not self.flags["web"]:
                 self.agents.pop("investigador", None)
@@ -1882,21 +2305,26 @@ class Runner:
         # Auto-compaction: summarise old messages when the history would take more than half of the free window.
         if self.t.auto_compact and self.t.mode == "chat":
             with SessionLocal() as db:
-                hist = [m for m in prior_messages(db, self.t.conversation_id) if summary_upto is None or m.id > summary_upto]
+                hist = [m for m in prior_messages(db, self.t.conversation_id, *self.t.history_bounds())
+                        if summary_upto is None or m.id > summary_upto]
                 hist_tokens = sum(est_tokens(_message_text(m)) for m in hist)
             if hist_tokens > avail * 0.5 and len(hist) >= 3:
                 self.emit({"type": "status", "status": "compacting"})
                 cid = f"call_{uuid.uuid4().hex[:12]}"
-                self.emit({"type": "tool_start", "id": cid, "name": "compact_context", "label": TOOL_LABELS["compact_context"]})
+                c_started = time.time()
+                self.emit({"type": "tool_start", "id": cid, "name": "compact_context", "label": TOOL_LABELS["compact_context"],
+                           "started": round(c_started, 3)})
                 try:
-                    info = compact_conversation(self.t.conversation_id, self.t.model_id, self.ctx, budget=avail)
+                    upto, excl = self.t.history_bounds()
+                    info = compact_conversation(self.t.conversation_id, self.t.model_id, self.ctx, budget=avail,
+                                                before_id=upto, exclude=excl)
                 except (EngineError, scheduler.SchedulingError) as e:
                     info = None
                     self.emit({"type": "warning", "message": f"No se pudo compactar el contexto: {e.message}"})
                 if info:
                     res = {"ok": True, "summary": f"{info['summarized_now']} mensajes antiguos resumidos "
                                                   f"(≈{info['tokens_before']:,} → {info['tokens_after']:,} tokens)".replace(",", "."),
-                           "compaction": info}
+                           "compaction": info, "seconds": round(time.time() - c_started, 2)}
                     self.emit({"type": "tool_result", "id": cid, "name": "compact_context", **res})
                     self.parts.append({"type": "tool", "name": "compact_context", "args": {}, **res})
                     self.emit({"type": "compacted", **info})
@@ -1908,7 +2336,7 @@ class Runner:
                         system = self._system(db, user, conv, model2, tools_on)
                 else:
                     self.emit({"type": "tool_result", "id": cid, "name": "compact_context", "ok": True,
-                               "summary": "No hacía falta compactar"})
+                               "summary": "No hacía falta compactar", "seconds": round(time.time() - c_started, 2)})
         with SessionLocal() as db:
             history = self._history(db, self.t.conversation_id, llm.supports_vision(model),
                                     int(avail * 0.55 * CHARS_PER_TOKEN), summary_upto)
@@ -1942,48 +2370,118 @@ class Runner:
             reasoning.append(piece)
             self.emit({"type": "reasoning", "content": piece})
 
+        if specs:
+            self.spec_tokens = sum(est_tokens(json.dumps(t, ensure_ascii=False)) for t in specs)
+        # With thinking on, the reasoning shares max_tokens with the answer: give the step room for both.
+        step_tokens = max(max_tokens, THINKING_MIN_TOKENS) if self.t.thinking else max_tokens
+        es = self.t.lang != "en"
+        deadline = time.monotonic() + self.max_seconds
+        max_nudges = MAX_NUDGES_WORKSPACE if self.workspace is not None else MAX_NUDGES_CHAT
         step = 0
-        retried = False
-        continuations = 0  # an answer cut by max_tokens is continued automatically (twice at most)
+        ctx_retries = 0
+        continuations = 0  # an answer cut by max_tokens is continued automatically (3 times at most)
+        think_retries = 0  # steps cut while still reasoning (no text, no tool call)
+        nudges = nudges_in_row = 0
         glue = False
-        steps_max = WORKSPACE_MAX_STEPS if self.workspace is not None else MAX_STEPS
-        for step in range(steps_max):
+        last = False
+        limit_hit: str | None = None
+        step_thinking = self.t.thinking
+        while True:
+            if self.stop():
+                break
+            if not last and (step >= self.max_steps or time.monotonic() > deadline):
+                # Safety net (admin settings): one last step without tools to report what is done and what is left.
+                limit_hit = "steps" if step >= self.max_steps else "time"
+                last = True
+                why = (f"{self.max_steps} pasos" if limit_hit == "steps" else f"{round(self.max_seconds / 60)} min")
+                self.emit({"type": "warning", "message": f"Se ha alcanzado el límite de seguridad del turno ({why}). "
+                                                         "Escribe «continúa» para que siga trabajando."})
+                messages.append({"role": "user", "content": (
+                    f"[Límite de seguridad de este turno alcanzado ({why}).] No puedes usar más herramientas ahora. "
+                    "Resume lo que has hecho, qué queda pendiente y dile al usuario que escriba «continúa» para seguir."
+                    if es else f"[Safety limit of this turn reached ({why}).] You cannot use tools now. Summarise what "
+                    "is done and what is left, and tell the user to write «continue» to go on.")})
+            if not last:  # on the final no-tools step queued messages wait for the follow-up turn instead
+                self._absorb_inbox(messages)
+            step += 1
+            self.emit({"type": "step", "n": step})
             self.emit({"type": "status", "status": "loading" if self.inst is None else "generating"})
             if self.inst is None:
                 self.inst = scheduler.ensure_loaded(self.t.model_id, wait_s=1800)
                 scheduler.begin_request(self.inst.id)
             self.emit({"type": "status", "status": "generating", "load_seconds": self.inst.load_seconds})
-            fit_tokens = self._fit(messages, max_tokens)
+            self._compact_turn(messages, step_tokens)
+            fit_tokens = self._fit(messages, step_tokens)
             chars = sum(len(json.dumps(m.get("content"), ensure_ascii=False)) for m in messages)
+            r0 = len(reasoning)
             try:
-                text, calls, finish = self._llm_step(messages, specs if step < steps_max - 1 else None, fit_tokens,
-                                                     self.t.thinking, on_delta, on_reasoning, usage_total)
+                text, calls, finish = self._llm_step(messages, specs if not last else None, fit_tokens,
+                                                     step_thinking, on_delta, on_reasoning, usage_total)
             except EngineError as e:
-                if not retried and re.search(r"context length|maximum context|too long|max_tokens|exceed", e.message, re.I):
-                    retried = True  # the estimate was too optimistic: be stricter and retry once
-                    self.ratio = max(1.5, self.ratio * 0.7)
-                    self.emit({"type": "warning", "message": "El mensaje no cabía en el contexto; se ha recortado y reintentado."})
+                if ctx_retries < 3 and is_context_error(e.message):
+                    # the estimate was too optimistic: be stricter, compact the turn's steps and retry
+                    ctx_retries += 1
+                    step -= 1
+                    self.ratio = max(1.5, self.ratio * 0.75)
+                    if not self._compact_turn(messages, fit_tokens, force=True):
+                        self.emit({"type": "warning", "message": "El mensaje no cabía en el contexto; se ha recortado y reintentado."})
                     continue
                 raise
+            step_thinking = self.t.thinking
             if usage_total.get("last_prompt"):  # calibrate chars/token on this conversation
                 self.ratio = max(1.5, min(6.0, chars / max(1, usage_total["last_prompt"])))
                 self.emit({"type": "context", "used": usage_total["last_prompt"] + usage_total.get("last_completion", 0),
                            "limit": self.ctx})
+            if not calls and not text.strip() and finish == "length" and len(reasoning) > r0 and think_retries < 2 \
+                    and not self.stop():
+                # The whole budget went into reasoning: retry with more room, then without thinking. Not an answer.
+                think_retries += 1
+                step -= 1
+                if think_retries == 1:
+                    step_tokens = min(max(step_tokens * 2, THINKING_MIN_TOKENS), 65536)
+                else:
+                    step_thinking = False
+                self.emit({"type": "warning", "message": "El razonamiento agotó los tokens del paso; se reintenta "
+                                                         + ("con más margen." if think_retries == 1 else "sin pensar.")})
+                continue
+            if text.strip() or calls:
+                think_retries = 0
             if glue and text_out:
                 text_out[-1] += text  # seamless continuation of the previous piece
             else:
                 text_out.append(text)
             glue = False
-            if not calls and finish == "length" and continuations < 2 and not self.stop() and step < steps_max - 2:
+            if not calls and finish == "length" and text.strip() and continuations < 3 and not self.stop() and not last:
                 continuations += 1
                 glue = True
+                step_thinking = False  # continuing a cut answer needs no new reasoning
                 messages += [{"role": "assistant", "content": text},
                              {"role": "user", "content": "Continúa exactamente donde lo has dejado, sin repetir nada y sin "
-                                                         "comentarios sobre la continuación." if self.t.lang != "en" else
+                                                         "comentarios sobre la continuación." if es else
                                                          "Continue exactly where you stopped, without repeating anything."}]
                 continue
-            if self.stop() or not calls:
+            if self.stop():
                 break
+            if not calls:
+                if last:
+                    break
+                reason = continue_reason(text, self.plan, self.unverified and self.flags["code"], nudges_in_row,
+                                         nudges, max_nudges) if specs else \
+                    ("empty" if not text.strip() and nudges_in_row < 2 and nudges < max_nudges else None)
+                if reason:
+                    nudges += 1
+                    nudges_in_row += 1
+                    if reason == "verify":
+                        self.unverified = False  # asked once; do not insist
+                    messages += [{"role": "assistant", "content": text or ""},
+                                 {"role": "user", "content": nudge_message(reason, self.plan, self.t.lang)}]
+                    continue
+                messages.append({"role": "assistant", "content": text or ""})
+                if self._absorb_inbox(messages, closing=True):  # the user wrote meanwhile: keep going with it
+                    nudges_in_row = 0
+                    continue
+                break
+            nudges_in_row = 0
             assistant_msg, results = self._calls_to_msg(text, calls)
             messages.append(assistant_msg)
             self.emit({"type": "status", "status": "tool"})
@@ -1995,7 +2493,14 @@ class Runner:
                     for cid, fut in futs.items():
                         outputs[cid] = fut.result()
             for cid, name, args in results:
-                res = outputs.get(cid) or self.run_tool(cid, name, args)
+                if name == "update_plan":
+                    res = self._update_plan(args)
+                else:
+                    res = outputs.get(cid) or self.run_tool(cid, name, args)
+                    if name in WS_WRITE_TOOLS and res.get("ok"):
+                        self.unverified = True
+                    elif name == "ws_run":
+                        self.unverified = False
                 messages.append({"role": "tool", "tool_call_id": cid, "content": str(res.get("content") or res.get("summary"))[:TOOL_RESULT_CHARS]})
             if self.stop():
                 break
@@ -2015,8 +2520,10 @@ class Runner:
         metrics = {"ttft_ms": round(ttft * 1000, 1) if ttft else None, "latency_ms": round(total * 1000, 1),
                    "prompt_tokens": usage_total["prompt_tokens"] or None, "completion_tokens": ct or None,
                    "tokens_per_s": round((ct - 1) / decode, 2) if ct and ct > 1 and decode > 0 and not self.parts else None,
-                   "token_count_source": "engine_usage", "finish_reason": finish, "steps": step + 1,
-                   "tools": [p["name"] for p in self.parts],
+                   "token_count_source": "engine_usage", "finish_reason": finish, "steps": step,
+                   "nudges": nudges or None, "compactions": self.compactions or None, "injected": self.injected or None,
+                   "limit_hit": limit_hit, "plan_open": len(plan_open(self.plan)) if self.plan else None,
+                   "tools": [p["name"] for p in self.parts if p.get("type") == "tool"],
                    "context_used": (usage_total.get("last_prompt") or 0) + (usage_total.get("last_completion") or 0) or None,
                    "context_limit": self.ctx}
         return {"text": final, "reasoning": "".join(reasoning) or None, "metrics": metrics, "parts": self.parts}
@@ -2036,7 +2543,7 @@ class Runner:
         total = time.perf_counter() - t0
         ok = all(p.get("ok") for p in self.parts)
         return {"text": "" if ok else (self.parts[-1].get("summary") if self.parts else ""), "reasoning": None,
-                "parts": self.parts, "metrics": {"latency_ms": round(total * 1000, 1), "tools": [p["name"] for p in self.parts],
+                "parts": self.parts, "metrics": {"latency_ms": round(total * 1000, 1), "tools": [p["name"] for p in self.parts if p.get("type") == "tool"],
                                                  "mode": "image"}}
 
 

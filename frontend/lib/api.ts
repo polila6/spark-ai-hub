@@ -62,8 +62,10 @@ export async function upload<T = any>(path: string, form: FormData): Promise<T> 
   return parse(res) as Promise<T>;
 }
 
-/** POST that returns an SSE stream; invokes onEvent for each JSON `data:` line. */
-export async function streamPost(path: string, json: any, onEvent: (ev: any) => void, signal?: AbortSignal) {
+/** POST that returns an SSE stream; invokes onEvent for each JSON `data:` line and resolves to undefined when it ends.
+ * A 202 JSON answer instead of a stream (e.g. a chat message added to the task that is still running:
+ * `{queued: true, message_id}`) is returned as is, without events. */
+export async function streamPost(path: string, json: any, onEvent: (ev: any) => void, signal?: AbortSignal): Promise<any> {
   const res = await fetch(path, {
     method: "POST",
     credentials: "same-origin",
@@ -71,7 +73,9 @@ export async function streamPost(path: string, json: any, onEvent: (ev: any) => 
     body: JSON.stringify(json),
     signal,
   });
-  return readSSE(res, onEvent);
+  if (res.status === 202 && (res.headers.get("content-type") || "").includes("json")) return res.json().catch(() => ({}));
+  await readSSE(res, onEvent);
+  return undefined;
 }
 
 /** GET an SSE stream (e.g. re-attach to a chat answer that is still running). */

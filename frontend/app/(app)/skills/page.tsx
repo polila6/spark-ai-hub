@@ -1,5 +1,5 @@
 "use client";
-import { Download, ExternalLink, Globe, Lock, Plus, Puzzle, RefreshCw, RotateCcw, Sparkles, Trash2 } from "lucide-react";
+import { Download, ExternalLink, Globe, Lock, Plus, Puzzle, RefreshCw, RotateCcw, Sparkles, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -11,6 +11,8 @@ import { ago } from "@/lib/format";
 import { useI18n, useL } from "@/lib/i18n";
 import { isManager, useMe, useToast } from "@/lib/providers";
 
+const ownerName = (o: any) => o?.display_name || o?.username || "?";
+
 function SkillView({ id, onClose }: { id: string; onClose: () => void }) {
   const L = useL();
   const { data } = useSWR(`/api/v1/skills/${id}`);
@@ -21,6 +23,7 @@ function SkillView({ id, onClose }: { id: string; onClose: () => void }) {
         <div className="space-y-3 text-sm">
           <div className="flex flex-wrap gap-2 text-xs">
             {data.installed_by === "builtin" && <Badge tone="ok"><Sparkles className="h-3 w-3" />{L("Del hub: incluida y mantenida con Spark AI Hub", "Built-in: shipped and maintained with Spark AI Hub")}</Badge>}
+            {data.installed_by !== "builtin" && !data.mine && data.owner && <Badge tone="info"><Users className="h-3 w-3" />{L(`Compartida por ${ownerName(data.owner)}`, `Shared by ${ownerName(data.owner)}`)}</Badge>}
             {data.source_url && <a className="text-accent" href={data.source_url} target="_blank" rel="noreferrer noopener">{data.source_url} <ExternalLink className="inline h-3 w-3" /></a>}
             {data.license && <Badge>{data.license.slice(0, 60)}</Badge>}
           </div>
@@ -45,7 +48,8 @@ function Installed() {
     try { await api(`/api/v1/skills/${id}`, { method: "PATCH", json }); mutate(); } catch (e: any) { push("error", e.message); }
   }
   if (!data) return <Skeleton className="h-40" />;
-  const own = data.skills.filter((s: any) => s.installed_by !== "builtin");
+  const own = data.skills.filter((s: any) => s.installed_by !== "builtin" && s.mine);
+  const others = data.skills.filter((s: any) => s.installed_by !== "builtin" && !s.mine);
   const hub = data.skills.filter((s: any) => s.installed_by === "builtin");
   const card = (s: any) => {
     const builtin = s.installed_by === "builtin";
@@ -58,23 +62,24 @@ function Installed() {
             <div className="mt-0.5 flex flex-wrap gap-1">
               {builtin && <Badge tone="ok">{L("Del hub", "Built-in")}</Badge>}
               {s.installed_by === "assistant" && <Badge tone="info">{L("instalada por el asistente", "installed by the assistant")}</Badge>}
-              {!builtin && s.visibility === "public" && <Badge tone="accent"><Globe className="h-3 w-3" />{L("para todos", "for everyone")}</Badge>}
+              {!builtin && s.mine && (s.visibility === "public" ? <Badge tone="accent"><Globe className="h-3 w-3" />{L("compartida con todos", "shared with everyone")}</Badge> : <Badge><Lock className="h-3 w-3" />{L("privada (solo tú)", "private (only you)")}</Badge>)}
               {builtin && s.visibility !== "public" && <Badge><Lock className="h-3 w-3" />{L("solo administrador", "admin only")}</Badge>}
-              {!s.mine && !builtin && <Badge>{L("compartida", "shared")}</Badge>}
+              {!s.mine && !builtin && <Badge tone="info"><Users className="h-3 w-3" />{L(`Compartida por ${ownerName(s.owner)}`, `Shared by ${ownerName(s.owner)}`)}</Badge>}
+              {s.enabled && s.in_use === false && <Badge tone="warn">{L("no se usa: hay otra con este nombre", "not used: another one has this name")}</Badge>}
               {!s.enabled && <Badge tone="warn">{L("desactivada", "disabled")}</Badge>}
               {s.files.length > 0 && <Badge>{s.files.length} {L("archivos", "files")}</Badge>}
               {s.use_count > 0 && <Badge>{L(`usada ${s.use_count}×`, `used ${s.use_count}×`)}{s.last_used_at ? ` · ${ago(s.last_used_at, lang)}` : ""}</Badge>}
             </div>
             <p className="mt-1.5 line-clamp-3 text-xs text-muted">{s.description}</p>
           </div>
-          {s.mine && <Switch checked={s.enabled} onChange={(v) => patch(s.id, { enabled: v })} />}
+          {s.can_edit && <Switch checked={s.enabled} onChange={(v) => patch(s.id, { enabled: v })} />}
         </div>
-        {s.mine && (
+        {s.can_edit && (
           <div className="mt-3 flex flex-wrap gap-1">
             {s.source_url && <Button size="sm" variant="ghost" onClick={async () => { try { await api(`/api/v1/skills/${s.id}/update`, { method: "POST" }); push("ok", L("Actualizada", "Updated")); mutate(); } catch (e: any) { push("error", e.message); } }}><RefreshCw className="h-3.5 w-3.5" />{L("Actualizar", "Update")}</Button>}
             {builtin && <Button size="sm" variant="ghost" onClick={async () => { try { await api(`/api/v1/skills/${s.id}/update`, { method: "POST" }); push("ok", L("Restaurada la versión del hub", "Hub version restored")); mutate(); } catch (e: any) { push("error", e.message); } }}><RotateCcw className="h-3.5 w-3.5" />{L("Restaurar original", "Restore original")}</Button>}
-            {isManager(me) && <Button size="sm" variant="ghost" onClick={() => patch(s.id, { visibility: s.visibility === "public" ? "private" : "public" })}>{s.visibility === "public" ? <><Lock className="h-3.5 w-3.5" />{L("Hacer privada", "Make private")}</> : <><Globe className="h-3.5 w-3.5" />{L("Publicar para todos", "Publish for everyone")}</>}</Button>}
-            {!builtin && <Button size="sm" variant="ghost" onClick={async () => { await api(`/api/v1/skills/${s.id}`, { method: "DELETE" }); mutate(); }}><Trash2 className="h-3.5 w-3.5" />{L("Borrar", "Delete")}</Button>}
+            {(!builtin || isManager(me)) && <Button size="sm" variant="ghost" onClick={() => patch(s.id, { visibility: s.visibility === "public" ? "private" : "public" })}>{s.visibility === "public" ? <><Lock className="h-3.5 w-3.5" />{L("Hacer privada", "Make private")}</> : <><Globe className="h-3.5 w-3.5" />{L("Compartir con todos", "Share with everyone")}</>}</Button>}
+            {!builtin && <Button size="sm" variant="ghost" onClick={async () => { if (!s.mine && !confirm(L(`Es de ${ownerName(s.owner)}: se borrará para todos. ¿Seguro?`, `It belongs to ${ownerName(s.owner)}: it will be deleted for everyone. Sure?`))) return; try { await api(`/api/v1/skills/${s.id}`, { method: "DELETE" }); mutate(); } catch (e: any) { push("error", e.message); } }}><Trash2 className="h-3.5 w-3.5" />{L("Borrar", "Delete")}</Button>}
           </div>
         )}
       </Card>
@@ -91,6 +96,14 @@ function Installed() {
           L("O simplemente pide en el chat «busca una skill para…»: el asistente la encontrará.", "Or just ask in the chat “find a skill for…”: the assistant will find it.")]} /></CardBody></Card>
       ) : (
         <div className="grid gap-3 md:grid-cols-2">{own.map(card)}</div>
+      )}
+      {own.length > 0 && <p className="text-[11px] text-subtle">{L("Las skills que instalas o creas se comparten con todos los usuarios del hub (pueden usarlas, pero solo tú o un administrador podéis cambiarlas o borrarlas). Pulsa «Hacer privada» para que solo la uses tú.", "Skills you install or create are shared with every hub user (they can use them, but only you or an administrator can change or delete them). Press “Make private” to keep one to yourself.")}</p>}
+      {others.length > 0 && (
+        <div className="space-y-2 pt-2">
+          <h3 className="flex items-center gap-2 text-sm font-semibold"><Users className="h-4 w-4 text-accent" />{L(`Compartidas por otros usuarios (${others.length})`, `Shared by other users (${others.length})`)}</h3>
+          <p className="text-xs text-muted">{L("Ya puedes usarlas: el asistente las carga cuando la tarea encaja. Si tienes una con el mismo nombre, se usa la tuya.", "You can already use them: the assistant loads them when a task fits. If you have one with the same name, yours is used.")}</p>
+          <div className="grid gap-3 md:grid-cols-2">{others.map(card)}</div>
+        </div>
       )}
       {hub.length > 0 && (
         <div className="space-y-2 pt-2">
@@ -188,7 +201,7 @@ export default function SkillsPage() {
     <div>
       <PageHeader title="Skills" subtitle={L("Instrucciones expertas que el asistente carga cuando una tarea las necesita", "Expert instructions the assistant loads when a task needs them")} icon={<Puzzle className="h-5 w-5" />} />
       <Guide id="skills" />
-      <Tabs tabs={[{ id: "mine", label: L("Mis skills", "My skills"), content: <Installed /> }, { id: "catalog", label: L("Catálogo", "Catalog"), content: <Catalog /> },
+      <Tabs tabs={[{ id: "mine", label: L("Instaladas", "Installed"), content: <Installed /> }, { id: "catalog", label: L("Catálogo", "Catalog"), content: <Catalog /> },
         { id: "link", label: L("Instalar desde enlace / crear", "Install from link / create"), content: <InstallLink /> }]} />
     </div>
   );

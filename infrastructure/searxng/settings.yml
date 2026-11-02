@@ -1,32 +1,39 @@
 # SearXNG for the chat's web_search tool. Internal only: reachable from the backend on the egress network,
-# never published. scripts/init-secrets.sh copies this file to $SAH_DATA_ROOT/config/searxng/ with a random secret.
-# Engines tested from a university network: bing returned unrelated results; google, duckduckgo and brave block it
-# intermittently but are kept as fallbacks.
+# never published. scripts/init-secrets.sh renders this file to $SAH_DATA_ROOT/config/searxng/settings.yml (secret in
+# config/secrets/searxng_secret) every time it runs; restart the searxng container afterwards.
+# Engines measured from the university network (2026-11-02, SearXNG 2026.10.13), 3 queries each:
+#   answer: google cse, bing, yahoo, yandex, bing news, duckduckgo news, arxiv, openalex, crossref, semantic scholar,
+#           europepmc, google scholar, github, stackoverflow, mdn, wikinews
+#   blocked: brave (429 suspended), google (403), google news (403), qwant (403), duckduckgo web (CAPTCHA most of
+#            the time), pubmed (NCBI 429: europepmc covers it); kept only as fallbacks / for the UI
+#   inactive in this SearXNG version (removed): startpage (proof-of-work captcha), mojeek, marginalia, yahoo news
+# The backend picks the engines per category in backend/app/services/web.py (ENGINES).
 use_default_settings:
   engines:
     keep_only:
       - google cse
+      - bing
       - yahoo
       - yandex
-      - startpage
-      - mojeek
-      - marginalia
       - wikipedia
       - wikidata
+      - duckduckgo
+      - brave
+      - google
       - arxiv
       - google scholar
       - semantic scholar
       - openalex
       - crossref
+      - europepmc
       - pubmed
       - github
       - stackoverflow
       - mdn
+      - bing news
+      - duckduckgo news
       - google news
-      - yahoo news
-      - duckduckgo
-      - brave
-      - google
+      - wikinews
 general:
   instance_name: "Spark AI Hub search"
   enable_metrics: false
@@ -48,19 +55,21 @@ outgoing:
 engines:
   - name: google cse
     disabled: false
+  - name: bing
+    disabled: false
   - name: yahoo
     disabled: false
   - name: yandex
     disabled: false
-  - name: startpage
-    disabled: false
-  - name: mojeek
-    disabled: false
-  - name: marginalia
-    disabled: false
   - name: wikipedia
     disabled: false
   - name: wikidata
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false
+  - name: google
     disabled: false
   - name: arxiv
     disabled: false
@@ -72,6 +81,8 @@ engines:
     disabled: false
   - name: crossref
     disabled: false
+  - name: europepmc
+    disabled: false
   - name: pubmed
     disabled: false
   - name: github
@@ -80,13 +91,11 @@ engines:
     disabled: false
   - name: mdn
     disabled: false
+  - name: bing news
+    disabled: false
+  - name: duckduckgo news
+    disabled: false
   - name: google news
     disabled: false
-  - name: yahoo news
-    disabled: false
-  - name: duckduckgo
-    disabled: false
-  - name: brave
-    disabled: false
-  - name: google
+  - name: wikinews
     disabled: false

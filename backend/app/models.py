@@ -785,7 +785,8 @@ class Skill(Base):
     source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     license: Mapped[str | None] = mapped_column(String(255), nullable=True)
     installed_by: Mapped[str] = mapped_column(String(16), default="user")  # user | assistant | builtin
-    visibility: Mapped[Visibility] = mapped_column(_enum(Visibility, "visibility"), default=Visibility.private)
+    # Shared with every user by default (only the owner or an admin/manager can edit it or make it private)
+    visibility: Mapped[Visibility] = mapped_column(_enum(Visibility, "visibility"), default=Visibility.public)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     use_count: Mapped[int] = mapped_column(Integer, default=0)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -806,7 +807,7 @@ class AgentProfile(Base):
     instructions: Mapped[str] = mapped_column(Text, default="")
     tools: Mapped[list] = mapped_column(JSONB, default=list)
     skills: Mapped[list] = mapped_column(JSONB, default=list)  # skill names preloaded into the agent
-    visibility: Mapped[Visibility] = mapped_column(_enum(Visibility, "visibility"), default=Visibility.private)
+    visibility: Mapped[Visibility] = mapped_column(_enum(Visibility, "visibility"), default=Visibility.public)  # shared by default
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

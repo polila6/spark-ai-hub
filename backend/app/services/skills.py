@@ -212,16 +212,30 @@ def catalog(db, refresh: bool = False) -> list[dict]:
 # ------------------------------------------------------------------ installed skills
 
 
+def share_rank(row, user_id) -> tuple:
+    """Which of several same-named rows a user gets: their own, then the hub's, then the oldest shared one."""
+    created = getattr(row, "created_at", None)
+    return (row.owner_id != user_id, getattr(row, "installed_by", None) != BUILTIN,
+            created.timestamp() if created else float("inf"), str(row.id))
+
+
+def pick_by_name(rows, user_id) -> dict:
+    """{name: row} with one deterministic row per name (see share_rank). Works for skills and agent profiles."""
+    out: dict = {}
+    for r in rows:
+        cur = out.get(r.name)
+        if cur is None or share_rank(r, user_id) < share_rank(cur, user_id):
+            out[r.name] = r
+    return out
+
+
 def visible(db, user: User, enabled_only: bool = True):
+    """Skills the user can use: their own plus everyone's shared (public) ones, one per name."""
     q = select(Skill).where(or_(Skill.owner_id == user.id, Skill.visibility == Visibility.public))
     if enabled_only:
         q = q.where(Skill.enabled.is_(True))
-    rows = list(db.scalars(q.order_by(Skill.name)))
-    seen: dict[str, Skill] = {}
-    for s in rows:  # the user's own copy wins over a public one with the same name
-        if s.name not in seen or s.owner_id == user.id:
-            seen[s.name] = s
-    return list(seen.values())
+    picked = pick_by_name(db.scalars(q), user.id)
+    return [picked[n] for n in sorted(picked)]
 
 
 def find(db, user: User, name: str) -> Skill | None:
@@ -238,8 +252,8 @@ def install(db, user: User, src: str, installed_by: str = "user", overwrite: boo
     sk = db.scalar(select(Skill).where(Skill.owner_id == user.id, Skill.name == pkg["name"]))
     if sk and not overwrite:
         return sk
-    if sk is None:
-        sk = Skill(owner_id=user.id, name=pkg["name"])
+    if sk is None:  # shared with everyone by default (the owner can make it private again)
+        sk = Skill(owner_id=user.id, name=pkg["name"], visibility=Visibility.public)
         db.add(sk)
     sk.description, sk.content, sk.files = pkg["description"], pkg["content"][:200_000], pkg["files"]
     sk.source_url, sk.license, sk.installed_by, sk.enabled = pkg["source_url"], pkg["license"], installed_by, True
@@ -252,12 +266,20 @@ def mark_used(db, sk: Skill) -> None:
     sk.last_used_at = datetime.now(timezone.utc)
 
 
-def public(sk: Skill, user_id: uuid.UUID | None = None) -> dict:
+def owner_info(u: User | None) -> dict | None:
+    return {"id": str(u.id), "username": u.username, "display_name": u.display_name or u.username} if u else None
+
+
+def public(sk: Skill, user_id: uuid.UUID | None = None, owner: User | None = None, can_edit: bool | None = None,
+           in_use: bool | None = None) -> dict:
+    """API view. can_edit: owner, or an admin/manager; in_use: the copy this user's assistant loads for that name."""
+    mine = user_id is None or sk.owner_id == user_id
     return {"id": str(sk.id), "name": sk.name, "description": sk.description, "source_url": sk.source_url,
             "license": sk.license, "installed_by": sk.installed_by, "visibility": sk.visibility.value,
             "enabled": sk.enabled, "use_count": sk.use_count, "last_used_at": sk.last_used_at,
             "files": sorted((sk.files or {}).keys()), "size_chars": len(sk.content or "") + sum(len(v) for v in (sk.files or {}).values()),
-            "mine": user_id is None or sk.owner_id == user_id, "created_at": sk.created_at, "updated_at": sk.updated_at}
+            "mine": mine, "can_edit": mine if can_edit is None else can_edit, "owner": owner_info(owner),
+            "in_use": in_use, "created_at": sk.created_at, "updated_at": sk.updated_at}
 
 
 # ------------------------------------------------------------------ built-in skills shipped with the hub

@@ -2,7 +2,7 @@
 // The workspace assistant: a chat whose turns run on the server (they continue when the page is left and
 // re-attach on return) with the ws_* tools on this workspace. Messages use the shared chat actions (copy, edit and
 // regenerate, reply quoting a selection, resume from a point).
-import { Loader2, MessageSquarePlus, Send, Sparkles, Square, Wrench } from "lucide-react";
+import { ListPlus, Loader2, MessageSquarePlus, Send, Sparkles, Square } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,38 +10,22 @@ import { Badge, Button, cx } from "@/components/ui";
 import { api, streamGet, streamPost } from "@/lib/api";
 import { useL } from "@/lib/i18n";
 import { useToast } from "@/lib/providers";
+import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markInjected, QueuedChip, toMs, type Activity } from "@/components/live-activity";
 import { CodeBlock, MessageActions, MessageEditor, MSG_GROUP, quoteMarkdown, quoteStart, SelectionQuote, USER_BUBBLE_SELECTION } from "@/components/message-actions";
 import { useAutoGrow, useConfirm } from "./common";
 
-export type ChatMsg = { id?: number; role: string; content: string; tools?: any[]; pending?: boolean };
+export type ChatMsg = { id?: number; role: string; content: string; tools?: any[]; pending?: boolean; reasoning?: string; activity?: Activity; metrics?: any;
+  queued?: "queued" | "added" | "late"; key?: string };
 const MD = { pre: CodeBlock };
 
-export function ToolLine({ t, onOpen }: { t: any; onOpen: (p: string) => void }) {
-  const L = useL();
-  const changed: string[] = t.workspace?.changed ?? [];
-  return (
-    <div className="my-1.5 rounded-lg border border-border bg-bg/60 px-2.5 py-1.5 text-[11.5px]">
-      <div className="flex items-center gap-1.5">{t.done ? <Wrench className={cx("h-3 w-3 shrink-0", t.ok === false ? "text-warn" : "text-accent")} /> : <Loader2 className="h-3 w-3 shrink-0 animate-spin text-info" />}
-        <span className="font-medium">{t.label || t.name}</span>{(t.summary || t.message) && <span className="truncate text-muted">· {t.done ? t.summary : t.message}</span>}</div>
-      {t.terminal && <details className="mt-1"><summary className="cursor-pointer truncate font-mono text-[11px] text-muted">$ {t.terminal.command.split("\n")[0].slice(0, 140)}{t.terminal.command.includes("\n") ? " …" : ""}</summary>
-        <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-[#0d1117] p-2 font-mono text-[11px] text-[#c9d1d9]">{t.terminal.stdout}{t.terminal.stderr ? `\n${t.terminal.stderr}` : ""}</pre></details>}
-      {t.agent?.report && <details className="mt-1"><summary className="cursor-pointer text-muted">{L(`Informe de ${t.agent.name} · ${t.agent.steps?.length ?? 0} pasos`, `Report from ${t.agent.name} · ${t.agent.steps?.length ?? 0} steps`)}</summary>
-        <div className="prose-chat mt-1 max-h-72 overflow-y-auto text-[12px]"><ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>{t.agent.report}</ReactMarkdown></div></details>}
-      {changed.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{changed.slice(0, 10).map((p) => <button key={p} type="button" className="rounded border border-border px-1.5 font-mono text-[10.5px] hover:bg-elevated" onClick={() => onOpen(p)}>{p}</button>)}</div>}
-      {t.done && t.ok === false && t.remediation && <p className="mt-1 text-warn">{t.remediation}</p>}
-      {!t.done && t.name === "ws_run" && <p className="mt-0.5 text-[10.5px] text-subtle">{L("Se ejecuta en el Spark, aislado", "Runs on the Spark, isolated")}</p>}
-    </div>
-  );
-}
-
-/** One chat message (user bubble, or the assistant's tools + markdown). */
-export function WsMessage({ m, onOpen }: { m: ChatMsg; onOpen: (p: string) => void }) {
-  if (m.role === "user") return <div className={cx("ml-8 whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent px-3 py-2 text-accent-fg", USER_BUBBLE_SELECTION)}>{m.content}</div>;
+/** One chat message (user bubble, or the assistant's live activity panel + markdown). */
+export function WsMessage({ m, onOpen, queued }: { m: ChatMsg; onOpen: (p: string) => void; queued?: number }) {
+  if (m.role === "user") return <><div className={cx("ml-8 whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent px-3 py-2 text-accent-fg", USER_BUBBLE_SELECTION)}>{m.content}</div><QueuedChip state={m.queued} /></>;
   return (
     <div>
-      {m.tools?.map((t, j) => <ToolLine key={t.id ?? j} t={t} onOpen={onOpen} />)}
-      {m.content ? <div className="prose-chat" data-quote-scope><ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>{m.content}</ReactMarkdown></div>
-        : m.pending && !(m.tools?.length) && <Loader2 className="h-4 w-4 animate-spin text-muted" />}
+      <LiveActivity tools={m.tools} reasoning={m.reasoning} activity={m.activity} running={!!m.pending} queued={queued} onOpen={onOpen}
+        seconds={m.metrics?.latency_ms != null ? m.metrics.latency_ms / 1000 : undefined} />
+      {m.content && <div className="prose-chat" data-quote-scope><ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>{m.content}</ReactMarkdown></div>}
     </div>
   );
 }
@@ -62,14 +46,17 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
   const box = useRef<HTMLTextAreaElement>(null);
   useAutoGrow(box, input, 200);
   const upd = (fn: (m: ChatMsg) => ChatMsg) => setMsgs((x) => (x.length ? [...x.slice(0, -1), fn(x[x.length - 1])] : x));
+  const msgsRef = useRef(msgs);
+  msgsRef.current = msgs;
+  const reload = useRef<() => void>(() => {});
   const onEvent = useCallback((ev: any) => {
-    if (ev.type === "user_message") setMsgs((x) => { const y = [...x]; const j = y.length - 2; if (y[j]?.role === "user") y[j] = { ...y[j], id: ev.message_id }; return y; });
-    else if (ev.type === "delta") upd((m) => ({ ...m, content: m.content + ev.content }));
-    else if (ev.type === "tool_start") upd((m) => ({ ...m, tools: [...(m.tools ?? []), { id: ev.id, name: ev.name, label: ev.label, args: ev.args }] }));
-    else if (ev.type === "tool_progress") upd((m) => ({ ...m, tools: (m.tools ?? []).map((t) => (t.id === ev.id ? { ...t, message: ev.message } : t)) }));
-    else if (ev.type === "tool_result") { upd((m) => ({ ...m, tools: (m.tools ?? []).map((t) => (t.id === ev.id ? { ...t, ...ev, done: true } : t)) })); if (ev.workspace) onFiles(); }
-    else if (ev.type === "done") upd((m) => ({ ...m, pending: false, id: ev.message_id }));
-    else if (ev.type === "error") { upd((m) => ({ ...m, pending: false })); push("error", ev.message); }
+    // the user message this turn answers: the last one sent normally (not one added to a running task)
+    if (ev.type === "user_message") setMsgs((x) => { const y = [...x]; for (let j = y.length - 2; j >= 0; j--) if (y[j].role === "user" && !y[j].queued) { if (y[j].id == null) y[j] = { ...y[j], id: ev.message_id }; break; } return y; });
+    else if (ev.type === "user_injected") setMsgs((x) => markInjected(x, ev));
+    else if (ev.type === "delta") upd((m) => applyLive({ ...m, content: m.content + ev.content }, ev));
+    else if (ev.type === "done") upd((m) => ({ ...applyLive(m, ev), pending: false, id: ev.message_id, metrics: ev.metrics, reasoning: m.reasoning || ev.reasoning || undefined }));
+    else if (ev.type === "error") { upd((m) => ({ ...applyLive(m, ev), pending: false })); push("error", ev.message); }
+    else { upd((m) => applyLive(m, ev)); if (ev.type === "tool_result" && ev.workspace) onFiles(); }
   }, [onFiles, push]);
   // Follow a reply: the turn runs on the server, so leaving the page never stops it; coming back re-attaches.
   const follow = useCallback(async (run: (signal: AbortSignal) => Promise<void>) => {
@@ -78,26 +65,57 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
     abort.current = ctl;
     setBusy(true);
     try { await run(ctl.signal); } catch (e: any) { if (e.name !== "AbortError") push("error", e.message); }
-    finally { if (abort.current === ctl) { setBusy(false); upd((m) => ({ ...m, pending: false })); onFiles(); } }
+    finally {
+      if (abort.current === ctl) {
+        setBusy(false); upd((m) => ({ ...m, pending: false })); onFiles();
+        // messages sent while it worked that it never took in: the server may answer them next, so look again
+        if (msgsRef.current.some((m) => m.queued === "queued")) { setMsgs((x) => x.map((m) => (m.queued === "queued" ? { ...m, queued: "late" } : m))); setTimeout(() => reload.current(), 2500); }
+      }
+    }
   }, [onFiles, push]);
   const load = useCallback(async (fresh = false) => {
     const r = await api(`/api/v1/workspaces/${wid}/conversation${fresh ? "?new=true" : ""}`, { method: "POST" });
     setCid(r.conversation_id); setModel(r.model_alias ?? "");
     const c = await api(`/api/v1/playground/conversations/${r.conversation_id}`);
-    const history: ChatMsg[] = c.messages.map((m: any) => ({ id: m.id, role: m.role, content: m.content, tools: (m.parts ?? []).filter((p: any) => p.type === "tool").map((p: any) => ({ ...p, done: true })) }));
+    const history: ChatMsg[] = c.messages.map((m: any) => ({ id: m.id, role: m.role, content: m.content, metrics: m.metrics, ...(m.role === "assistant" ? liveFromSaved(m) : {}) }));
     if (c.active_turn) {
-      setMsgs([...history, { role: "assistant", content: "", tools: [], pending: true }]);
+      setMsgs((prev) => keepQueued(prev, [...history, { role: "assistant", content: "", tools: [], pending: true, activity: { t0: toMs(c.active_turn.started_at) } }], true));
       follow((signal) => streamGet(`/api/v1/playground/conversations/${r.conversation_id}/stream`, (ev) => { if (ev.type !== "gone") onEvent(ev); }, signal));
-    } else setMsgs(history);
+    } else setMsgs((prev) => keepQueued(prev, history, false));
   }, [wid, follow, onEvent]);
+  reload.current = () => { load().catch(() => {}); };
   useEffect(() => { load().catch((e) => push("error", e.message)); return () => abort.current?.abort(); }, [load, push]);
   useEffect(() => { const el = list.current; if (el) el.scrollTop = el.scrollHeight; }, [msgs]);  // not scrollIntoView: it would scroll the page too
   async function send() {
     const content = input.trim();
-    if (!content || !cid || busy) return;
+    if (!content || !cid) return;
+    if (busy) return addToTask(content);
     setInput("");
-    setMsgs((x) => [...x, { role: "user", content }, { role: "assistant", content: "", tools: [], pending: true }]);
+    setMsgs((x) => [...x, { role: "user", content }, { role: "assistant", content: "", tools: [], pending: true, activity: { t0: Date.now() } }]);
     await follow((signal) => streamPost(`/api/v1/playground/conversations/${cid}/messages`, { content, ...turnBody() }, onEvent, signal));
+  }
+  // Sent while it works: the server adds it to the running task (202 {queued}) instead of starting another answer.
+  async function addToTask(content: string) {
+    const key = `q${Date.now()}${Math.random()}`;
+    setInput("");
+    setMsgs((x) => insertQueued(x, { role: "user", content, queued: "queued", key }));
+    let streamed = false;
+    try {
+      const r = await streamPost(`/api/v1/playground/conversations/${cid}/messages`, { content, ...turnBody() }, (ev) => {
+        if (!streamed) {  // the task had just finished: the server answers it as a normal turn
+          streamed = true; setBusy(true);
+          setMsgs((x) => [...x.map((m) => (m.key === key ? { ...m, queued: undefined } : m)), { role: "assistant", content: "", tools: [], pending: true, activity: { t0: Date.now() } }]);
+        }
+        onEvent(ev);
+      });
+      if (r?.queued) setMsgs((x) => x.map((m) => (m.key === key ? { ...m, id: m.id ?? r.message_id } : m)));
+    } catch (e: any) {
+      setMsgs((x) => x.filter((m) => m.key !== key));
+      setInput((v) => v || content);
+      push("error", e.message);
+    } finally {
+      if (streamed) { setBusy(false); upd((m) => ({ ...m, pending: false })); onFiles(); }
+    }
   }
   const turnBody = () => ({ model_alias: model, max_tokens: 16384, temperature: 0.3, tools: true, thinking: think, web: true, workspace_id: wid });
   // Edit a sent message (text) or answer it again: the server drops what follows and runs a new turn.
@@ -135,6 +153,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
     L("Crea un script que limpie los CSV de la carpeta datos/ y pruébalo", "Write a script that cleans the CSVs in data/ and test it"),
     L("Revisa mi código de análisis, ejecuta los tests y arregla lo que falle", "Review my analysis code, run the tests and fix what fails"),
   ];
+  const queuedCount = msgs.filter((m) => m.queued === "queued").length;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
@@ -157,7 +176,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
           if (editing === i) return <div key={i} className="flex justify-end"><MessageEditor initial={m.content} busy={busy} onCancel={() => setEditing(null)} onSave={(t) => regenerate(i, t)} /></div>;
           return (
             <div key={i} className={cx("flex flex-col", MSG_GROUP, isUser ? "items-end" : "items-stretch")}>
-              <WsMessage m={m} onOpen={onOpen} />
+              <WsMessage m={m} onOpen={onOpen} queued={last && m.pending ? queuedCount : undefined} />
               {!m.pending && <MessageActions role={m.role} text={m.content} busy={busy}
                 onReply={isUser ? undefined : () => quote(quoteStart(m.content))}
                 onEdit={isUser && m.id != null ? () => setEditing(i) : undefined}
@@ -171,7 +190,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
       <SelectionQuote root={list} onQuote={quote} />
       {confirmElement}
       <form className="shrink-0 space-y-1.5 border-t border-border p-2" onSubmit={(e) => { e.preventDefault(); send(); }}>
-        <textarea ref={box} rows={2} value={input} onChange={(e) => setInput(e.target.value)} placeholder={L("¿Qué hacemos en este workspace?", "What shall we do in this workspace?")}
+        <textarea ref={box} rows={2} value={input} onChange={(e) => setInput(e.target.value)} placeholder={busy ? L("Añade indicaciones a la tarea en curso (no la interrumpe)…", "Add instructions to the running task (it is not interrupted)…") : L("¿Qué hacemos en este workspace?", "What shall we do in this workspace?")}
           aria-label={L("Mensaje para el asistente", "Message for the assistant")}
           className="w-full resize-none rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-subtle transition focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
@@ -179,8 +198,10 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
           <label className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted" title={L("Más lento, mejor en problemas difíciles", "Slower, better for hard problems")}>
             <input type="checkbox" checked={think} onChange={(e) => setThink(e.target.checked)} />{L("Pensar más", "Think harder")}</label>
           <span className="hidden text-[10.5px] text-subtle xl:inline">{L("Mayús+Enter: nueva línea", "Shift+Enter: new line")}</span>
-          {busy ? <Button type="button" size="sm" variant="danger" className="ml-auto" onClick={stop}><Square className="h-3.5 w-3.5" />{L("Parar", "Stop")}</Button>
-            : <Button type="submit" size="sm" variant="primary" className="ml-auto" disabled={!input.trim() || !cid}><Send className="h-3.5 w-3.5" />{L("Enviar", "Send")}</Button>}
+          {busy && <Button type="button" size="sm" variant="danger" className="ml-auto" onClick={stop} title={L("Detiene la tarea", "Stops the task")}><Square className="h-3.5 w-3.5" />{L("Parar", "Stop")}</Button>}
+          <Button type="submit" size="sm" variant="primary" className={busy ? undefined : "ml-auto"} disabled={!input.trim() || !cid}
+            title={busy ? L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it") : undefined}>
+            {busy ? <><ListPlus className="h-3.5 w-3.5" />{L("Añadir a la tarea", "Add to the task")}</> : <><Send className="h-3.5 w-3.5" />{L("Enviar", "Send")}</>}</Button>
         </div>
       </form>
     </div>

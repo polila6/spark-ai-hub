@@ -9,7 +9,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -237,7 +237,7 @@ def _launch(c: Conversation, p: Principal, body: SendIn, model: RegisteredModel,
                       attachments=attachments, system_prompt=body.system_prompt, params=params,
                       use_tools=body.tools, thinking=body.thinking, mode=body.mode, lang=lang,
                       context_limit=body.context_limit, auto_compact=body.auto_compact, web=body.web,
-                      research=body.research, workspace_id=body.workspace_id)
+                      research=body.research, workspace_id=body.workspace_id, user_message_id=user_mid)
     turns.emit(c.id, {"type": "user_message", "message_id": user_mid})  # the UI needs it to edit/rewind this message
     threading.Thread(target=_run_turn, args=(turn, p, body.model_alias, c.title), daemon=True).start()
     return StreamingResponse(_tail(c.id, request, 0), media_type="text/event-stream",
@@ -251,6 +251,9 @@ def _turn_settings(body: SendIn) -> dict:
 @router.post("/conversations/{cid}/messages")
 async def send_message(cid: uuid.UUID, body: SendIn, request: Request, p: Principal = Depends(current_principal),
                        db: Session = Depends(get_db)):
+    """Send a message and stream the answer (SSE). While the chat is still working on a previous message the new one
+    is not refused: it is stored and handed to the running task (202 {"queued": true, "message_id"}), which reads it
+    before its next step (event user_injected) or answers it in an automatic follow-up turn."""
     from ..models import UserFile
 
     c = _conv(db, p, cid, write=True)
@@ -266,10 +269,21 @@ async def send_message(cid: uuid.UUID, body: SendIn, request: Request, p: Princi
     db.add(msg)
     if not c.title or c.title == "Nueva conversación":
         c.title = body.content[:60]
+    db.commit()
+    for _ in range(60):
+        try:
+            turns.start(cid, p.id, c.title)
+            break
+        except RuntimeError:  # a turn is running: give it this message instead of refusing it
+            if turns.queue_message(cid, msg.id):
+                log.info("chat message queued: user=%s conversation=%s message=%s", p.id, cid, msg.id)
+                return JSONResponse(status_code=202, content={"queued": True, "message_id": msg.id})
+            await asyncio.sleep(0.5)  # the running turn is finishing (inbox closed): answer with a turn of its own
+    else:
+        raise HTTPException(409, detail={"code": "turn_running", "message": "This chat is still answering the previous message"})
     c.model_alias = model.alias
     c.settings = _turn_settings(body)
     db.commit()
-    _claim_turn(cid, p, c.title)
     return _launch(c, p, body, model, body.content, list(body.attachments), msg.id, request)
 
 
@@ -356,20 +370,45 @@ def truncate_after(cid: uuid.UUID, mid: int, p: Principal = Depends(current_prin
 
 
 def _run_turn(turn, p: Principal, model_alias: str, title: str) -> None:
-    """Runs independently of any HTTP connection; the browser only follows the Redis event log."""
+    """Runs independently of any HTTP connection; the browser only follows the Redis event log.
+
+    Messages queued while the turn ran but never injected into it (it stopped at the safety limit, failed, or was in
+    image mode) are answered by automatic follow-up turns with the same settings, one after another."""
+    while turn is not None:
+        turn = _run_one_turn(turn, p, model_alias, title)
+
+
+def _run_one_turn(turn, p: Principal, model_alias: str, title: str):
+    """One turn; returns the follow-up turn to run next (already claimed), or None."""
+    import dataclasses
+
     from ..services import agent
     from ..services.notify import notify
 
     cid = turn.conversation_id
     t0 = time.perf_counter()
     status = "done"
-    stop_beat = turns.heartbeat(cid)
+    leftover: list[int] = []
+    cancelled = False
+    stop_beat = turns.heartbeat(cid, p.id)
+
+    def drain() -> list[int]:
+        """Close the inbox (later messages get a turn of their own) and collect what was never injected."""
+        nonlocal cancelled
+        cancelled = cancelled or turns.cancelled_checker(cid)()
+        try:
+            leftover.extend(x for x in turns.close_inbox(cid, final=True) if x not in leftover)
+        except Exception:  # noqa: BLE001
+            pass
+        return leftover
+
     try:
         r = agent.run_turn(turn, lambda ev: turns.emit(cid, ev), turns.cancelled_checker(cid))
+        drain()
         with SessionLocal() as s2:
             msg = Message(conversation_id=cid, role="assistant", content=r["text"], model_alias=model_alias,
                           metrics={**r["metrics"], "reasoning": r.get("reasoning"),
-                                   **({"cancelled": True} if turns.cancelled_checker(cid)() else {})},
+                                   **({"cancelled": True} if cancelled else {})},
                           parts=r["parts"] or None)
             s2.add(msg)
             conv = s2.get(Conversation, cid)
@@ -381,18 +420,26 @@ def _run_turn(turn, p: Principal, model_alias: str, title: str) -> None:
         _record(p, "playground.chat", model_alias, 200,
                 {"prompt_tokens": m.get("prompt_tokens"), "completion_tokens": m.get("completion_tokens")}, t0,
                 source="playground")
-        turns.emit(cid, {"type": "done", "metrics": m, "reasoning": r.get("reasoning"), "message_id": mid})
+        turns.emit(cid, {"type": "done", "metrics": m, "reasoning": r.get("reasoning"), "message_id": mid,
+                         "followup": turns.followup_needed(leftover, "done", cancelled)})
     except agent.AgentError as e:
         status = "error"
-        turns.emit(cid, {"type": "error", "message": e.message, "remediation": e.remediation})
+        drain()
+        turns.emit(cid, {"type": "error", "message": e.message, "remediation": e.remediation,
+                         "followup": turns.followup_needed(leftover, status, cancelled)})
     except (scheduler.SchedulingError, EngineError) as e:
         status = "error"
-        turns.emit(cid, {"type": "error", "message": e.message, "remediation": getattr(e, "remediation", None)})
+        drain()
+        turns.emit(cid, {"type": "error", "message": e.message, "remediation": getattr(e, "remediation", None),
+                         "followup": turns.followup_needed(leftover, status, cancelled)})
     except Exception as e:  # noqa: BLE001
         status = "error"
-        turns.emit(cid, {"type": "error", "message": str(e)[:1000]})
+        drain()
+        turns.emit(cid, {"type": "error", "message": str(e)[:1000],
+                         "followup": turns.followup_needed(leftover, status, cancelled)})
     finally:
         stop_beat()
+        drain()
         turns.finish(cid, p.id, status)
         if time.perf_counter() - t0 > 30:  # long turns (images, model loads): leave a notice in the bell
             try:
@@ -402,6 +449,35 @@ def _run_turn(turn, p: Principal, model_alias: str, title: str) -> None:
                     s3.commit()
             except Exception:  # noqa: BLE001
                 pass
+    if not turns.followup_needed(leftover, status, cancelled):
+        return None
+    # Follow-up turn answering the queued messages together. History = everything up to now except them, so the model
+    # sees the previous answer before these messages (their ids are lower: they were stored while it was running).
+    time.sleep(1.5)  # let the browsers following the stream read "done" before the event log is reset
+    with SessionLocal() as s4:
+        rows = sorted((m for m in (s4.get(Message, i) for i in leftover) if m and m.conversation_id == cid and m.role == "user"),
+                      key=lambda m: m.id)
+        if not rows:
+            return None  # deleted meanwhile (e.g. the user rewound the chat)
+        upto = s4.scalar(select(Message.id).where(Message.conversation_id == cid).order_by(Message.id.desc()).limit(1))
+        content = "\n\n".join(m.content for m in rows if m.content)
+        files = []
+        for m in rows:
+            for a in m.attachments or []:
+                try:
+                    files.append(uuid.UUID(a["file_id"]))
+                except (KeyError, ValueError, TypeError):
+                    pass
+        mid = rows[-1].id
+        ids = [m.id for m in rows]
+    try:
+        turns.start(cid, p.id, title)
+    except RuntimeError:
+        return None  # the user already started another turn; it sees these messages as history
+    log.info("chat follow-up turn: conversation=%s messages=%s", cid, ids)
+    turns.emit(cid, {"type": "user_message", "message_id": mid, "followup": True, "message_ids": ids})
+    return dataclasses.replace(turn, content=content or "…", attachments=files[:20], user_message_id=mid,
+                               history_upto=(upto or mid) + 1, history_exclude=ids)
 
 
 def time_now():

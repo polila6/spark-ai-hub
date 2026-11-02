@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import Principal, current_principal, not_found, require_researcher
-from ..models import AgentProfile, CanvasDoc, ConnectorItem, Conversation, KbConnector, ScheduledTask, SchedClass, Skill, Visibility
+from ..models import (AgentProfile, CanvasDoc, ConnectorItem, Conversation, KbConnector, ScheduledTask, SchedClass, Skill, User,
+                      Visibility)
 from ..services import canvas as canvas_svc
 from ..services import connectors as conn_svc
 from ..services import kb
@@ -57,18 +58,40 @@ class SkillPatch(BaseModel):
     content: str | None = Field(default=None, max_length=200_000)
 
 
+def _can_edit(p: Principal, owner_id) -> bool:
+    """Shared skills/agents: everyone may use them; only the owner or an admin/manager may change or delete them."""
+    return owner_id == p.id or p.is_manager
+
+
+def _owners(db: Session, rows) -> dict:
+    ids = {r.owner_id for r in rows}
+    return {u.id: u for u in db.scalars(select(User).where(User.id.in_(ids)))} if ids else {}
+
+
+def _sorted_shared(rows, uid) -> list:
+    """Same-named rows next to each other, the one this user gets first (deterministic for everyone)."""
+    return sorted(rows, key=lambda r: (r.name, skills_svc.share_rank(r, uid)))
+
+
 def _skill_for_write(db: Session, p: Principal, sid: uuid.UUID) -> Skill:
     sk = db.get(Skill, sid)
-    if not sk or sk.owner_id != p.id:
+    if not sk or (sk.owner_id != p.id and sk.visibility != Visibility.public):
         raise not_found("skill")
+    if not _can_edit(p, sk.owner_id):
+        raise HTTPException(403, detail={"code": "forbidden", "message": "Solo quien la compartió (o un administrador) puede cambiarla"})
     return sk
+
+
+def _skill_pub(sk: Skill, p: Principal, owners: dict | None = None, in_use: bool | None = None) -> dict:
+    return skills_svc.public(sk, p.id, owner=(owners or {}).get(sk.owner_id), can_edit=_can_edit(p, sk.owner_id), in_use=in_use)
 
 
 @router.get("/skills")
 def list_skills(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    rows = db.scalars(select(Skill).where(or_(Skill.owner_id == p.id, Skill.visibility == Visibility.public))
-                      .order_by(Skill.name)).all()
-    return {"skills": [skills_svc.public(s, p.id) for s in rows],
+    rows = _sorted_shared(db.scalars(select(Skill).where(or_(Skill.owner_id == p.id, Skill.visibility == Visibility.public))).all(), p.id)
+    owners = _owners(db, rows)
+    used = {s.id for s in skills_svc.pick_by_name([r for r in rows if r.enabled], p.id).values()}
+    return {"skills": [_skill_pub(s, p, owners, s.id in used) for s in rows],
             "settings": {"enabled": bool(get_setting(db, "skills_enabled")),
                          "auto_install": bool(get_setting(db, "skills_auto_install")),
                          "sources": get_setting(db, "skill_sources") or []}}
@@ -86,7 +109,7 @@ def get_skill(sid: uuid.UUID, p: Principal = Depends(current_principal), db: Ses
     sk = db.get(Skill, sid)
     if not sk or (sk.owner_id != p.id and sk.visibility != Visibility.public):
         raise not_found("skill")
-    return {**skills_svc.public(sk, p.id), "content": sk.content, "file_contents": sk.files or {}}
+    return {**_skill_pub(sk, p, _owners(db, [sk])), "content": sk.content, "file_contents": sk.files or {}}
 
 
 @router.post("/skills/install")
@@ -96,7 +119,7 @@ def install_skill(body: InstallIn, p: Principal = Depends(require_researcher), d
     except (skills_svc.SkillError, web.WebError) as e:
         raise _err(e)
     db.commit()
-    return skills_svc.public(sk, p.id)
+    return _skill_pub(sk, p, _owners(db, [sk]))
 
 
 @router.post("/skills")
@@ -107,22 +130,22 @@ def create_skill(body: SkillIn, p: Principal = Depends(require_researcher), db: 
     if db.scalar(select(Skill.id).where(Skill.owner_id == p.id, Skill.name == name)):
         raise HTTPException(409, detail={"code": "exists", "message": f"Ya tienes una skill llamada {name}"})
     sk = Skill(owner_id=p.id, name=name, description=body.description or info["description"], content=info["content"],
-               files={}, installed_by="user")
+               files={}, installed_by="user", visibility=Visibility.public)  # shared with everyone by default
     db.add(sk)
     db.commit()
-    return skills_svc.public(sk, p.id)
+    return _skill_pub(sk, p, _owners(db, [sk]))
 
 
 @router.patch("/skills/{sid}")
 def patch_skill(sid: uuid.UUID, body: SkillPatch, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     sk = _skill_for_write(db, p, sid)
     data = body.model_dump(exclude_unset=True)
-    if data.get("visibility") == Visibility.public and not p.is_manager:
-        raise HTTPException(403, detail={"code": "forbidden", "message": "Only admins/managers can publish skills for everyone"})
+    if data.get("visibility") == Visibility.shared:  # skills are either for everyone or private
+        data["visibility"] = Visibility.public
     for k, v in data.items():
         setattr(sk, k, v)
     db.commit()
-    return skills_svc.public(sk, p.id)
+    return _skill_pub(sk, p, _owners(db, [sk]))
 
 
 @router.post("/skills/{sid}/update")
@@ -135,15 +158,15 @@ def update_skill(sid: uuid.UUID, p: Principal = Depends(current_principal), db: 
         except skills_svc.SkillError as e:
             raise _err(e)
         db.commit()
-        return skills_svc.public(sk, p.id)
+        return _skill_pub(sk, p, _owners(db, [sk]))
     if not sk.source_url:
         raise _err(Exception("Esta skill no tiene origen (se escribió a mano)"))
-    try:
-        sk = skills_svc.install(db, p.user, sk.source_url, installed_by=sk.installed_by)
+    try:  # re-download into the owner's row (an admin/manager may refresh someone else's shared skill)
+        sk = skills_svc.install(db, db.get(User, sk.owner_id), sk.source_url, installed_by=sk.installed_by)
     except (skills_svc.SkillError, web.WebError) as e:
         raise _err(e)
     db.commit()
-    return skills_svc.public(sk, p.id)
+    return _skill_pub(sk, p, _owners(db, [sk]))
 
 
 @router.delete("/skills/{sid}")
@@ -167,14 +190,24 @@ class AgentIn(BaseModel):
     instructions: str = Field(min_length=1, max_length=30_000)
     tools: list[str] = Field(default=[], max_length=12)
     skills: list[str] = Field(default=[], max_length=3)
-    visibility: Visibility = Visibility.private
+    visibility: Visibility = Visibility.public  # shared with everyone by default (the owner can make it private)
     enabled: bool = True
 
 
-def _agent_pub(a: AgentProfile, uid) -> dict:
+def _agent_pub(a: AgentProfile, p: Principal, owners: dict | None = None, in_use: bool | None = None) -> dict:
     return {"id": str(a.id), "name": a.name, "description": a.description, "instructions": a.instructions,
             "tools": a.tools, "skills": a.skills, "visibility": a.visibility.value, "enabled": a.enabled,
-            "builtin": False, "mine": a.owner_id == uid, "updated_at": a.updated_at}
+            "builtin": False, "mine": a.owner_id == p.id, "can_edit": _can_edit(p, a.owner_id),
+            "owner": skills_svc.owner_info((owners or {}).get(a.owner_id)), "in_use": in_use, "updated_at": a.updated_at}
+
+
+def _agent_for_write(db: Session, p: Principal, aid: uuid.UUID) -> AgentProfile:
+    a = db.get(AgentProfile, aid)
+    if not a or (a.owner_id != p.id and a.visibility != Visibility.public):
+        raise not_found("agent")
+    if not _can_edit(p, a.owner_id):
+        raise HTTPException(403, detail={"code": "forbidden", "message": "Solo quien lo compartió (o un administrador) puede cambiarlo"})
+    return a
 
 
 def _check_agent(body: AgentIn, p: Principal) -> str:
@@ -184,19 +217,21 @@ def _check_agent(body: AgentIn, p: Principal) -> str:
     bad = [t for t in body.tools if t not in SUB_AGENT_TOOLS]
     if bad:
         raise HTTPException(422, detail={"code": "invalid", "message": f"Herramientas no válidas: {', '.join(bad)}"})
-    if body.visibility == Visibility.public and not p.is_manager:
-        raise HTTPException(403, detail={"code": "forbidden", "message": "Only admins/managers can publish agents"})
+    if body.visibility == Visibility.shared:  # agents are either for everyone or private
+        body.visibility = Visibility.public
     return name
 
 
 @router.get("/agents")
 def list_agents(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    rows = db.scalars(select(AgentProfile).where(or_(AgentProfile.owner_id == p.id, AgentProfile.visibility == Visibility.public))
-                      .order_by(AgentProfile.name)).all()
+    rows = _sorted_shared(db.scalars(select(AgentProfile).where(
+        or_(AgentProfile.owner_id == p.id, AgentProfile.visibility == Visibility.public))).all(), p.id)
+    owners = _owners(db, rows)
+    used = {a.id for a in skills_svc.pick_by_name([r for r in rows if r.enabled], p.id).values()}
     builtin = [{"id": f"builtin:{k}", "name": k, "description": v["description"], "instructions": v["instructions"],
                 "tools": v["tools"], "skills": v.get("skills", []), "builtin": True, "enabled": True, "visibility": "public", "mine": False}
                for k, v in BUILTIN_AGENTS.items()]
-    return {"agents": builtin + [_agent_pub(a, p.id) for a in rows],
+    return {"agents": builtin + [_agent_pub(a, p, owners, a.id in used) for a in rows],
             "tools": [{"name": t, "label": TOOL_NAMES.get(t, t)} for t in sorted(SUB_AGENT_TOOLS)],
             "settings": {"enabled": bool(get_setting(db, "agents_enabled")),
                          "max_parallel": int(get_setting(db, "max_parallel_agents") or 3)}}
@@ -210,26 +245,24 @@ def create_agent(body: AgentIn, p: Principal = Depends(require_researcher), db: 
     a = AgentProfile(owner_id=p.id, **{**body.model_dump(), "name": name})
     db.add(a)
     db.commit()
-    return _agent_pub(a, p.id)
+    return _agent_pub(a, p, _owners(db, [a]))
 
 
 @router.put("/agents/{aid}")
 def update_agent(aid: uuid.UUID, body: AgentIn, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    a = db.get(AgentProfile, aid)
-    if not a or a.owner_id != p.id:
-        raise not_found("agent")
+    a = _agent_for_write(db, p, aid)
     name = _check_agent(body, p)
+    if name != a.name and db.scalar(select(AgentProfile.id).where(AgentProfile.owner_id == a.owner_id, AgentProfile.name == name)):
+        raise HTTPException(409, detail={"code": "exists", "message": f"Ya existe un agente llamado {name}"})
     for k, v in {**body.model_dump(), "name": name}.items():
         setattr(a, k, v)
     db.commit()
-    return _agent_pub(a, p.id)
+    return _agent_pub(a, p, _owners(db, [a]))
 
 
 @router.delete("/agents/{aid}")
 def delete_agent(aid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    a = db.get(AgentProfile, aid)
-    if not a or a.owner_id != p.id:
-        raise not_found("agent")
+    a = _agent_for_write(db, p, aid)
     db.delete(a)
     db.commit()
     return {"ok": True}

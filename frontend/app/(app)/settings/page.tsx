@@ -235,6 +235,12 @@ function System() {
           <div className="sm:col-span-3"><Switch checked={!!s.workspace_packages_enabled} onChange={(v) => set("workspace_packages_enabled", v)} label={L("Workspace: permitir pip install / npm install (solo PyPI y npm, a través de un proxy; nada más sale a internet)", "Workspace: allow pip install / npm install (PyPI and npm only, through a proxy; nothing else goes out)")} /></div>
           <p className="self-end text-xs text-muted">{L("Cada ejecución es un contenedor nuevo sin internet, sin privilegios y con disco de solo lectura salvo su carpeta de trabajo. Los archivos que crea van a Mis archivos → «Resultados de código».", "Each run is a fresh container without internet or privileges, read-only except its work folder. Files it creates go to My files → “Code results”.")}</p>
         </div>}
+        <div className="grid gap-3 sm:grid-cols-4">
+          {num("agent_max_steps_workspace", L("Workspace: pasos máximos por tarea", "Workspace: max steps per task"), L("Red de seguridad; trabaja hasta terminar el plan (5–5000)", "Safety net; it works until the plan is done (5–5000)"))}
+          {num("agent_max_minutes_workspace", L("Workspace: minutos máximos por tarea", "Workspace: max minutes per task"), L("Después resume y pide «continúa» (1–1440)", "Then it summarises and asks to continue (1–1440)"))}
+          {num("agent_max_steps_chat", L("Chat: pasos máximos por respuesta", "Chat: max steps per answer"), "5–5000")}
+          {num("agent_max_minutes_chat", L("Chat: minutos máximos por respuesta", "Chat: max minutes per answer"), "1–1440")}
+        </div>
         <div className="grid gap-3 sm:grid-cols-3">
           {num("max_parallel_agents", L("Agentes en paralelo (1–6)", "Parallel agents (1–6)"), L("Cada agente es una petición más al modelo general (admite 8 a la vez)", "Each agent is one more request to the general model (8 at once)"))}
           <div className="sm:col-span-2"><Field label={L("Fuentes del catálogo de skills (GitHub, una por línea)", "Skill catalog sources (GitHub, one per line)")} tip="owner/repo o owner/repo/ruta">

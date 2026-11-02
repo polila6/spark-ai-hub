@@ -171,6 +171,14 @@ def put_settings(body: dict, request: Request, p: Principal = Depends(require_ad
             v = int(v)
             if not 1 <= v <= 6:
                 raise HTTPException(422, detail={"code": "invalid", "message": "max_parallel_agents must be 1–6"})
+        if k in ("agent_max_steps_chat", "agent_max_steps_workspace"):
+            if not (isinstance(v, (int, float)) and not isinstance(v, bool) and 5 <= int(v) <= 5000):
+                raise HTTPException(422, detail={"code": "invalid", "message": f"{k} must be 5–5000"})
+            v = int(v)
+        if k in ("agent_max_minutes_chat", "agent_max_minutes_workspace"):
+            if not (isinstance(v, (int, float)) and not isinstance(v, bool) and 1 <= v <= 1440):
+                raise HTTPException(422, detail={"code": "invalid", "message": f"{k} must be 1–1440 minutes"})
+            v = int(v)
         if k == "skill_sources":
             import re
 

@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.9.1-76b900">
+  <img alt="version" src="https://img.shields.io/badge/version-0.10.0-76b900">
   <img alt="platform" src="https://img.shields.io/badge/platform-DGX%20Spark%20(GB10%2C%20aarch64)-76b900">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="stack" src="https://img.shields.io/badge/stack-FastAPI%20%C2%B7%20Next.js%20%C2%B7%20vLLM%20%C2%B7%20Docker-555">
@@ -54,7 +54,8 @@ without sending a single prompt to an external AI service.
 - **Skills**: 17 built in (LaTeX reports and Beamer, Excel with charts, Word, PowerPoint, publication plots, statistics,
   IMRaD papers, BibTeX, grant proposals, theses, peer review, teaching rubrics…); install more
   [Agent Skills](https://github.com/anthropics/skills) from GitHub or a link, write your own, or let the model find
-  and install the one it needs.
+  and install the one it needs. Skills and agents a user adds are shared with everyone by default ("Shared by …");
+  only the owner or an admin/manager can edit, delete or make them private.
 - **Workspace — a remote harness in the browser**: your own persistent folders on the Spark with files, editor, previews (Excel, PDF, images, HTML), a terminal and an assistant that writes, runs and fixes code there. Upload a CSV, ask for "an Excel with a monthly summary and a chart" or "a LaTeX report" and download it; it can `pip install` / `npm install` what it needs (PyPI and npm only).
 - **Runs code safely**: calculations, charts and real files (Excel, Word, PowerPoint, PDF) from a sandbox with no network; images appear in the chat, files go to your drive. Skills can run their own scripts.
 - **Canvas**: reports, letters and programs open beside the chat — edit, ask for changes, restore versions, export to **Word, PDF, Markdown or HTML**.
@@ -185,7 +186,9 @@ print(client.chat.completions.create(model="qwen3.8-flash-next-fp4",
       messages=[{"role": "user", "content": "Hello from my DGX Spark"}]).choices[0].message.content)
 ```
 
-**OpenCode** (`~/.config/opencode/opencode.json`, generated for you in *Connect tools*):
+**OpenCode** (`~/.config/opencode/opencode.json`, Windows `%USERPROFILE%\.config\opencode\opencode.json`; generated
+for you in *Connect tools*: pick the model, create a key and the file comes with the key already written in it — keep
+that file private):
 
 ```json
 {
@@ -194,13 +197,17 @@ print(client.chat.completions.create(model="qwen3.8-flash-next-fp4",
     "spark": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Spark AI Hub",
-      "options": { "baseURL": "https://your-spark.your-tailnet.ts.net/v1", "apiKey": "{env:SPARK_API_KEY}" },
-      "models": { "qwen3.8-flash-next-fp4": { "name": "Qwen3.8 Flash Next (Spark)", "limit": { "context": 262144, "output": 32768 } } }
+      "options": { "baseURL": "https://your-spark.your-tailnet.ts.net/v1", "apiKey": "sah-...", "headerTimeout": 1800000 },
+      "models": { "qwen3.8-flash-next-fp4": { "name": "qwen3.8-flash-next-fp4 (Spark · 256k · main)",
+                  "limit": { "context": 262144, "output": 32768 }, "reasoning": true, "tool_call": true } }
     }
   },
-  "model": "spark/qwen3.8-flash-next-fp4"
+  "model": "spark/qwen3.8-flash-next-fp4",
+  "small_model": "spark/qwen3.8-flash-next-fp4"
 }
 ```
+
+`small_model` is the same model on purpose: a second "light" model would have to be loaded too and slows the main one.
 
 **Claude Code**: `ANTHROPIC_BASE_URL=https://your-spark.your-tailnet.ts.net` and `ANTHROPIC_AUTH_TOKEN=sah-...` — the
 hub answers `/v1/messages` with the general model. More in [docs/API.md](docs/API.md).

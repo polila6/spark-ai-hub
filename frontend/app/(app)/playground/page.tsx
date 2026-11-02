@@ -1,6 +1,6 @@
 "use client";
 import {
-  Bookmark, Bot, Brain, ChevronDown, Globe, Download, FileText, FolderKanban, Image as ImageIcon, Loader2, MessageSquarePlus, MessagesSquare,
+  Bookmark, Bot, Brain, ChevronDown, Globe, Download, FileText, FolderKanban, Image as ImageIcon, ListPlus, Loader2, MessageSquarePlus, MessagesSquare,
   Paintbrush, Paperclip, Search, Send, Sparkles, Square, Table2, Trash2, Wrench, X,
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
@@ -11,6 +11,7 @@ import useSWR from "swr";
 import { CanvasChip, CanvasPanel } from "@/components/canvas";
 import { AgentReport, ContextMeter, SkillNote, TOOL_ICONS, WebSources, CodeRun, MicButton, SpeakButton, speakText } from "@/components/assistant";
 import { Guide } from "@/components/guide";
+import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markInjected, QueuedChip, toMs, type Activity } from "@/components/live-activity";
 import { LoadConfirm, MemoryPill } from "@/components/memory";
 import { CodeBlock, MSG_GROUP, MessageActions, MessageEditor, SelectionQuote, USER_BUBBLE_SELECTION, quoteMarkdown, quoteStart } from "@/components/message-actions";
 import { Badge, Button, Card, Confirm, ErrorBox, Field, Input, Notice, Select, Switch, Textarea, Tip, cx } from "@/components/ui";
@@ -21,7 +22,8 @@ import { useToast } from "@/lib/providers";
 
 type Att = { file_id: string; name: string; mime: string; kind: string; size_bytes?: number; url: string };
 type ToolRun = { id: string; name: string; label?: string; args?: any; progress?: number; message?: string; status?: string; done?: boolean; ok?: boolean; summary?: string; image?: any; sources?: any[]; table?: string; memory?: any; sql?: string; remediation?: string; agent?: any; skill?: any; log?: string[]; code?: any; canvas?: any; research?: any };
-type Msg = { id?: number; role: string; content: string; reasoning?: string; metrics?: any; model_alias?: string; pending?: boolean; attachments?: Att[]; tools?: ToolRun[]; warnings?: string[] };
+type Msg = { id?: number; role: string; content: string; reasoning?: string; metrics?: any; model_alias?: string; pending?: boolean; attachments?: Att[]; tools?: ToolRun[];
+  activity?: Activity; queued?: "queued" | "added" | "late"; key?: string };
 
 function Metrics({ m }: { m: any }) {
   if (!m) return null;
@@ -48,9 +50,8 @@ const TOOL_LABELS_ES: Record<string, string> = { run_code: "Código ejecutado", 
   describe_data: "Datos analizados", save_memory: "Guardado en memoria", use_skill: "Skill", install_skill: "Skill instalada", find_skills: "Búsqueda de skills",
   compact_context: "Contexto compactado" };
 
-function partsToTools(parts: any[] | null | undefined): ToolRun[] {
-  return (parts ?? []).filter((p) => p.type === "tool").map((p, i) => ({ id: `p${i}`, done: true, label: TOOL_LABELS_ES[p.name], ...p }));
-}
+// Tools whose result is something to look at (image, table, canvas, files…) keep their card under the activity panel.
+const hasOutput = (t: ToolRun) => !!(t.done && (t.image || t.table || t.canvas || t.memory || t.code?.files?.length || (t.name === "install_skill" && t.skill)));
 
 function ToolCard({ t, onEdit, onCanvas }: { t: ToolRun; onEdit: (ref: string) => void; onCanvas: (id: string, v?: number) => void }) {
   const L = useL();
@@ -173,20 +174,19 @@ function Chat() {
   const viewing = useRef<string | null>(null);  // conversation currently on screen (events of others are ignored)
   useEffect(() => () => abort.current?.abort(), []);  // leaving the page detaches; the answer keeps running
 
+  // Tools, reasoning, plan, steps, context and notes go through applyLive (the live activity panel); the rest is the page's.
   function applyEvent(convId: string, ev: any) {
     if (viewing.current !== convId) return;
-    if (ev.type === "status") setStatus(ev.status);
-    else if (ev.type === "user_message") setMsgs((x) => { const y = [...x]; const j = y.length - 2; if (y[j]?.role === "user") y[j] = { ...y[j], id: ev.message_id }; return y; });
-    else if (ev.type === "delta") updLast((l) => ({ ...l, content: l.content + ev.content }));
-    else if (ev.type === "reasoning") updLast((l) => ({ ...l, reasoning: (l.reasoning ?? "") + ev.content }));
-    else if (ev.type === "warning") updLast((l) => ({ ...l, warnings: [...(l.warnings ?? []), ev.message] }));
-    else if (ev.type === "tool_start") updLast((l) => ({ ...l, tools: [...(l.tools ?? []), { id: ev.id, name: ev.name, label: ev.label, args: ev.args }] }));
-    else if (ev.type === "tool_progress") updLast((l) => ({ ...l, tools: (l.tools ?? []).map((tr) => (tr.id === ev.id ? { ...tr, progress: ev.progress, message: ev.message, status: ev.status, log: (tr.name === "delegate_task" || tr.name === "deep_research") && ev.message ? [...(tr.log ?? []), ev.message] : tr.log } : tr)) }));
-    else if (ev.type === "context") setCtxUsed(ev.used);
-    else if (ev.type === "tool_result" && ev.canvas) { setCanvas({ id: ev.canvas.id, v: ev.canvas.version }); mutCanvases(); updLast((l) => ({ ...l, tools: (l.tools ?? []).map((tr) => (tr.id === ev.id ? { ...tr, ...ev, done: true } : tr)) })); }
-    else if (ev.type === "tool_result") updLast((l) => ({ ...l, tools: (l.tools ?? []).map((tr) => (tr.id === ev.id ? { ...tr, ...ev, done: true } : tr)) }));
-    else if (ev.type === "done") updLast((l) => { if (autoReadRef.current && l.content) speakText(l.content, lang).catch(() => {}); return { ...l, pending: false, metrics: ev.metrics, id: ev.message_id }; });
-    else if (ev.type === "error") { setErr({ message: ev.message, detail: { remediation: ev.remediation } }); updLast((l) => ({ ...l, pending: false })); }
+    if (ev.type === "status") { setStatus(ev.status); updLast((l) => applyLive(l, ev)); }
+    // the user message this turn answers: the last one sent normally (not one added to a running task)
+    else if (ev.type === "user_message") setMsgs((x) => { const y = [...x]; for (let j = y.length - 2; j >= 0; j--) if (y[j].role === "user" && !y[j].queued) { if (y[j].id == null) y[j] = { ...y[j], id: ev.message_id }; break; } return y; });
+    else if (ev.type === "user_injected") setMsgs((x) => markInjected(x, ev));
+    else if (ev.type === "delta") updLast((l) => applyLive({ ...l, content: l.content + ev.content }, ev));
+    else if (ev.type === "context") { setCtxUsed(ev.used); updLast((l) => applyLive(l, ev)); }
+    else if (ev.type === "tool_result" && ev.canvas) { setCanvas({ id: ev.canvas.id, v: ev.canvas.version }); mutCanvases(); updLast((l) => applyLive(l, ev)); }
+    else if (ev.type === "done") updLast((l) => { if (autoReadRef.current && l.content) speakText(l.content, lang).catch(() => {}); return { ...applyLive(l, ev), pending: false, metrics: ev.metrics, id: ev.message_id, reasoning: l.reasoning || ev.reasoning || undefined }; });
+    else if (ev.type === "error") { setErr({ message: ev.message, detail: { remediation: ev.remediation } }); updLast((l) => ({ ...applyLive(l, ev), pending: false })); }
+    else updLast((l) => applyLive(l, ev));
   }
 
   async function follow(convId: string, run: (signal: AbortSignal) => Promise<void>) {
@@ -201,6 +201,11 @@ function Chat() {
       if (viewing.current === convId && abort.current === ctrl) {
         setStatus(null);
         updLast((l) => (l?.role === "assistant" ? { ...l, pending: false } : l));
+        // messages sent while it worked that it never took in: the server may answer them next, so look again
+        if (msgsRef.current.some((m) => m.queued === "queued")) {
+          setMsgs((x) => x.map((m) => (m.queued === "queued" ? { ...m, queued: "late" } : m)));
+          setTimeout(() => { if (viewing.current === convId) openConv(convId).catch(() => {}); }, 2500);  // the server starts the follow-up turn 1.5 s after done
+        }
       }
       mutConvs();
       mutActive();
@@ -215,7 +220,7 @@ function Chat() {
     setErr(null);
     setStatus(null);
     setEditing(null);
-    const history = c.messages.map((m: any) => ({ ...m, reasoning: m.metrics?.reasoning, tools: partsToTools(m.parts) }));
+    const history: Msg[] = c.messages.map((m: any) => ({ ...m, ...(m.role === "assistant" ? liveFromSaved(m, (n) => TOOL_LABELS_ES[n]) : {}) }));
     if (c.model_alias) setModel(c.model_alias);
     if (c.project_id) setProjectId(c.project_id);
     setSystem(c.settings?.system_prompt ?? "");
@@ -226,13 +231,13 @@ function Chat() {
     setCanvas(null);
     setCtxUsed([...c.messages].reverse().find((m: any) => m.metrics?.context_used)?.metrics?.context_used ?? null);
     if (c.active_turn) {  // still answering (sent before leaving the page): replay its events and follow live
-      setMsgs([...history, { role: "assistant", content: "", pending: true, model_alias: c.model_alias, tools: [], warnings: [] }]);
+      setMsgs((prev) => keepQueued(prev, [...history, { role: "assistant", content: "", pending: true, model_alias: c.model_alias, tools: [], activity: { t0: toMs(c.active_turn.started_at) } }], true));
       setStatus("generating");
       follow(id, (signal) => streamGet(`/api/v1/playground/conversations/${id}/stream`, (ev) => {
         if (ev.type !== "gone") applyEvent(id, ev);
       }, signal));
     } else {
-      setMsgs(history);
+      setMsgs((prev) => keepQueued(prev, history, false));
     }
   }
 
@@ -271,6 +276,8 @@ function Chat() {
     }
   }
 
+  const msgsRef = useRef(msgs);
+  msgsRef.current = msgs;
   function updLast(fn: (m: Msg) => Msg) {
     setMsgs((x) => { const y = [...x]; y[y.length - 1] = fn({ ...y[y.length - 1] }); return y; });
   }
@@ -291,13 +298,14 @@ function Chat() {
     model_alias: useModel, system_prompt: system || undefined, temperature: temp, max_tokens: maxTok, mode: m, tools,
     thinking: useSel?.backend === "vllm" ? thinking : undefined, aspect, context_limit: ctxLimit || undefined, auto_compact: autoCompact, web, research: research && web,
   });
-  const pendingMsg = (alias: string): Msg => ({ role: "assistant", content: "", pending: true, model_alias: alias, tools: [], warnings: [] });
+  const pendingMsg = (alias: string): Msg => ({ role: "assistant", content: "", pending: true, model_alias: alias, tools: [], activity: { t0: Date.now() } });
 
   async function send(text?: string, forcedMode?: "chat" | "image", modelAlias?: string) {
     const content = (text ?? input).trim();
     const useModel = modelAlias ?? model;
     const useSel = chatModels.find((x: any) => x.alias === useModel);
     if (!content || !useModel || atts.some((a) => a.uploading)) return;
+    if (status && cid) return addToTask(cid, content, useModel, useSel);
     const m = forcedMode ?? mode;
     if (await needsPlan(useSel, m, { text: content, mode: m })) return;
     setErr(null);
@@ -312,6 +320,32 @@ function Chat() {
     await follow(id, (signal) => streamPost(`/api/v1/playground/conversations/${id}/messages`, {
       content, attachments: sentAtts.map((a) => a.file_id), ...turnBody(useModel, useSel, m),
     }, (ev) => applyEvent(id, ev), signal));
+  }
+
+  // Sent while it works: the server adds it to the running task (202 {queued}) instead of starting another answer.
+  async function addToTask(id: string, content: string, useModel: string, useSel: any) {
+    const key = `q${Date.now()}${Math.random()}`;
+    const sentAtts = atts.filter((a) => !a.uploading);
+    setInput("");
+    setAtts([]);
+    setMsgs((x) => insertQueued(x, { role: "user", content, attachments: sentAtts, queued: "queued", key }));
+    let streamed = false;
+    try {
+      const r = await streamPost(`/api/v1/playground/conversations/${id}/messages`, { content, attachments: sentAtts.map((a) => a.file_id), ...turnBody(useModel, useSel, mode) }, (ev) => {
+        if (!streamed && viewing.current === id) {  // the task had just finished: the server answers it as a normal turn
+          streamed = true;
+          setStatus("generating");
+          setMsgs((x) => [...x.map((m) => (m.key === key ? { ...m, queued: undefined } : m)), pendingMsg(useModel)]);
+        }
+        applyEvent(id, ev);
+      });
+      if (r?.queued) setMsgs((x) => x.map((m) => (m.key === key ? { ...m, id: m.id ?? r.message_id } : m)));
+    } catch (e: any) {
+      if (viewing.current === id) { setMsgs((x) => x.filter((m) => m.key !== key)); setInput((v) => v || content); setAtts((a) => (a.length ? a : sentAtts)); }
+      push("error", e.message);
+    } finally {
+      if (streamed && viewing.current === id) { setStatus(null); updLast((l) => (l?.role === "assistant" ? { ...l, pending: false } : l)); mutConvs(); mutActive(); }
+    }
   }
 
   // Answer the user message msgs[i] again (with `text`, it is edited first); the server deletes what came after it.
@@ -383,6 +417,7 @@ function Chat() {
 
   const [drawer, setDrawer] = useState(false);
   const statusLabel = status === "loading" ? t("play.loading_model") : status === "tool" ? L("usando herramientas…", "using tools…") : status === "compacting" ? L("compactando contexto…", "compacting context…") : status === "generating" ? L("generando…", "generating…") : status;
+  const queuedCount = msgs.filter((m) => m.queued === "queued").length;
   const newChat = () => { abort.current?.abort(); viewing.current = null; setCanvas(null); setCid(null); setMsgs([]); setAtts([]); setErr(null); setStatus(null); setCtxUsed(null); setEditing(null); };
   return (
     <div className={cx("grid h-[calc(100dvh-10.5rem)] gap-4 lg:h-[calc(100vh-7.5rem)]", canvas ? "lg:grid-cols-[250px_minmax(0,1fr)_minmax(0,1.1fr)]" : "lg:grid-cols-[270px_minmax(0,1fr)_290px]")}>
@@ -456,15 +491,16 @@ function Chat() {
                   </>
                 ) : (
                   <>
-                    {m.warnings?.map((w, j) => <Notice key={j} tone="warn">{w}</Notice>)}
-                    {m.reasoning && <details className="mb-2 rounded-lg bg-bg/50 px-3 py-1.5 text-xs text-muted" open={m.pending && !m.content}><summary className="cursor-pointer"><Brain className="mr-1 inline h-3 w-3" />{L("Razonamiento", "Reasoning")}</summary><p className="mt-1 whitespace-pre-wrap">{m.reasoning}</p></details>}
-                    {m.tools?.map((tr) => <ToolCard key={tr.id} t={tr} onEdit={editImage} onCanvas={(id, v) => setCanvas({ id, v })} />)}
-                    <div className="prose-chat" data-quote-scope>{m.content ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.content}</ReactMarkdown> : m.pending && !m.tools?.length && <span className="inline-flex gap-1"><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:.15s]" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:.3s]" /></span>}</div>
+                    <LiveActivity tools={m.tools} reasoning={m.reasoning} activity={m.activity} running={!!m.pending} queued={last && m.pending ? queuedCount : undefined}
+                      seconds={m.metrics?.latency_ms != null ? m.metrics.latency_ms / 1000 : undefined} />
+                    {m.tools?.filter(hasOutput).map((tr) => <ToolCard key={tr.id} t={tr} onEdit={editImage} onCanvas={(id, v) => setCanvas({ id, v })} />)}
+                    <div className="prose-chat" data-quote-scope>{m.content && <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.content}</ReactMarkdown>}</div>
                     <Metrics m={m.metrics} />
                     <div className="mt-1 flex items-center gap-3">{m.model_alias && <span className="text-[10px] text-subtle">{m.model_alias}</span>}{voice?.enabled && voice?.read_aloud && m.content && !m.pending && <SpeakButton text={m.content} lang={lang} />}</div>
                   </>
                 )}
               </div>)}
+              {m.role === "user" && editing !== i && <QueuedChip state={m.queued} />}
               {editing !== i && !m.pending && <MessageActions role={m.role} text={m.content} busy={!!status}
                 onReply={m.role === "assistant" ? () => quote(quoteStart(m.content)) : undefined}
                 onEdit={m.role === "user" && m.id != null && cid ? () => setEditing(i) : undefined}
@@ -487,10 +523,12 @@ function Chat() {
             </div>
             <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
             <Textarea ref={textRef} aria-label={t("play.placeholder")} rows={3} className="resize-none" value={input} onChange={(e) => setInput(e.target.value)}
-              placeholder={mode === "image" ? L("Describe la imagen que quieres (o qué cambiar en la adjunta)…", "Describe the image you want (or what to change in the attached one)…") : L("Escribe tu mensaje…", "Type your message…")}
+              placeholder={status ? L("Añade indicaciones a la tarea en curso (no la interrumpe)…", "Add instructions to the running task (it is not interrupted)…") : mode === "image" ? L("Describe la imagen que quieres (o qué cambiar en la adjunta)…", "Describe the image you want (or what to change in the attached one)…") : L("Escribe tu mensaje…", "Type your message…")}
               onPaste={(e) => { const fs = Array.from(e.clipboardData.files); if (fs.length) { e.preventDefault(); addFiles(fs); } }}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
-            {status ? <Button key="stop" type="button" variant="danger" onClick={stop}><Square className="h-4 w-4" />{t("play.stop")}</Button>
+            {status ? <div className="flex flex-col gap-1.5">
+              <Button key="add" type="submit" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)} title={L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it")}><ListPlus className="h-4 w-4" />{L("Añadir a la tarea", "Add to the task")}</Button>
+              <Button key="stop" type="button" variant="danger" onClick={stop}><Square className="h-4 w-4" />{t("play.stop")}</Button></div>
               : <Button key="send" type="submit" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)}>{mode === "image" ? <Sparkles className="h-4 w-4" /> : <Send className="h-4 w-4" />}{mode === "image" ? L("Crear", "Create") : t("play.send")}</Button>}
           </div>
           <div className="flex flex-wrap items-center gap-4 text-xs text-muted">

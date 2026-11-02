@@ -49,9 +49,19 @@ curl https://your-spark.your-tailnet.ts.net/v1/chat/completions \
 
 ### OpenCode (coding agent)
 
-OpenCode talks to the gateway as an OpenAI-compatible provider. The computer must be on the tailnet. Create an
-API key with scope `inference` (**API keys** page), then put this in `~/.config/opencode/opencode.json`
-(Windows: `%USERPROFILE%\.config\opencode\opencode.json`):
+OpenCode talks to the gateway as an OpenAI-compatible provider. The computer must be on the tailnet. The easiest way
+is the **Connect tools** page: choose OpenCode, answer *"Which model do you want to use in OpenCode?"* (each chat
+model shows its real context and whether it is the main model — always loaded — or loads on demand), press
+**Create key for OpenCode** (an `inference` key named `OpenCode · <date>`) or paste a key of yours, and copy the
+generated file. Step by step:
+
+1. Open the config file: Windows `%USERPROFILE%\.config\opencode\opencode.json`, macOS/Linux
+   `~/.config/opencode/opencode.json` (or `opencode.json` in a project folder, for that project only).
+2. Replace its content with the generated JSON and save. **The key is written literally in the file** (`apiKey` and the
+   MCP `Authorization` header), so no environment variable is needed — and the file is now a secret: do not share it or
+   commit it to git.
+3. Restart OpenCode (it reads the config only at start-up) and check `/models`: the chosen model is the default.
+4. To change model later, pick another one on the page, copy the whole file again and restart OpenCode.
 
 ```json
 {
@@ -62,22 +72,36 @@ API key with scope `inference` (**API keys** page), then put this in `~/.config/
       "name": "Spark AI Hub",
       "options": {
         "baseURL": "https://your-spark.your-tailnet.ts.net/v1",
-        "apiKey": "{env:SPARK_API_KEY}"
+        "apiKey": "sah-...",
+        "headerTimeout": 1800000
       },
       "models": {
-        "qwen3.5-35b-a3b":   { "name": "Qwen3.5 35B-A3B (vLLM)", "limit": { "context": 65536, "output": 16384 } },
-        "qwen3-8b-fp8":      { "name": "Qwen3 8B FP8 (vLLM)",    "limit": { "context": 32768, "output": 8192 } },
-        "qwen3-4b-instruct": { "name": "Qwen3 4B (Ollama)",      "limit": { "context": 32768, "output": 8192 } }
+        "qwen3.5-35b-a3b": { "name": "qwen3.5-35b-a3b (Spark · 64k · main)", "limit": { "context": 65536, "output": 8192 },
+                             "reasoning": true, "tool_call": true }
       }
     }
   },
   "model": "spark/qwen3.5-35b-a3b",
-  "small_model": "spark/qwen3-4b-instruct"
+  "small_model": "spark/qwen3.5-35b-a3b",
+  "mcp": {
+    "spark-cloud": { "type": "remote", "url": "https://your-spark.your-tailnet.ts.net/mcp",
+                     "headers": { "Authorization": "Bearer sah-..." } }
+  }
 }
 ```
 
-and set `SPARK_API_KEY` in the environment (or run `opencode auth login`, choose *Other*, provider id `spark`, and
-remove the `apiKey` line). Requirements on the hub side, already applied to the installed models:
+Notes:
+
+* `small_model` is **the same model** on purpose. OpenCode uses it for titles and summaries; pointing it at a second
+  "light" model makes the hub load that model too, which slows the main one down a lot (or evicts it).
+* Only the chosen model is listed by default. The page has an optional checkbox to add the other chat models as
+  alternatives in `/models`; models other than the main one load on demand (the first answer takes minutes and may
+  unload other models).
+* Limits come from the model: `context` is the window actually served (vLLM `max_model_len`, Ollama context) and
+  `output` is `min(32768, context / 8)`; `reasoning: true` is set for reasoning models and `tool_call: true` when tool
+  calling is enabled. `headerTimeout` (30 min) lets OpenCode wait while a model loads.
+
+Requirements on the hub side, already applied to the installed models:
 
 * tool calling — vLLM models need `enable_tool_calling: true` and a parser (`hermes` for Qwen3, `qwen3_coder` for
   Qwen3.5); `reasoning_parser: qwen3` keeps the thinking out of the answer text;
@@ -145,6 +169,25 @@ The main model is the chat LLM kept resident for everyone (`pinned` + settings `
 
 `/messages` streams a `{"type": "user_message", "message_id": N}` event when the turn starts. The context summary is
 cleared when it covered an edited or deleted message.
+
+**Messages while a turn runs.** `POST /messages` on a chat that is still working is not refused: the message is stored
+and handed to the running task → `202 {"queued": true, "message_id": N}` (no SSE; keep following `/stream`). The agent
+reads it before its next model step and emits `{"type": "user_injected", "message_id", "content"}`; the final answer is
+saved after the injected messages (one assistant message covers them all; its `parts` contain
+`{"type": "user_injected", "message_id"}` where each one was absorbed). Messages that were never injected (the turn hit
+its safety limit, failed or was in image mode) are answered by an automatic follow-up turn with the same settings:
+the `done`/`error` event carries `"followup": true` and, ~1.5 s later, the follow-up turn starts (re-attach to
+`/stream`; it begins with `user_message {message_id, followup: true, message_ids}`). Stopping the turn does not start a
+follow-up. `regenerate`, `truncate` and `compact` still answer `409 turn_running`.
+
+**Turn events** (SSE `/messages`, `/stream`): `status`, `step {n}`, `delta {content}`, `reasoning {content}`,
+`plan {items: [{content, status: pending|in_progress|completed}]}` (latest plan, also stored as a
+`{"type": "plan", "items"}` part), `tool_start {id, name, label, args, started}` (epoch s), `tool_progress {id, message}`,
+`tool_result {id, name, ok, summary, seconds, …}`, `context {used, limit}`, `compacted` (history summarised before the
+turn), `context_compacted {before, after}` (the turn's own older steps summarised mid-turn, estimated tokens),
+`user_injected`, `warning {message}`, `done {message_id, metrics, followup}`, `error {message, followup}`. The loop runs
+until the plan is completed (admin settings `agent_max_steps_chat|workspace`, `agent_max_minutes_chat|workspace` are
+only a safety net).
 
 ### Workspace terminal
 
