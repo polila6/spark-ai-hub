@@ -76,3 +76,24 @@ def test_workspace_terminal_multiline_and_stop(alice):
         assert "nunca" not in (run.get("stdout") or "") and time.time() - t0 < 60, run
     finally:
         alice.delete(f"/api/v1/workspaces/{ws['id']}")
+
+
+@pytest.mark.slow
+def test_workspace_assistant_splits_work_between_parallel_agents(alice):
+    model = main_alias(alice)
+    ws = alice.post("/api/v1/workspaces", json={"name": f"v09-agents-{int(time.time())}"}).json()
+    try:
+        cid = alice.post(f"/api/v1/workspaces/{ws['id']}/conversation", json={}).json()["conversation_id"]
+        evs = stream(alice, f"/api/v1/playground/conversations/{cid}/messages", {
+            "content": "Usa dos subagentes programador EN PARALELO (dos delegate_task en el mismo turno, con write_paths "
+                       "distintos): uno crea calc/suma.py con def suma(a, b) y el otro calc/resta.py con def resta(a, b). "
+                       "Después crea tú main.py que importe ambas e imprima suma(2, 3) y resta(7, 4), y ejecútalo.",
+            "model_alias": model, "tools": True, "thinking": False, "max_tokens": 8000, "workspace_id": ws["id"]})
+        delegated = [e for e in evs if e["type"] == "tool_result" and e["name"] == "delegate_task"]
+        assert len(delegated) >= 2 and all(e["ok"] for e in delegated), delegated
+        changed = {p for e in delegated for p in (e.get("workspace") or {}).get("changed", [])}
+        assert {"calc/suma.py", "calc/resta.py"} <= changed, changed
+        r = alice.post(f"/api/v1/workspaces/{ws['id']}/run", json={"command": "python main.py"}).json()
+        assert r["exit_code"] == 0 and "5" in r["stdout"] and "3" in r["stdout"], r
+    finally:
+        alice.delete(f"/api/v1/workspaces/{ws['id']}")

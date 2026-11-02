@@ -784,7 +784,7 @@ class Skill(Base):
     files: Mapped[dict] = mapped_column(JSONB, default=dict)  # {relative path: text}
     source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     license: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    installed_by: Mapped[str] = mapped_column(String(16), default="user")  # user | assistant
+    installed_by: Mapped[str] = mapped_column(String(16), default="user")  # user | assistant | builtin
     visibility: Mapped[Visibility] = mapped_column(_enum(Visibility, "visibility"), default=Visibility.private)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     use_count: Mapped[int] = mapped_column(Integer, default=0)

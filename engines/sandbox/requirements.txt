@@ -9,6 +9,7 @@ defusedxml==0.7.1
 et_xmlfile==2.0.0
 fonttools==4.68.0
 formulaic==1.2.2
+iniconfig==2.3.1
 interface_meta==2.0.1
 Jinja2==3.1.6
 joblib==1.6.0
@@ -28,11 +29,14 @@ patsy==1.0.3
 pdfminer.six==20260107
 pdfplumber==0.11.10
 pillow==13.0.0
+pluggy==1.7.0
 pyarrow==26.0.0
 pycparser==3.12
+pygments==2.21.0
 pyparsing==3.3.3
 pypdf==6.21.4
 pypdfium2==5.14.0
+pytest==9.2.0
 python-dateutil==4.0.0
 python-docx==1.2.0
 python-pptx==1.0.2

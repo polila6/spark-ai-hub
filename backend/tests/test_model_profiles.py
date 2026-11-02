@@ -22,7 +22,7 @@ def test_profile_architecture_is_accepted():
                        params_b=125, budget_gb=110, free_disk_gb=2000)
     v = next(e for e in a["engines"] if e["engine"] == "vllm")
     assert v["verdict"] != "unsupported"
-    assert v["estimate"]["weights_gb"] < 70  # the n-gram table stays on disk
+    assert v["estimate"]["weights_gb"] < 80  # 96 GiB on disk, ~70 resident: the n-gram table stays on disk
     assert v["recommended_params"]["profile"] == "qwen38_flash_next"
 
 

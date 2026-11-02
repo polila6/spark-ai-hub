@@ -33,9 +33,12 @@ su clave API, sin enviar ni un prompt a servicios de IA externos.
   siguen aunque cierres la pestaña.
 - **Búsqueda en internet** con un SearXNG privado dentro del propio hub; lee páginas y PDF y cita las fuentes. Nunca abre
   direcciones internas.
-- **Agentes** (investigador, documentalista, analista, revisor o los tuyos), varios **en paralelo** con progreso en
-  directo e informe.
-- **Skills** desde GitHub o un enlace, escritas por ti o instaladas por el propio modelo cuando las necesita.
+- **Agentes**: 20 incluidos (investigador, programador, tester, depurador, estadístico, redactor científico,
+  maquetador LaTeX, traductor, verificador…) o los tuyos, varios **en paralelo** con progreso en directo e informe.
+  En el Workspace también escriben y ejecutan código, cada uno en sus archivos.
+- **Skills**: 17 incluidas (informes LaTeX y Beamer, Excel con gráficos, Word, PowerPoint, gráficos de publicación,
+  estadística, artículos IMRaD, BibTeX, propuestas de proyecto, TFG/TFM, revisión por pares, rúbricas…); más desde
+  GitHub o un enlace, escritas por ti o instaladas por el propio modelo cuando las necesita.
 - **Ventana de contexto** ajustable con indicador en vivo y **compactación automática** (resume, no olvida).
 - **Workspace (harness remoto)**: carpetas propias en el Spark con archivos, editor, vistas previas (Excel, PDF, imágenes, HTML), terminal y un asistente que escribe, ejecuta y corrige código allí. Sube un CSV, pide «un Excel con el resumen por mes y un gráfico» y descárgalo.
 - **Ejecuta código** en un entorno aislado sin internet: cálculos, gráficos y archivos Excel, Word, PowerPoint o PDF.

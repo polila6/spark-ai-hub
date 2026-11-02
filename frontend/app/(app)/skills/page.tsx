@@ -1,5 +1,5 @@
 "use client";
-import { Download, ExternalLink, Globe, Lock, Plus, Puzzle, RefreshCw, Trash2 } from "lucide-react";
+import { Download, ExternalLink, Globe, Lock, Plus, Puzzle, RefreshCw, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -20,6 +20,7 @@ function SkillView({ id, onClose }: { id: string; onClose: () => void }) {
       {!data ? <Skeleton className="h-40" /> : (
         <div className="space-y-3 text-sm">
           <div className="flex flex-wrap gap-2 text-xs">
+            {data.installed_by === "builtin" && <Badge tone="ok"><Sparkles className="h-3 w-3" />{L("Del hub: incluida y mantenida con Spark AI Hub", "Built-in: shipped and maintained with Spark AI Hub")}</Badge>}
             {data.source_url && <a className="text-accent" href={data.source_url} target="_blank" rel="noreferrer noopener">{data.source_url} <ExternalLink className="inline h-3 w-3" /></a>}
             {data.license && <Badge>{data.license.slice(0, 60)}</Badge>}
           </div>
@@ -44,43 +45,58 @@ function Installed() {
     try { await api(`/api/v1/skills/${id}`, { method: "PATCH", json }); mutate(); } catch (e: any) { push("error", e.message); }
   }
   if (!data) return <Skeleton className="h-40" />;
+  const own = data.skills.filter((s: any) => s.installed_by !== "builtin");
+  const hub = data.skills.filter((s: any) => s.installed_by === "builtin");
+  const card = (s: any) => {
+    const builtin = s.installed_by === "builtin";
+    return (
+      <Card key={s.id} className="p-4">
+        <div className="flex items-start gap-2">
+          {builtin ? <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-accent" /> : <Puzzle className="mt-0.5 h-4 w-4 shrink-0 text-accent" />}
+          <div className="min-w-0 flex-1">
+            <button className="font-medium hover:text-accent" onClick={() => setView(s.id)}>{s.name}</button>
+            <div className="mt-0.5 flex flex-wrap gap-1">
+              {builtin && <Badge tone="ok">{L("Del hub", "Built-in")}</Badge>}
+              {s.installed_by === "assistant" && <Badge tone="info">{L("instalada por el asistente", "installed by the assistant")}</Badge>}
+              {!builtin && s.visibility === "public" && <Badge tone="accent"><Globe className="h-3 w-3" />{L("para todos", "for everyone")}</Badge>}
+              {builtin && s.visibility !== "public" && <Badge><Lock className="h-3 w-3" />{L("solo administrador", "admin only")}</Badge>}
+              {!s.mine && !builtin && <Badge>{L("compartida", "shared")}</Badge>}
+              {!s.enabled && <Badge tone="warn">{L("desactivada", "disabled")}</Badge>}
+              {s.files.length > 0 && <Badge>{s.files.length} {L("archivos", "files")}</Badge>}
+              {s.use_count > 0 && <Badge>{L(`usada ${s.use_count}×`, `used ${s.use_count}×`)}{s.last_used_at ? ` · ${ago(s.last_used_at, lang)}` : ""}</Badge>}
+            </div>
+            <p className="mt-1.5 line-clamp-3 text-xs text-muted">{s.description}</p>
+          </div>
+          {s.mine && <Switch checked={s.enabled} onChange={(v) => patch(s.id, { enabled: v })} />}
+        </div>
+        {s.mine && (
+          <div className="mt-3 flex flex-wrap gap-1">
+            {s.source_url && <Button size="sm" variant="ghost" onClick={async () => { try { await api(`/api/v1/skills/${s.id}/update`, { method: "POST" }); push("ok", L("Actualizada", "Updated")); mutate(); } catch (e: any) { push("error", e.message); } }}><RefreshCw className="h-3.5 w-3.5" />{L("Actualizar", "Update")}</Button>}
+            {builtin && <Button size="sm" variant="ghost" onClick={async () => { try { await api(`/api/v1/skills/${s.id}/update`, { method: "POST" }); push("ok", L("Restaurada la versión del hub", "Hub version restored")); mutate(); } catch (e: any) { push("error", e.message); } }}><RotateCcw className="h-3.5 w-3.5" />{L("Restaurar original", "Restore original")}</Button>}
+            {isManager(me) && <Button size="sm" variant="ghost" onClick={() => patch(s.id, { visibility: s.visibility === "public" ? "private" : "public" })}>{s.visibility === "public" ? <><Lock className="h-3.5 w-3.5" />{L("Hacer privada", "Make private")}</> : <><Globe className="h-3.5 w-3.5" />{L("Publicar para todos", "Publish for everyone")}</>}</Button>}
+            {!builtin && <Button size="sm" variant="ghost" onClick={async () => { await api(`/api/v1/skills/${s.id}`, { method: "DELETE" }); mutate(); }}><Trash2 className="h-3.5 w-3.5" />{L("Borrar", "Delete")}</Button>}
+          </div>
+        )}
+      </Card>
+    );
+  };
   return (
     <div className="space-y-3">
       {!data.settings.enabled && <Notice tone="warn">{L("El administrador ha desactivado las skills en el chat.", "The administrator has disabled skills in the chat.")}</Notice>}
       {data.settings.enabled && <Notice tone="muted">{data.settings.auto_install ? L("El asistente puede buscar e instalar skills por sí mismo cuando una tarea lo necesite (aparecerán aquí con la etiqueta «instalada por el asistente»).", "The assistant may find and install skills by itself when a task needs one (they show here as “installed by the assistant”).") : L("El asistente puede proponerte skills, pero las instalas tú desde esta página.", "The assistant can suggest skills, but you install them from this page.")}</Notice>}
-      {data.skills.length === 0 ? (
-        <Card><CardBody><StepsEmpty icon={<Puzzle className="h-5 w-5" />} title={L("Aún no tienes skills", "No skills yet")} steps={[
+      {own.length === 0 ? (
+        <Card><CardBody><StepsEmpty icon={<Puzzle className="h-5 w-5" />} title={hub.length ? L("Aún no tienes skills propias", "No skills of your own yet") : L("Aún no tienes skills", "No skills yet")} steps={[
           L("Abre la pestaña «Catálogo» e instala una (p. ej. doc-coauthoring para escribir documentos con el asistente).", "Open the “Catalog” tab and install one (e.g. doc-coauthoring to write documents with the assistant)."),
           L("O pega un enlace de GitHub en «Instalar desde enlace».", "Or paste a GitHub link in “Install from link”."),
           L("O simplemente pide en el chat «busca una skill para…»: el asistente la encontrará.", "Or just ask in the chat “find a skill for…”: the assistant will find it.")]} /></CardBody></Card>
       ) : (
-        <div className="grid gap-3 md:grid-cols-2">
-          {data.skills.map((s: any) => (
-            <Card key={s.id} className="p-4">
-              <div className="flex items-start gap-2">
-                <Puzzle className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
-                <div className="min-w-0 flex-1">
-                  <button className="font-medium hover:text-accent" onClick={() => setView(s.id)}>{s.name}</button>
-                  <div className="mt-0.5 flex flex-wrap gap-1">
-                    {s.installed_by === "assistant" && <Badge tone="info">{L("instalada por el asistente", "installed by the assistant")}</Badge>}
-                    {s.visibility === "public" && <Badge tone="accent"><Globe className="h-3 w-3" />{L("para todos", "for everyone")}</Badge>}
-                    {!s.mine && <Badge>{L("compartida", "shared")}</Badge>}
-                    {s.files.length > 0 && <Badge>{s.files.length} {L("archivos", "files")}</Badge>}
-                    {s.use_count > 0 && <Badge>{L(`usada ${s.use_count}×`, `used ${s.use_count}×`)}{s.last_used_at ? ` · ${ago(s.last_used_at, lang)}` : ""}</Badge>}
-                  </div>
-                  <p className="mt-1.5 line-clamp-3 text-xs text-muted">{s.description}</p>
-                </div>
-                {s.mine && <Switch checked={s.enabled} onChange={(v) => patch(s.id, { enabled: v })} />}
-              </div>
-              {s.mine && (
-                <div className="mt-3 flex flex-wrap gap-1">
-                  {s.source_url && <Button size="sm" variant="ghost" onClick={async () => { try { await api(`/api/v1/skills/${s.id}/update`, { method: "POST" }); push("ok", L("Actualizada", "Updated")); mutate(); } catch (e: any) { push("error", e.message); } }}><RefreshCw className="h-3.5 w-3.5" />{L("Actualizar", "Update")}</Button>}
-                  {isManager(me) && <Button size="sm" variant="ghost" onClick={() => patch(s.id, { visibility: s.visibility === "public" ? "private" : "public" })}>{s.visibility === "public" ? <><Lock className="h-3.5 w-3.5" />{L("Hacer privada", "Make private")}</> : <><Globe className="h-3.5 w-3.5" />{L("Publicar para todos", "Publish for everyone")}</>}</Button>}
-                  <Button size="sm" variant="ghost" onClick={async () => { await api(`/api/v1/skills/${s.id}`, { method: "DELETE" }); mutate(); }}><Trash2 className="h-3.5 w-3.5" />{L("Borrar", "Delete")}</Button>
-                </div>
-              )}
-            </Card>
-          ))}
+        <div className="grid gap-3 md:grid-cols-2">{own.map(card)}</div>
+      )}
+      {hub.length > 0 && (
+        <div className="space-y-2 pt-2">
+          <h3 className="flex items-center gap-2 text-sm font-semibold"><Sparkles className="h-4 w-4 text-accent" />{L(`Incluidas en el hub (${hub.length})`, `Included with the hub (${hub.length})`)}</h3>
+          <p className="text-xs text-muted">{L("Preparadas y probadas para este Spark (LaTeX, Word, Excel, PowerPoint, gráficos, estadística, artículos, TFG/TFM, docencia…). Ya están activas: el asistente y los agentes las cargan solos cuando la tarea encaja. Si creas una skill con el mismo nombre, se usa la tuya.", "Prepared and tested for this Spark (LaTeX, Word, Excel, PowerPoint, charts, statistics, papers, theses, teaching…). Already active: the assistant and the agents load them when a task fits. If you create a skill with the same name, yours is used.")}</p>
+          <div className="grid gap-3 md:grid-cols-2">{hub.map(card)}</div>
         </div>
       )}
       {view && <SkillView id={view} onClose={() => setView(null)} />}

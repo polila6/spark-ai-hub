@@ -28,7 +28,9 @@ router = APIRouter(prefix="/api/v1", tags=["assistant"])
 
 TOOL_NAMES = {"web_search": "Búsqueda web", "fetch_url": "Leer páginas web", "search_knowledge": "Buscar en documentos",
               "read_document": "Leer documentos", "describe_data": "Explorar datos", "query_data": "Consultas SQL",
-              "use_skill": "Usar skills", "read_skill_file": "Archivos de skills", "run_code": "Ejecutar código"}
+              "use_skill": "Usar skills", "read_skill_file": "Archivos de skills", "run_code": "Ejecutar código",
+              "ws_list": "Workspace: ver archivos", "ws_read": "Workspace: leer", "ws_write": "Workspace: escribir",
+              "ws_append": "Workspace: añadir", "ws_edit": "Workspace: editar", "ws_run": "Workspace: ejecutar"}
 
 
 def _err(e: Exception, code: str = "skill_error"):
@@ -127,6 +129,13 @@ def patch_skill(sid: uuid.UUID, body: SkillPatch, p: Principal = Depends(current
 def update_skill(sid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """Re-download the skill from its source."""
     sk = _skill_for_write(db, p, sid)
+    if sk.installed_by == skills_svc.BUILTIN:  # shipped with the hub: restore the original content
+        try:
+            skills_svc.restore_builtin(db, sk)
+        except skills_svc.SkillError as e:
+            raise _err(e)
+        db.commit()
+        return skills_svc.public(sk, p.id)
     if not sk.source_url:
         raise _err(Exception("Esta skill no tiene origen (se escribió a mano)"))
     try:
@@ -139,7 +148,12 @@ def update_skill(sid: uuid.UUID, p: Principal = Depends(current_principal), db: 
 
 @router.delete("/skills/{sid}")
 def delete_skill(sid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    db.delete(_skill_for_write(db, p, sid))
+    sk = _skill_for_write(db, p, sid)
+    if sk.installed_by == skills_svc.BUILTIN:  # would come back at the next start-up: switch it off instead
+        sk.enabled = False
+        db.commit()
+        return {"ok": True, "disabled": True}
+    db.delete(sk)
     db.commit()
     return {"ok": True}
 
@@ -180,7 +194,7 @@ def list_agents(p: Principal = Depends(current_principal), db: Session = Depends
     rows = db.scalars(select(AgentProfile).where(or_(AgentProfile.owner_id == p.id, AgentProfile.visibility == Visibility.public))
                       .order_by(AgentProfile.name)).all()
     builtin = [{"id": f"builtin:{k}", "name": k, "description": v["description"], "instructions": v["instructions"],
-                "tools": v["tools"], "skills": [], "builtin": True, "enabled": True, "visibility": "public", "mine": False}
+                "tools": v["tools"], "skills": v.get("skills", []), "builtin": True, "enabled": True, "visibility": "public", "mine": False}
                for k, v in BUILTIN_AGENTS.items()]
     return {"agents": builtin + [_agent_pub(a, p.id) for a in rows],
             "tools": [{"name": t, "label": TOOL_NAMES.get(t, t)} for t in sorted(SUB_AGENT_TOOLS)],

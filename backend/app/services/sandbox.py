@@ -33,6 +33,10 @@ class SandboxError(Exception):
         self.message, self.remediation = message, remediation
 
 
+class SlotBusy(SandboxError):
+    """The user already runs the maximum number of sandbox programs (callers may wait and retry)."""
+
+
 class user_slot:
     """At most N sandbox programs per user at once (the engine runs 4 for everybody): one person cannot take them all.
     Each run is an entry with a timestamp, so a crashed process frees its slot after 20 minutes on its own."""
@@ -51,7 +55,7 @@ class user_slot:
         now = time.time()
         r.zremrangebyscore(self.key, 0, now - 1200)
         if r.zcard(self.key) >= self.limit:
-            raise SandboxError(f"Ya tienes {self.limit} programas ejecutándose a la vez.",
+            raise SlotBusy(f"Ya tienes {self.limit} programas ejecutándose a la vez.",
                                "Espera a que terminen (o páralos) y vuelve a intentarlo.")
         r.zadd(self.key, {self.member: now})
         r.expire(self.key, 1200)

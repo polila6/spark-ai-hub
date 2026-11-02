@@ -41,6 +41,9 @@ REMEMBER_RE = re.compile(r"^\s*(?:por favor,?\s*)?(?:recuerda|recuérdalo|apunta
                          re.I | re.S)
 WORKSPACE_MAX_STEPS = 30  # write → run → read the error → fix loops need more steps
 SUB_MAX_STEPS = 8
+SUB_WS_MAX_STEPS = 24  # a sub-agent that writes and runs code in the workspace needs more steps
+WS_WRITE_TOOLS = {"ws_write", "ws_append", "ws_edit"}
+WS_TOOLS = WS_WRITE_TOOLS | {"ws_list", "ws_read", "ws_run"}
 IMAGE_MAX_SIDE = 1280
 TOOL_RESULT_CHARS = 12000
 CHARS_PER_TOKEN = 3.2  # first estimate; recalibrated with the engine's real prompt_tokens during the turn
@@ -547,10 +550,13 @@ BUILTIN_AGENTS = {
                 "instructions": "Eres un agente auxiliar. Cumple la tarea con las herramientas disponibles y devuelve "
                                 "un resultado completo y conciso.",
                 "tools": ["web_search", "fetch_url", "search_knowledge", "read_document", "describe_data", "query_data",
-                          "use_skill", "read_skill_file"]},
+                          "use_skill", "read_skill_file", "ws_list", "ws_read", "ws_write", "ws_append", "ws_edit", "ws_run"]},
 }
 SUB_AGENT_TOOLS = {"web_search", "fetch_url", "search_knowledge", "read_document", "describe_data", "query_data",
-                   "use_skill", "read_skill_file", "run_code"}
+                   "use_skill", "read_skill_file", "run_code"} | WS_TOOLS  # ws_* only inside a workspace
+from .agent_catalog import EXTRA_AGENTS  # noqa: E402 - specialised agents (programador, tester, estadistico…)
+
+BUILTIN_AGENTS.update({k: v for k, v in EXTRA_AGENTS.items() if k not in BUILTIN_AGENTS})
 
 TOOL_LABELS = {"generate_image": "Generando imagen", "edit_image": "Editando imagen", "search_knowledge": "Buscando en tus documentos",
                "read_document": "Leyendo documento", "describe_data": "Analizando datos", "query_data": "Consultando datos",
@@ -587,8 +593,20 @@ def _delegate_spec(agents: dict[str, dict]) -> dict:
             "agent": {"type": "string", "enum": sorted(agents)},
             "task": {"type": "string", "description": "What the agent must do and deliver"},
             "context": {"type": "string", "description": "Facts, data or text the agent needs (optional)"},
-            "instructions": {"type": "string", "description": "Extra role/instructions (for agent=general)"}},
+            "instructions": {"type": "string", "description": "Extra role/instructions (for agent=general)"},
+            "write_paths": {"type": "array", "items": {"type": "string"},
+                            "description": "Workspace only: files or folders this agent may create/modify. Give agents "
+                                           "running in parallel different paths; omit = whole workspace (one agent)."}},
             "required": ["agent", "task"]}}}
+
+
+def scope_overlaps(a: list[str], b: list[str]) -> bool:
+    """Two write scopes overlap when a path of one is equal to, inside or containing a path of the other ("" = all)."""
+    return any(x == "" or y == "" or x == y or x.startswith(y + "/") or y.startswith(x + "/") for x in a for y in b)
+
+
+def in_scope(path: str, scope: list[str]) -> bool:
+    return any(s == "" or path == s or path.startswith(s + "/") for s in scope)
 
 
 class Runner:
@@ -603,6 +621,8 @@ class Runner:
         self.model: RegisteredModel | None = None
         self.ratio = CHARS_PER_TOKEN
         self.agents: dict[str, dict] = {}
+        self.ws_claims: dict[str, tuple[str, list[str]]] = {}  # sub-agent call id -> (agent, write scope)
+        self.ws_claims_lock = threading.Lock()
         self.skill_names: list[str] = []
         self.flags = {"web": False, "skills": False, "agents": False, "auto_install": False, "code": False}
         self.project_id: uuid.UUID | None = None
@@ -721,6 +741,19 @@ class Runner:
                           "no para preguntas simples. Disponibles:\n" if es else
                           "Sub-agents (delegate_task) work in parallel with their own context. Available:\n")
                          + "\n".join(f"- {k}: {v['description'][:200]}" for k, v in self.agents.items()))
+            if self.workspace is not None:
+                lines.append(
+                    "En este workspace los subagentes también leen, escriben y ejecutan archivos. Para un trabajo grande "
+                    "y separable (p. ej. varios módulos, código + tests + documentación): planifica, reparte las partes "
+                    "independientes entre agentes llamando a delegate_task varias veces en el mismo turno, con write_paths "
+                    "distintos para cada uno (archivos o carpetas que no se solapen) y todo el contexto que necesiten "
+                    "(interfaces, nombres de funciones, formato de datos). Después integra tú los resultados, ejecuta y "
+                    "prueba el conjunto, y corrige. Para cambios pequeños hazlo tú directamente." if es else
+                    "In this workspace sub-agents can also read, write and run files. For large, separable work (several "
+                    "modules, code + tests + docs): plan, give independent parts to agents by calling delegate_task "
+                    "several times in the same turn, each with different non-overlapping write_paths and all the context "
+                    "they need (interfaces, function names, data formats). Then integrate, run and test the whole, and "
+                    "fix. Do small changes yourself.")
         if self.summary:
             lines.append(("Resumen de la parte anterior de esta conversación (los mensajes antiguos ya no están en tu "
                           "contexto; confía en este resumen):\n" if es else "Summary of the earlier conversation:\n")
@@ -1235,11 +1268,39 @@ class Runner:
         if not task:
             raise AgentError("Tarea vacía")
         tools = [t for t in prof["tools"] if t in SUB_AGENT_TOOLS and self._tool_allowed(t)]
+        if self.workspace is not None and any(t in WS_TOOLS for t in tools):
+            tools = list(dict.fromkeys(tools + ["ws_list", "ws_read"]))  # whoever works in the workspace can look at it
         es = self.t.lang != "en"
         sys_lines = [prof["instructions"], f"{'Fecha' if es else 'Date'}: {_now_str()}.",
                      "Trabajas para el asistente principal de Spark AI Hub, no hablas con el usuario. Devuelve solo el "
                      "resultado final (informe completo y conciso, en el idioma de la tarea)." if es else
                      "You work for the main Spark AI Hub assistant, not the user. Return only the final result."]
+        writes = self.workspace is not None and any(t in WS_WRITE_TOOLS or t == "ws_run" for t in tools)
+        scope: list[str] = []
+        if writes:
+            from . import workspace as ws_svc
+
+            try:
+                scope = sorted({ws_svc.clean_rel(str(x)) for x in (args.get("write_paths") or []) if str(x).strip()}) or [""]
+            except ws_svc.WorkspaceError as e:
+                raise AgentError(f"write_paths no válido: {e.message}")
+            with self.ws_claims_lock:
+                clash = next(((n, sc) for n, sc in self.ws_claims.values() if scope_overlaps(scope, sc)), None)
+                if clash:
+                    raise AgentError(f"El agente «{clash[0]}» ya está escribiendo en {', '.join(clash[1]) or 'todo el workspace'}. "
+                                     "Da a cada agente en paralelo archivos o carpetas distintos con write_paths.")
+                self.ws_claims[call_id] = (name, scope)
+            where = ", ".join(scope) if scope != [""] else ("todo el workspace" if es else "the whole workspace")
+            sys_lines.append(
+                f"Trabajas en el workspace del usuario (carpeta /work, rutas relativas). Puedes crear y modificar SOLO: "
+                f"{where}; lee lo que necesites del resto. Escribe archivos largos por partes (ws_write y luego "
+                "ws_append), ejecuta y prueba con ws_run, corrige los errores y no borres archivos que no sean tuyos. "
+                "Otros agentes pueden estar trabajando a la vez en otras partes. Termina con la lista de archivos que "
+                "has creado o cambiado y cómo probarlos." if es else
+                f"You work in the user's workspace (/work, relative paths). You may create and modify ONLY: {where}; "
+                "read anything else you need. Write long files in parts (ws_write then ws_append), run and test with "
+                "ws_run, fix errors, never delete files that are not yours. Other agents may work at the same time on "
+                "other parts. End with the list of files you created or changed and how to test them.")
         if args.get("instructions"):
             sys_lines.insert(1, str(args["instructions"])[:6000])
         preload = ""
@@ -1255,16 +1316,23 @@ class Runner:
         specs = [t for t in self._all_specs() if t["function"]["name"] in tools]
         steps: list[dict] = []
         sources: list[dict] = []
+        changed: set[str] = set()
         text = ""
-        inst = scheduler.ensure_loaded(self.t.model_id, wait_s=1800)
+        max_steps, max_out = (SUB_WS_MAX_STEPS, 8192) if writes else (SUB_MAX_STEPS, 2048)
+        try:
+            inst = scheduler.ensure_loaded(self.t.model_id, wait_s=1800)
+        except BaseException:
+            with self.ws_claims_lock:
+                self.ws_claims.pop(call_id, None)
+            raise
         scheduler.begin_request(inst.id)
         try:
-            for step in range(SUB_MAX_STEPS):
+            for step in range(max_steps):
                 if self.stop():
                     raise AgentError("Cancelado por el usuario")
-                self._fit(messages, 2048)
-                last = step == SUB_MAX_STEPS - 1
-                text, calls, _ = self._llm_step(messages, specs if specs and not last else None, 2048,
+                self._fit(messages, max_out)
+                last = step == max_steps - 1
+                text, calls, _ = self._llm_step(messages, specs if specs and not last else None, max_out,
                                                 thinking=False)
                 if not calls and step == 0 and "web_search" in tools and (name == "investigador" or args.get("_must_search")):
                     # a researcher must look things up instead of answering from memory
@@ -1279,6 +1347,10 @@ class Runner:
                 for cid, tname, targs in results:
                     if tname not in tools:
                         res = {"ok": False, "summary": f"{tname} no disponible", "content": f"Tool {tname} not available"}
+                    elif tname in WS_WRITE_TOOLS and not self._sub_may_write(targs, scope):
+                        res = {"ok": False, "summary": "Fuera de su zona de escritura",
+                               "content": f"You may only write inside: {', '.join(scope)}. Put your work there, or report "
+                                          "what should change elsewhere so the main assistant does it."}
                     else:
                         what = targs.get("url") if tname == "fetch_url" else targs.get("query")
                         self.emit({"type": "tool_progress", "id": call_id, "message": f"{name}: {TOOL_LABELS.get(tname, tname)}"
@@ -1287,19 +1359,35 @@ class Runner:
                     steps.append({"name": tname, "label": TOOL_LABELS.get(tname, tname), "ok": res.get("ok", True),
                                   "summary": str(res.get("summary", ""))[:200]})
                     sources += [x for x in res.get("sources") or [] if x.get("url")]
+                    changed.update((res.get("workspace") or {}).get("changed") or [])
                     messages.append({"role": "tool", "tool_call_id": cid,
                                      "content": str(res.get("content") or res.get("summary"))[:TOOL_RESULT_CHARS]})
         finally:
             scheduler.end_request(inst.id)
+            with self.ws_claims_lock:
+                self.ws_claims.pop(call_id, None)
         text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip() or "(el agente no devolvió texto)"
         seen, uniq = set(), []
         for x in sources:
             if x["url"] not in seen:
                 seen.add(x["url"])
                 uniq.append(x)
-        return {"ok": True, "summary": f"{name}: {len(steps)} pasos" + (f", {len(uniq)} fuentes" if uniq else ""),
-                "agent": {"name": name, "task": task[:500], "steps": steps, "report": text[:20000]},
-                "sources": uniq[:15], "content": f"Report from agent '{name}':\n{text[:16000]}"}
+        out = {"ok": True, "summary": f"{name}: {len(steps)} pasos" + (f", {len(uniq)} fuentes" if uniq else "")
+               + (f", {len(changed)} archivo(s)" if changed else ""),
+               "agent": {"name": name, "task": task[:500], "steps": steps, "report": text[:20000]},
+               "sources": uniq[:15], "content": f"Report from agent '{name}':\n{text[:16000]}"}
+        if changed:
+            out["workspace"] = {"changed": sorted(changed)}
+            out["content"] += "\n\nFiles changed by this agent: " + ", ".join(sorted(changed)[:100])
+        return out
+
+    def _sub_may_write(self, targs: dict, scope: list[str]) -> bool:
+        from . import workspace as ws_svc
+
+        try:
+            return in_scope(ws_svc.clean_rel(str(targs.get("path") or "")), scope)
+        except ws_svc.WorkspaceError:
+            return False
 
     def tool_run_code(self, call_id: str, args: dict) -> dict:
         code = str(args.get("code") or "")
@@ -1584,7 +1672,16 @@ class Runner:
 
         def go(db, ws, svc):
             t = args.get("timeout_s")
-            res = svc.run(db, ws, cmd, timeout_s=int(t) if isinstance(t, int) else None)
+            for attempt in range(60):  # agents in parallel share the user's run slots: wait for one (≤ 5 min)
+                try:
+                    res = svc.run(db, ws, cmd, timeout_s=int(t) if isinstance(t, int) else None)
+                    break
+                except sandbox.SlotBusy:
+                    if attempt == 59 or self.stop():
+                        raise
+                    if attempt == 0:
+                        self.emit({"type": "tool_progress", "id": call_id, "message": "Esperando turno para ejecutar…"})
+                    time.sleep(5)
             ok = res["exit_code"] == 0 and not res["timed_out"]
             state = "tiempo agotado" if res["timed_out"] else "sin memoria" if res.get("oom_killed") else \
                 ("ok" if ok else f"error {res['exit_code']}")

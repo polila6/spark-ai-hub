@@ -25,6 +25,8 @@ export function ToolLine({ t, onOpen }: { t: any; onOpen: (p: string) => void })
         <span className="font-medium">{t.label || t.name}</span>{(t.summary || t.message) && <span className="truncate text-muted">· {t.done ? t.summary : t.message}</span>}</div>
       {t.terminal && <details className="mt-1"><summary className="cursor-pointer truncate font-mono text-[11px] text-muted">$ {t.terminal.command.split("\n")[0].slice(0, 140)}{t.terminal.command.includes("\n") ? " …" : ""}</summary>
         <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-[#0d1117] p-2 font-mono text-[11px] text-[#c9d1d9]">{t.terminal.stdout}{t.terminal.stderr ? `\n${t.terminal.stderr}` : ""}</pre></details>}
+      {t.agent?.report && <details className="mt-1"><summary className="cursor-pointer text-muted">{L(`Informe de ${t.agent.name} · ${t.agent.steps?.length ?? 0} pasos`, `Report from ${t.agent.name} · ${t.agent.steps?.length ?? 0} steps`)}</summary>
+        <div className="prose-chat mt-1 max-h-72 overflow-y-auto text-[12px]"><ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>{t.agent.report}</ReactMarkdown></div></details>}
       {changed.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{changed.slice(0, 10).map((p) => <button key={p} type="button" className="rounded border border-border px-1.5 font-mono text-[10.5px] hover:bg-elevated" onClick={() => onOpen(p)}>{p}</button>)}</div>}
       {t.done && t.ok === false && t.remediation && <p className="mt-1 text-warn">{t.remediation}</p>}
       {!t.done && t.name === "ws_run" && <p className="mt-0.5 text-[10.5px] text-subtle">{L("Se ejecuta en el Spark, aislado", "Runs on the Spark, isolated")}</p>}

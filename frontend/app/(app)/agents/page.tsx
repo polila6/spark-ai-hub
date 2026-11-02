@@ -58,6 +58,8 @@ export default function AgentsPage() {
   const L = useL();
   const { data, mutate } = useSWR("/api/v1/agents");
   const [edit, setEdit] = useState<Ag | null>(null);
+  const [q, setQ] = useState("");
+  const shown = (data?.agents ?? []).filter((a: any) => !q || `${a.name} ${a.description}`.toLowerCase().includes(q.toLowerCase()));
   const label = (n: string) => data?.tools.find((t: any) => t.name === n)?.label ?? n;
   return (
     <div>
@@ -67,11 +69,15 @@ export default function AgentsPage() {
       {!data ? <Skeleton className="h-40" /> : (
         <>
           {!data.settings.enabled && <Notice tone="warn">{L("El administrador ha desactivado los agentes en el chat.", "The administrator has disabled agents in the chat.")}</Notice>}
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <Input className="max-w-xs" placeholder={L("Filtrar agentes…", "Filter agents…")} value={q} onChange={(e) => setQ(e.target.value)} />
+            <span className="text-xs text-muted">{L(`${data.agents.filter((a: any) => a.builtin).length} del hub · ${data.agents.filter((a: any) => !a.builtin).length} personalizados`, `${data.agents.filter((a: any) => a.builtin).length} built-in · ${data.agents.filter((a: any) => !a.builtin).length} custom`)}</span>
+          </div>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {data.agents.map((a: any) => (
+            {shown.map((a: any) => (
               <Card key={a.id} className="flex flex-col p-4">
                 <div className="flex items-center gap-2"><Bot className="h-4 w-4 text-accent" /><span className="font-medium">{a.name}</span>
-                  {a.builtin ? <Badge>{L("incluido", "built-in")}</Badge> : a.visibility === "public" ? <Badge tone="accent"><Globe className="h-3 w-3" />{L("para todos", "for everyone")}</Badge> : <Badge>{L("tuyo", "yours")}</Badge>}
+                  {a.builtin ? <Badge tone="ok">{L("Del hub", "Built-in")}</Badge> : a.visibility === "public" ? <Badge tone="accent"><Globe className="h-3 w-3" />{L("para todos", "for everyone")}</Badge> : <Badge>{L("tuyo", "yours")}</Badge>}
                   {!a.enabled && <Badge tone="warn">{L("desactivado", "disabled")}</Badge>}</div>
                 <p className="mt-1.5 flex-1 text-xs text-muted">{a.description}</p>
                 <div className="mt-2 flex flex-wrap gap-1">{a.tools.length ? a.tools.map((t: string) => <Badge key={t}>{label(t)}</Badge>) : <Badge>{L("sin herramientas (solo razona)", "no tools (reasoning only)")}</Badge>}{a.skills?.map((s: string) => <Badge key={s} tone="info">skill: {s}</Badge>)}</div>

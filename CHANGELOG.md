@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.1 — 2026-11-02
+Sub-agents that work in the Workspace, and a catalogue of built-in agents and skills.
+
+* **Multi-agent Workspace**: sub-agents can now list, read, write and run files of the workspace (`ws_*` tools).
+  `delegate_task` takes `write_paths` (files/folders the agent may change): agents running in parallel must get
+  non-overlapping paths (a second agent on the same area is refused), writes outside the area are rejected, and
+  agents wait for a free run slot instead of failing. Coding agents get more steps (24) and longer outputs. The
+  workspace assistant is told to plan, split separable work between parallel agents, then integrate and test; the
+  files each agent changed appear as links and its report can be opened in the chat.
+* **15 new built-in agents**: programador, tester, depurador, revisor-codigo, arquitecto, redactor-cientifico,
+  revisor-bibliografia, revisor-pares, estadistico, visualizador, limpiador-datos, maquetador-latex, traductor,
+  verificador and docente (several preload their skill).
+* **17 built-in skills** shipped with the hub and installed at start-up (public, "Built-in" badge, can be disabled
+  and restored): informe-latex, presentacion-beamer, citas-bibtex, excel-con-graficos, documento-word,
+  presentacion-pptx, graficos-publicacion, analisis-estadistico, limpieza-datos-pandas, informe-desde-datos,
+  articulo-cientifico-imrad, revision-por-pares, propuesta-investigacion, tfg-tfm, docencia-rubricas,
+  traduccion-tecnica and python-tests. Every code and LaTeX template was run in the sandbox image.
+* **Sandbox image**: adds `pytest`, the journal LaTeX classes (`texlive-publishers`: IEEEtran, elsarticle, llncs,
+  acmart…) and the Carlito/Caladea fonts (metric-compatible with Calibri/Cambria).
+
 ## 0.9.0 — 2026-11-02
 New main model, a simple way to choose it, message actions in the chat and a redesigned Workspace.
 

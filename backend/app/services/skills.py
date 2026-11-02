@@ -9,11 +9,12 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from sqlalchemy import or_, select
 
-from ..models import Skill, User, Visibility
+from ..models import Role, Skill, User, Visibility
 from ..redis_client import get_redis
 from ..settings_store import get_setting
 from . import web
@@ -25,6 +26,8 @@ MAX_FILE_BYTES = 120_000
 MAX_TOTAL_BYTES = 600_000
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 CATALOG_TTL = 12 * 3600
+BUILTIN = "builtin"  # Skill.installed_by of the skills shipped with the hub
+BUILTIN_DIR = Path(__file__).resolve().parent.parent / "data" / "skills"
 
 
 class SkillError(Exception):
@@ -255,3 +258,71 @@ def public(sk: Skill, user_id: uuid.UUID | None = None) -> dict:
             "enabled": sk.enabled, "use_count": sk.use_count, "last_used_at": sk.last_used_at,
             "files": sorted((sk.files or {}).keys()), "size_chars": len(sk.content or "") + sum(len(v) for v in (sk.files or {}).values()),
             "mine": user_id is None or sk.owner_id == user_id, "created_at": sk.created_at, "updated_at": sk.updated_at}
+
+
+# ------------------------------------------------------------------ built-in skills shipped with the hub
+
+
+def builtin_packages(root: Path = BUILTIN_DIR) -> list[dict]:
+    """Skills in app/data/skills/<dir>/SKILL.md (+ text reference files): [{name, description, license, content, files}]."""
+    out: list[dict] = []
+    if not root.is_dir():
+        return out
+    for d in sorted(x for x in root.iterdir() if x.is_dir() and not x.name.startswith((".", "_"))):
+        md = d / "SKILL.md"
+        if not md.is_file():
+            continue
+        files: dict[str, str] = {}
+        for f in sorted(d.rglob("*")):
+            rel = f.relative_to(d).as_posix()
+            if f.is_file() and rel != "SKILL.md" and not any(part.startswith((".", "__")) for part in rel.split("/")):
+                files[rel] = f.read_text(encoding="utf-8")
+        out.append({**parse_skill_md(md.read_text(encoding="utf-8")), "files": files, "dir": d.name})
+    return out
+
+
+def sync_builtin(db) -> dict:
+    """Install/refresh the hub's built-in skills as public skills owned by the first admin (idempotent).
+
+    Content follows the files shipped with the hub; the admin's choices (enabled, visibility) are kept. A skill the
+    admin wrote with the same name is never overwritten (that name is skipped); users' own copies win in visible().
+    Built-in skills no longer shipped are removed. Returns counters for logging.
+    """
+    admin = db.scalar(select(User).where(User.role == Role.admin, User.is_active.is_(True)).order_by(User.created_at))
+    if admin is None:
+        return {"skipped": "no admin"}
+    pkgs = [p for p in builtin_packages() if NAME_RE.match(p["name"]) and p["content"].strip()]
+    rows = {s.name: s for s in db.scalars(select(Skill).where(Skill.installed_by == BUILTIN))}
+    stats = {"created": 0, "updated": 0, "removed": 0, "skipped": 0}
+    for pkg in pkgs:
+        sk = rows.pop(pkg["name"], None)
+        if sk is None:
+            if db.scalar(select(Skill.id).where(Skill.owner_id == admin.id, Skill.name == pkg["name"])):
+                stats["skipped"] += 1  # the admin has their own skill with this name
+                continue
+            sk = Skill(owner_id=admin.id, name=pkg["name"], installed_by=BUILTIN, visibility=Visibility.public,
+                       enabled=True, files={})
+            db.add(sk)
+            stats["created"] += 1
+        elif (sk.description, sk.content, sk.files or {}, sk.license) != (
+                pkg["description"], pkg["content"], pkg["files"], pkg["license"]):
+            stats["updated"] += 1
+        else:
+            continue
+        sk.description, sk.content, sk.files, sk.license = pkg["description"], pkg["content"], pkg["files"], pkg["license"]
+        sk.source_url = None
+    for sk in rows.values():  # no longer shipped with the hub
+        db.delete(sk)
+        stats["removed"] += 1
+    db.commit()
+    return stats
+
+
+def restore_builtin(db, sk: Skill) -> Skill:
+    """Reset a built-in skill to the content shipped with the hub."""
+    pkg = next((p for p in builtin_packages() if p["name"] == sk.name), None)
+    if pkg is None:
+        raise SkillError("Esta skill ya no viene incluida en el hub")
+    sk.description, sk.content, sk.files, sk.license = pkg["description"], pkg["content"], pkg["files"], pkg["license"]
+    db.flush()
+    return sk

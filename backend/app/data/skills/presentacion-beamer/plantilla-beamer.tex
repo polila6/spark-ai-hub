@@ -1,0 +1,104 @@
+% Plantilla de presentación Beamer 16:9 en español.
+%   latexmk -pdf -interaction=nonstopmode -halt-on-error presentacion.tex
+\documentclass[aspectratio=169,11pt]{beamer}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{lmodern}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\sisetup{output-decimal-marker={,}}
+\usetheme{Madrid}
+\usecolortheme{beaver}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{caption}[numbered]
+
+\title[Título corto]{Título completo del trabajo}
+\subtitle{Trabajo Fin de Máster}
+\author[N. Apellido]{Nombre Apellido\\ \small Director/a: Nombre Apellido}
+\institute[Universidad]{Escuela / Departamento\\ Universidad}
+\date{\today}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{Índice}
+  \tableofcontents
+\end{frame}
+
+\section{Motivación}
+\begin{frame}{Por qué importa el problema}
+  \begin{itemize}
+    \item Contexto en una línea
+    \item El problema concreto y su coste
+    \item<2-> Lo que falta en el estado del arte
+  \end{itemize}
+\end{frame}
+
+\section{Objetivos}
+\begin{frame}{Objetivos}
+  \begin{block}{Objetivo general}
+    Desarrollar y validar \dots
+  \end{block}
+  \begin{enumerate}
+    \item Objetivo específico 1
+    \item Objetivo específico 2
+  \end{enumerate}
+\end{frame}
+
+\section{Método}
+\begin{frame}{Método en tres pasos}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \begin{enumerate}
+        \item Adquisición de datos
+        \item Modelo: $y = \beta_0 + \beta_1 x + \varepsilon$
+        \item Validación cruzada ($k=5$)
+      \end{enumerate}
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \centering
+      % \includegraphics[width=\linewidth]{figuras/esquema.pdf}
+      \fbox{\rule{0pt}{3cm}\rule{0.8\linewidth}{0pt}}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\section{Resultados}
+\begin{frame}{El modelo reduce el error un 35\,\%}
+  \centering
+  \begin{tabular}{lcc}
+    \toprule
+    Modelo & RMSE & $R^2$ \\
+    \midrule
+    Referencia & \num{0.52} & \num{0.71} \\
+    Propuesto  & \num{0.34} & \num{0.86} \\
+    \bottomrule
+  \end{tabular}
+\end{frame}
+
+\section{Conclusiones}
+\begin{frame}{Conclusiones}
+  \begin{enumerate}
+    \item Conclusión que responde al objetivo 1
+    \item Conclusión que responde al objetivo 2
+  \end{enumerate}
+  \vfill
+  \begin{alertblock}{Trabajo futuro}
+    Validación con más datos.
+  \end{alertblock}
+\end{frame}
+
+\begin{frame}
+  \centering\Huge ¡Gracias!\\[1em]
+  \normalsize ¿Preguntas?
+\end{frame}
+
+\appendix
+\begin{frame}{Diapositiva de reserva}
+  Detalles para preguntas previsibles del tribunal.
+\end{frame}
+
+\end{document}

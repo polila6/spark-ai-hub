@@ -1,0 +1,84 @@
+% Plantilla de informe técnico / memoria en español. Compilar con:
+%   latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex
+\documentclass[11pt,a4paper]{report}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-tabla]{babel}
+\usepackage{lmodern,microtype}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx,booktabs,array}
+\usepackage{xcolor}
+\usepackage{siunitx}
+\sisetup{output-decimal-marker={,}}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\nouppercase{\leftmark}}
+\fancyfoot[C]{\thepage}
+\setlength{\headheight}{14pt}
+\usepackage[style=apa,backend=biber]{biblatex}
+\addbibresource{referencias.bib}
+\usepackage[hidelinks]{hyperref}
+\usepackage[spanish,noabbrev]{cleveref}
+
+\title{Título del informe\\[0.5em]\large Subtítulo o proyecto}
+\author{Nombre Apellido\\ Departamento, Universidad}
+\date{\today}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+Resumen de 150--250 palabras: contexto, objetivo, método, resultados principales (con cifras) y conclusión.
+\end{abstract}
+
+\tableofcontents
+
+\chapter{Introducción}
+\label{cap:intro}
+Contexto y motivación. Estado de la cuestión \parencite{ejemplo2023}. Objetivo del trabajo.
+
+\chapter{Materiales y métodos}
+\label{cap:metodos}
+Descripción reproducible de equipos, materiales, procedimiento y análisis de datos.
+
+\chapter{Resultados}
+\label{cap:resultados}
+Los resultados se resumen en la \cref{tab:resumen} y la \cref{fig:ejemplo}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Resumen de resultados (media $\pm$ DE).}
+  \label{tab:resumen}
+  \begin{tabular}{lcc}
+    \toprule
+    Ensayo & Valor (\si{\mega\pascal}) & $n$ \\
+    \midrule
+    A & $\num{250.3} \pm \num{4.1}$ & 5 \\
+    B & $\num{198.7} \pm \num{6.3}$ & 5 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+  \centering
+  % \includegraphics[width=0.75\linewidth]{figuras/ejemplo.pdf}
+  \fbox{\rule{0pt}{4cm}\rule{0.6\linewidth}{0pt}}
+  \caption{Pie de figura descriptivo (qué se muestra y en qué condiciones).}
+  \label{fig:ejemplo}
+\end{figure}
+
+\chapter{Discusión}
+Interpretación, comparación con trabajos previos y limitaciones.
+
+\chapter{Conclusiones}
+Conclusiones numeradas que respondan a los objetivos y trabajo futuro.
+
+\printbibliography[heading=bibintoc,title={Referencias}]
+
+\appendix
+\chapter{Datos adicionales}
+Material complementario.
+
+\end{document}

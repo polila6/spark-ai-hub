@@ -290,6 +290,13 @@ def main() -> None:
         scheduler.reconcile()
     except Exception as e:  # noqa: BLE001
         log.warning("worker.reconcile_failed", error=str(e))
+    try:  # skills shipped with the hub (app/data/skills) -> public skills of the first admin
+        from ..services import skills as skills_svc
+
+        with SessionLocal() as db:
+            log.info("worker.builtin_skills", **skills_svc.sync_builtin(db))
+    except Exception as e:  # noqa: BLE001
+        log.warning("worker.builtin_skills_failed", error=str(e))
     signal.signal(signal.SIGTERM, lambda *_: _stop.set())
     signal.signal(signal.SIGINT, lambda *_: _stop.set())
     threading.Thread(target=_heartbeat, daemon=True).start()

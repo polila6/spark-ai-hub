@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       fonts-dejavu fonts-liberation poppler-utils qpdf imagemagick ghostscript socat \
       texlive-latex-base texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended texlive-fonts-extra \
       texlive-lang-spanish texlive-lang-english texlive-xetex texlive-luatex texlive-science texlive-pictures \
-      texlive-bibtex-extra texlive-plain-generic latexmk biber lmodern cm-super \
+      texlive-bibtex-extra texlive-plain-generic texlive-publishers latexmk biber lmodern cm-super \
+      fonts-crosextra-carlito fonts-crosextra-caladea \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt && pip freeze > /opt/sandbox-freeze.txt

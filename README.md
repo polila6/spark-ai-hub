@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.9.0-76b900">
+  <img alt="version" src="https://img.shields.io/badge/version-0.9.1-76b900">
   <img alt="platform" src="https://img.shields.io/badge/platform-DGX%20Spark%20(GB10%2C%20aarch64)-76b900">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="stack" src="https://img.shields.io/badge/stack-FastAPI%20%C2%B7%20Next.js%20%C2%B7%20vLLM%20%C2%B7%20Docker-555">
@@ -48,8 +48,13 @@ without sending a single prompt to an external AI service.
   or the lighter Qwen3.5-35B-A3B FP8), chosen in one click on the **Main model** card; others load on demand.
 - **Attach anything**: images, PDFs (scanned ones too), Word, PowerPoint, Excel/CSV, code. Ask questions over data with sandboxed SQL.
 - **Web search** through a private [SearXNG](https://github.com/searxng/searxng) inside the hub; pages and PDFs are read and cited. SSRF-safe: internal addresses are never fetched.
-- **Agents**: the assistant delegates to sub-agents (researcher, writer, analyst, reviewer, or your own) — several **in parallel**, with live progress and a report each.
-- **Skills**: install [Agent Skills](https://github.com/anthropics/skills) from GitHub or a link, write your own, or let the model find and install the one it needs.
+- **Agents**: the assistant delegates to 20 built-in sub-agents (researcher, programmer, tester, debugger, statistician,
+  scientific writer, LaTeX typesetter, translator, fact-checker…) or your own — several **in parallel**, with live
+  progress and a report each. In a Workspace they write and run code too, each in its own files.
+- **Skills**: 17 built in (LaTeX reports and Beamer, Excel with charts, Word, PowerPoint, publication plots, statistics,
+  IMRaD papers, BibTeX, grant proposals, theses, peer review, teaching rubrics…); install more
+  [Agent Skills](https://github.com/anthropics/skills) from GitHub or a link, write your own, or let the model find
+  and install the one it needs.
 - **Workspace — a remote harness in the browser**: your own persistent folders on the Spark with files, editor, previews (Excel, PDF, images, HTML), a terminal and an assistant that writes, runs and fixes code there. Upload a CSV, ask for "an Excel with a monthly summary and a chart" or "a LaTeX report" and download it; it can `pip install` / `npm install` what it needs (PyPI and npm only).
 - **Runs code safely**: calculations, charts and real files (Excel, Word, PowerPoint, PDF) from a sandbox with no network; images appear in the chat, files go to your drive. Skills can run their own scripts.
 - **Canvas**: reports, letters and programs open beside the chat — edit, ask for changes, restore versions, export to **Word, PDF, Markdown or HTML**.
