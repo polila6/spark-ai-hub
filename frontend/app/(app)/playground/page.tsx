@@ -469,7 +469,7 @@ function Chat() {
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
           <Button size="icon" variant="ghost" className="lg:hidden" aria-label={L("Conversaciones", "Conversations")} onClick={() => setDrawer(true)}><MessagesSquare className="h-5 w-5 text-accent" /></Button>
           <Button size="sm" variant="ghost" className="lg:hidden" onClick={newChat}><MessageSquarePlus className="h-4 w-4" /></Button>
-          <Select aria-label={t("common.model")} className="h-8 w-auto min-w-0 max-w-[60vw] border-transparent bg-transparent text-sm font-medium hover:bg-elevated sm:max-w-none" value={model} onChange={(e) => setModel(e.target.value)}>
+          <Select aria-label={t("common.model")} className="h-8 w-auto min-w-0 max-w-[60vw] border-transparent bg-transparent text-sm font-medium hover:bg-elevated sm:max-w-[380px]" value={model} onChange={(e) => setModel(e.target.value)}>
             {chatModels.length === 0 && <option value="">{t("play.select_model")}</option>}
             {chatModels.map((m: any) => <option key={m.id} value={m.alias}>{m.alias === generalModel ? "★ " : ""}{m.alias}{m.capabilities.includes("vision") ? " 👁" : ""}{m.tools_enabled ? " 🛠" : ""}{m.runtime ? ` · ${L("en memoria", "loaded")}` : ` · ${L("hay que cargarlo", "needs loading")}`}</option>)}
           </Select>
