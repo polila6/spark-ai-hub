@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Spark AI Hub operations helper.  Usage: scripts/sah.sh <command>
-#   status | up | down | restart [svc] | logs [svc] | build | build-engines | backup | reset-link <user> | update | test | unit
+#   status | up | down | restart [svc] | logs [svc] | build | build-engines | backup | reset-link <user> | update | test | unit | tailnet-install
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DC="docker compose"
@@ -13,6 +13,13 @@ case "${1:-status}" in
   down)     # Stops the hub. On-demand engine containers (sah-*) are stopped too. Data is kept.
             docker ps -q --filter label=sah.managed=true | xargs -r docker stop; $DC down ;;
   restart)  shift; $DC restart "$@" ;;
+  tailnet-install)  # follow Tailscale changes (address, account) automatically: every minute, also before anyone logs in
+            UD="$HOME/.config/systemd/user"; mkdir -p "$UD"
+            printf '[Unit]\nDescription=Spark AI Hub: follow this machine'"'"'s Tailscale identity\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/python3 %s/scripts/tailnet-sync.py\n' "$PWD" > "$UD/sah-tailnet-sync.service"
+            printf '[Unit]\nDescription=Spark AI Hub: Tailscale sync every minute\n\n[Timer]\nOnBootSec=20s\nOnUnitActiveSec=60s\nAccuracySec=5s\n\n[Install]\nWantedBy=timers.target\n' > "$UD/sah-tailnet-sync.timer"
+            systemctl --user daemon-reload && systemctl --user enable --now sah-tailnet-sync.timer
+            loginctl enable-linger "$USER" 2>/dev/null || echo "Run once: sudo loginctl enable-linger $USER (so it also runs before anyone logs in)"
+            python3 scripts/tailnet-sync.py; python3 scripts/tailnet-sync.py --status ;;
   logs)     shift; $DC logs -f --tail 200 "$@" ;;
   build)    $DC build && $DC -f compose.yaml -f compose.optional.yaml --profile sandbox build sandbox ;;
   build-engines) $DC -f compose.yaml -f compose.optional.yaml --profile engines --profile sandbox build comfyui mlworker sandbox ;;
@@ -44,7 +51,7 @@ with SessionLocal() as db:
     print(f"{get_settings().public_base_url}/invite/{t}  (valid 1 h)")
 PY
             ;;
-  update)   git pull --ff-only && dirs && $DC build && $DC -f compose.yaml -f compose.optional.yaml --profile sandbox build sandbox && $DC up -d ;;   # migrations run automatically on backend start
+  update)   git pull --ff-only && dirs && $DC build && $DC -f compose.yaml -f compose.optional.yaml --profile sandbox build sandbox && $DC up -d && "$0" tailnet-install ;;   # migrations run automatically on backend start
   unit)     docker run --rm --user 1000:1000 -e HOME=/tmp -v "$PWD/backend:/app" -w /app spark-ai-hub/backend:"${SAH_VERSION:-0.1.0}" \
               sh -c "pip install -q --user pytest==9.2.0 && python -m pytest -q tests" ;;
   test)     .venv-tests/bin/pytest -v tests/acceptance ;;

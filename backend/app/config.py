@@ -1,6 +1,7 @@
 """Application configuration loaded from environment variables and secret files."""
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
 
@@ -110,3 +111,28 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+_tailnet: tuple[float, dict] = (0.0, {})
+
+
+def tailnet_state() -> dict:
+    """What scripts/tailnet-sync.py last saw on the host (address, account, Serve); {} if it is not installed."""
+    global _tailnet
+    path = get_settings().data_root / "run" / "tailnet.json"
+    try:
+        mtime = path.stat().st_mtime
+        if mtime != _tailnet[0]:
+            _tailnet = (mtime, json.loads(path.read_text()))
+    except (OSError, ValueError):
+        return {}
+    return _tailnet[1]
+
+
+def public_base_url() -> str:
+    """The address people use to open the hub. A Tailscale address follows the machine live (no restart when the
+    account or tailnet changes); a custom SAH_PUBLIC_BASE_URL always wins."""
+    url = get_settings().public_base_url
+    if url.endswith(".ts.net") or "localhost" in url or "127.0.0.1" in url:
+        return tailnet_state().get("url") or url
+    return url

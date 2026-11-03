@@ -226,13 +226,13 @@ def call_tool(user_id: uuid.UUID, name: str, args: dict) -> list[dict]:
     if job.status != JobStatus.completed:
         raise ToolError(f"Image generation {job.status.value}: {job.error or ''}")
     art = next(a for a in job.result["artifacts"] if a["kind"] == "image")
-    from ..config import get_settings
+    from ..config import get_settings, public_base_url
     from ..models import Artifact
 
     with SessionLocal() as db:
         a = db.get(Artifact, uuid.UUID(art["id"]))
         data = (get_settings().data_root / a.path).read_bytes()
-    url = f"{get_settings().public_base_url}{art['url']}"
+    url = f"{public_base_url()}{art['url']}"
     return [{"type": "image", "data": base64.b64encode(data).decode(), "mimeType": art["mime"]},
             _text(f"Image generated with {wf_id} in {job.result['meta']['generation_seconds']} s: {url}")]
 

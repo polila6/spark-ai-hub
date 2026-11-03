@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.10.2 — 2026-11-03
+Publishes the 0.10.1 changes below: the v0.10.1 tag was created by mistake on the 0.10.0 code. No other changes.
+
+## 0.10.1 — 2026-11-03
+Follows Tailscale changes by itself; OpenClaw and Hermes in Connect tools.
+
+* **Automatic Tailscale sync** (`scripts/tailnet-sync.py`, a timer installed by `sah.sh tailnet-install`): when the
+  account, tailnet name or IP changes, the hub's address (read live, no restart), `.env`, Tailscale Serve, Sunshine's
+  `bind_address` and the Android app follow, and managers are notified. Custom addresses are left alone.
+  `scripts/tailnet-root-setup.sh` (once, with sudo) keeps the permission Serve needs across account changes.
+* **Hub address card** (Settings → Access and mail): address, account, IP, whether it is reachable, and step-by-step
+  fixes for what needs a person (enable HTTPS on the tailnet, operator permission, disable key expiry).
+* **Connect tools**: new **OpenClaw** and **Hermes Agent** guides; the API key is now written directly in everything you
+  copy (Aider, Python and LangChain used environment variables).
+
 ## 0.10.0 — 2026-11-02
 Tasks that run until they are done, a live activity panel, messages added to a running task, reliable web reading.
 

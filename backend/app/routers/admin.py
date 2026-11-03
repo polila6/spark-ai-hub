@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..audit import audit
-from ..config import get_settings
+from ..config import get_settings, public_base_url, tailnet_state
 from ..db import get_db
 from ..deps import Principal, current_principal, require_admin
 from ..logging_setup import redact
@@ -116,6 +116,12 @@ def hf_cache_gc(body: GcIn, request: Request, p: Principal = Depends(require_adm
 # ------------------------------------------------------------------ settings
 
 
+@router.get("/api/v1/admin/access")
+def access_status(_: Principal = Depends(require_admin)):
+    """How people reach the hub: the address in use and what the host's Tailscale sync last saw."""
+    return {"url": public_base_url(), "tailnet": tailnet_state() or None}
+
+
 @router.get("/api/v1/admin/settings")
 def get_settings_api(_: Principal = Depends(require_admin), db: Session = Depends(get_db)):
     return all_settings(db)
@@ -128,7 +134,7 @@ def public_settings(_: Principal = Depends(current_principal), db: Session = Dep
             "web_search_enabled", "skills_enabled", "skills_auto_install", "agents_enabled", "max_parallel_agents",
             "code_exec_enabled")
     out = {k: get_setting(db, k) for k in keys}
-    out["public_base_url"] = get_settings().public_base_url
+    out["public_base_url"] = public_base_url()
     out["mail_enabled"] = mailer.mail_enabled(db)
     return out
 

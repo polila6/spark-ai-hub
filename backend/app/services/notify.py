@@ -6,7 +6,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..config import get_settings
+from ..config import public_base_url
 from ..models import Notification, Role, User
 from ..redis_client import publish
 from . import mailer
@@ -23,7 +23,7 @@ def notify(db: Session, user_id: uuid.UUID, kind: str, title: str, body: str = "
     db.flush()
     user = db.get(User, user_id)
     if email and user and user.email and (user.preferences or {}).get("email_notifications", True):
-        full = f"{get_settings().public_base_url}{link}" if link and link.startswith("/") else (link or "")
+        full = f"{public_base_url()}{link}" if link and link.startswith("/") else (link or "")
         mailer.send_template(db, "notification", user.email, user_lang(user),
                              {"title": title, "body": body, "link_line": full})
     try:
@@ -41,3 +41,20 @@ def notify_managers(db: Session, kind: str, title: str, body: str = "", link: st
                     data: dict | None = None, email: bool = True) -> None:
     for u in managers(db):
         notify(db, u.id, kind, title, body, link, data, email=email)
+
+
+def announce_address_change(db: Session) -> bool:
+    """Tell the managers when the hub's address changes (new Tailscale account or tailnet name)."""
+    from ..settings_store import get_setting, set_setting
+
+    url, last = public_base_url(), get_setting(db, "last_public_url")
+    if url == last:
+        return False
+    set_setting(db, "last_public_url", url)
+    if last:
+        notify_managers(db, "system", "Ha cambiado la dirección del hub",
+                        f"Nueva dirección: {url}\nAntes: {last}\nInvitaciones, correos y enlaces ya usan la nueva. Avisa a tu "
+                        "equipo: deben abrir la nueva dirección, volver a iniciar sesión y volver a copiar la configuración de sus "
+                        "herramientas (Conectar herramientas). Sus claves API siguen siendo válidas.", link="/settings")
+    db.commit()
+    return bool(last)

@@ -31,4 +31,5 @@ echo "[3/3] Configuring tailnet-only HTTPS: https:443 -> http://127.0.0.1:${PROX
 tailscale serve --bg --https=443 "http://127.0.0.1:${PROXY_PORT}"
 tailscale serve status
 
+bash "$(dirname "$0")/tailnet-root-setup.sh" "${OWNER}"   # keep the permission when the Tailscale account changes
 echo "Done. Rollback: tailscale serve --https=443 off; tailscale set --operator=; (data kept in ${DATA_ROOT})"

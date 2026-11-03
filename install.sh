@@ -122,6 +122,9 @@ echo
 [[ "${ok:-0}" == 1 ]] || die "The hub did not become healthy. Check: docker compose ps; docker compose logs backend"
 
 PW_FILE="$DATA_ROOT/config/secrets/admin_password"
+# Follow later changes of the Tailscale account or address by itself.
+[[ $TS == 1 ]] && { scripts/sah.sh tailnet-install >/dev/null || warn "Could not install the Tailscale sync (scripts/sah.sh tailnet-install)."; }
+
 cat <<EOF
 
   ✅ Spark AI Hub is running.
@@ -131,10 +134,10 @@ cat <<EOF
   Password:  cat $PW_FILE      (change it after the first login)
 
   Next steps (also shown in the app, "Help" page):
-   1. Discover models → search "Qwen3.5-35B-A3B-FP8" → Install, then pin it as the general model
-      (Library → model → "Pin"). It answers chat, agents, OpenCode and Claude Code.
+   1. Models → "Main model" card → Change → pick a model → "Download and make main". It answers chat, agents,
+      OpenCode and Claude Code.
    2. Settings → Users: invite people by e-mail, or allow sign-up requests.
-   3. Connect tools: OpenCode, Claude Code, Cline, Continue, Python… with a personal API key.
+   3. Connect tools: OpenCode, OpenClaw, Hermes, Claude Code, Cline, Continue, Python… with a personal API key.
 
   Operations: scripts/sah.sh status | logs backend | backup | update
 EOF

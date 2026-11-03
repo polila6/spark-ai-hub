@@ -91,6 +91,13 @@ def _maintenance() -> None:
         except Exception as e:  # noqa: BLE001
             log.warning("worker.reconcile_failed", error=str(e))
         try:
+            from ..services import notify
+
+            with SessionLocal() as db:
+                notify.announce_address_change(db)
+        except Exception as e:  # noqa: BLE001
+            log.warning("worker.address_check_failed", error=str(e))
+        try:
             from ..services import mailer
 
             with SessionLocal() as db:

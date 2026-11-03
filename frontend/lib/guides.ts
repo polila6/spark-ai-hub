@@ -294,8 +294,8 @@ export const GUIDES: Record<string, GuideDef> = {
   },
   connect: {
     title: b("Conectar herramientas", "Connect tools"),
-    intro: b("Usa los modelos y tu nube personal desde tu editor o agente favorito: OpenCode, Claude Code, Continue, Cline, Aider, Cursor, Python… Elige la herramienta y tu sistema operativo y sigue los pasos.",
-      "Use the models and your personal cloud from your favourite editor or agent: OpenCode, Claude Code, Continue, Cline, Aider, Cursor, Python… Pick the tool and your operating system and follow the steps."),
+    intro: b("Usa los modelos y tu nube personal desde tu editor o agente favorito: OpenCode, OpenClaw, Hermes, Claude Code, Continue, Cline, Aider, Cursor, Python… Elige la herramienta y tu sistema operativo y sigue los pasos.",
+      "Use the models and your personal cloud from your favourite editor or agent: OpenCode, OpenClaw, Hermes, Claude Code, Continue, Cline, Aider, Cursor, Python… Pick the tool and your operating system and follow the steps."),
     steps: [
       b("Requisito: tu ordenador debe tener Tailscale conectado (como para abrir esta web).", "Requirement: your computer must have Tailscale connected (as for opening this website)."),
       b("Crea una clave con el botón de esta página (o pega una tuya): se escribe tal cual dentro de la configuración, sin variables de entorno. Ese archivo pasa a contener un secreto: no lo compartas ni lo subas a git.", "Create a key with this page's button (or paste one of yours): it is written as is into the configuration, no environment variables. That file now holds a secret: do not share it or commit it to git."),
@@ -303,6 +303,7 @@ export const GUIDES: Record<string, GuideDef> = {
       b("Elige herramienta y sistema operativo, copia la configuración en el archivo indicado (OpenCode: %USERPROFILE%\\.config\\opencode\\opencode.json en Windows, ~/.config/opencode/opencode.json en macOS/Linux) y reinicia la herramienta. En OpenCode, /models muestra el modelo elegido.", "Choose tool and operating system, copy the configuration into the file shown (OpenCode: %USERPROFILE%\\.config\\opencode\\opencode.json on Windows, ~/.config/opencode/opencode.json on macOS/Linux) and restart the tool. In OpenCode, /models shows the chosen model."),
       b("Para cambiar de modelo más adelante, vuelve aquí, elige otro, copia de nuevo el archivo entero y reinicia la herramienta.", "To change model later, come back here, pick another one, copy the whole file again and restart the tool."),
       b("Ejecuta la comprobación final: si responde, está todo bien.", "Run the final check: if it answers, everything is fine."),
+      b("Si cambia la dirección del hub (por ejemplo, nueva cuenta de Tailscale), abre la nueva, vuelve a copiar la configuración desde aquí y sustituye el archivo. Tu clave sigue siendo válida; basta con pegarla.", "If the hub's address changes (for example a new Tailscale account), open the new one, copy the configuration again from here and replace the file. Your key stays valid; just paste it."),
     ],
     tips: [b("¿Tu agente se queda sin contexto? La configuración ya incluye la ventana real del modelo; en OpenCode escribe /compact para resumir la sesión. Si sigue quedándose corta, un administrador puede ampliarla en Biblioteca → (modelo) → «Ventana de contexto».", "Your agent runs out of context? The configuration already includes the model's real window; in OpenCode type /compact to summarise the session. If it is still too short, an administrator can raise it in Library → (model) → “Context window”.")],
   },

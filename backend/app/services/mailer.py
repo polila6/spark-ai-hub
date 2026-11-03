@@ -15,7 +15,7 @@ from email.utils import formataddr, make_msgid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..config import get_settings
+from ..config import get_settings, public_base_url
 from ..logging_setup import log
 from ..models import EmailOutbox
 from ..settings_store import get_setting
@@ -177,7 +177,7 @@ def render(kind: str, lang: str, ctx: dict) -> tuple[str, str, str]:
     lang = lang if lang in _T else "es"
     subject, intro, lines = _T[lang][kind]
     org = get_settings().org_name.strip()
-    c = _Safe({"base": get_settings().public_base_url, "org_de": f" de {org}" if org else "",
+    c = _Safe({"base": public_base_url(), "org_de": f" de {org}" if org else "",
                "org_of": f" of {org}" if org else "", **ctx})
     c.setdefault("share", "")
     if not c.get("share"):

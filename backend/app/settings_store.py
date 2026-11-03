@@ -40,6 +40,7 @@ DEFAULTS: dict[str, Any] = {
     "signup_allowed_domains": [],  # empty = any e-mail domain
     "terms_version": 1,
     "terms_text": None,  # markdown shown at first login; None = built-in default text
+    "last_public_url": None,  # last address announced to the managers (see notify.announce_address_change)
     "tailscale_share_url": None,  # optional multi-use device-share link pasted from the Tailscale console
     "tailscale_device_id": None,  # node id used with the optional Tailscale API key to create per-user invites
     # Outgoing e-mail (typically your organisation's SMTP server, port 587 STARTTLS with your mail user name)

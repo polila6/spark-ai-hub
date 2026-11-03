@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..audit import audit
-from ..config import get_settings
+from ..config import public_base_url
 from ..db import get_db
 from ..deps import Principal, require_admin, require_manager, session_principal
 from ..models import ApiKey, Invitation, Job, JobStatus, ResourcePolicy, Role, User, UserSession
@@ -55,7 +55,7 @@ def _invite(db: Session, user: User, kind: str, actor: User, hours: int = 72) ->
     db.add(Invitation(token_hash=token_digest(token), kind=kind, user_id=user.id, created_by=actor.id,
                       expires_at=datetime.now(timezone.utc) + timedelta(hours=hours)))
     db.commit()
-    return f"{get_settings().public_base_url}/invite/{token}"
+    return f"{public_base_url()}/invite/{token}"
 
 
 def _guard_target(p: Principal, user: User, new_role: Role | None = None) -> None:

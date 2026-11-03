@@ -21,13 +21,6 @@ function detectOS(): OS {
   return "linux";
 }
 
-function envStep(c: Ctx, name: string, value: string): Step {
-  if (c.os === "windows")
-    return { text: c.L(`Guarda la clave como variable de entorno (PowerShell; cierra y vuelve a abrir la terminal después):`, `Store the key as an environment variable (PowerShell; close and reopen the terminal afterwards):`), code: `setx ${name} "${value}"`, lang: "powershell" };
-  const rc = c.os === "macos" ? "~/.zshrc" : "~/.bashrc";
-  return { text: c.L(`Guarda la clave como variable de entorno (añádela a ${rc} y abre una terminal nueva):`, `Store the key as an environment variable (add it to ${rc} and open a new terminal):`), code: `echo 'export ${name}="${value}"' >> ${rc}`, lang: "bash" };
-}
-
 function cfgPath(c: Ctx, unix: string, win: string) {
   return c.os === "windows" ? win : unix;
 }
@@ -47,6 +40,23 @@ function openCodeModel(m: any, c: Ctx) {
   const tag = m.alias === c.main ? c.L("principal", "main") : isLoaded(m) ? c.L("cargado", "loaded") : c.L("bajo demanda", "on demand");
   return { name: `${m.alias} (Spark · ${Math.round(ctx / 1024)}k · ${tag})`, limit: { context: ctx, output: Math.min(32768, Math.floor(ctx / 8)) },
     ...(m.reasoning ? { reasoning: true } : {}), ...(m.tools_enabled ? { tool_call: true } : {}) };
+}
+
+/** OpenClaw (~/.openclaw/openclaw.json): custom OpenAI-compatible provider with the key written in the file. */
+function openClawConfig(c: Ctx) {
+  const m = c.models.find((x) => x.alias === c.model);
+  const ctx = ctxFor(m);
+  return { agents: { defaults: { model: { primary: `spark/${c.model}` } } },
+    models: { providers: { spark: { baseUrl: `${c.base}/v1`, apiKey: c.key, api: "openai-completions", timeoutSeconds: 1800,
+      models: [{ id: c.model, name: `${c.model} (Spark)`, reasoning: !!m?.reasoning, input: m?.capabilities?.includes("vision") ? ["text", "image"] : ["text"],
+        contextWindow: ctx, maxTokens: Math.min(32768, Math.floor(ctx / 8)) }] } } },
+    mcp: { servers: { "spark-cloud": { url: `${c.base}/mcp`, transport: "streamable-http", headers: { Authorization: `Bearer ${c.key}` } } } } };
+}
+
+/** Hermes Agent (~/.hermes/config.yaml): custom endpoint with the key written in the file. */
+function hermesConfig(c: Ctx) {
+  const ctx = ctxFor(c.models.find((x) => x.alias === c.model));
+  return `model:\n  default: ${c.model}\n  provider: custom\n  base_url: ${c.base}/v1\n  api_key: ${c.key}\n  context_length: ${ctx}\n\nmcp_servers:\n  spark_cloud:\n    url: ${c.base}/mcp\n    headers:\n      Authorization: "Bearer ${c.key}"\n`;
 }
 
 function openCodeConfig(c: Ctx) {
@@ -80,6 +90,30 @@ const TOOLS: ToolDef[] = [
         { text: c.L("¿Quieres cambiar de modelo más adelante? Vuelve a esta página, elige otro en «¿Qué modelo quieres usar en OpenCode?», copia de nuevo el archivo entero y reinicia OpenCode.", "Want to change model later? Come back to this page, pick another one in “Which model do you want to use in OpenCode?”, copy the whole file again and restart OpenCode.") },
         ...(chosen && chosen.alias !== c.main ? [{ text: c.L(`Aviso: «${c.model}» no es el modelo principal. Se carga bajo demanda: la primera respuesta puede tardar de 1 a 6 minutos (OpenCode espera hasta 30 min gracias a «headerTimeout») y, si no cabe en memoria, puede descargar otros modelos. Para respuestas inmediatas usa el principal («${c.main}»).`, `Note: “${c.model}” is not the main model. It loads on demand: the first answer may take 1 to 6 minutes (OpenCode waits up to 30 min thanks to “headerTimeout”) and, if memory is short, other models may be unloaded. For instant answers use the main one (“${c.main}”).`) }] : []),
         { text: c.L(`Contexto: este modelo admite ${ctxFor(chosen)} tokens por petición (ya está en el archivo). Al acercarse al límite OpenCode resume la sesión solo; también puedes escribir /compact cuando quieras. Si se te queda corto, un administrador puede ampliarlo en Modelos → (el modelo) → «Ventana de contexto»; después vuelve a copiar este archivo.`, `Context: this model accepts ${ctxFor(chosen)} tokens per request (already in the file). Near the limit OpenCode summarises the session on its own; you can also type /compact. If it is too short, an administrator can raise it in Models → (the model) → “Context window”; then copy this file again.`) },
+      ];
+    },
+  },
+  {
+    id: "openclaw", name: "OpenClaw", kind: "agent", desc: ["Asistente personal autónomo con pasarela propia (chat, mensajería, herramientas).", "Autonomous personal assistant with its own gateway (chat, messaging, tools)."],
+    steps: (c) => {
+      const win = c.os === "windows";
+      return [
+        { text: c.L(win ? "Instala OpenClaw (necesita Node 22 o superior; en Windows se recomienda dentro de WSL2):" : "Instala OpenClaw (necesita Node 22 o superior):", win ? "Install OpenClaw (needs Node 22 or later; on Windows WSL2 is recommended):" : "Install OpenClaw (needs Node 22 or later):"), code: "npm install -g openclaw@latest", lang: "bash" },
+        { text: c.L("Abre su archivo de configuración:", "Open its configuration file:"), code: win ? `notepad "$env:USERPROFILE\\.openclaw\\openclaw.json"` : "mkdir -p ~/.openclaw && nano ~/.openclaw/openclaw.json", lang: win ? "powershell" : "bash" },
+        { text: c.L("Pega esto (si el archivo ya tiene contenido, añade estos bloques). Ya lleva tu clave, el modelo y tu nube personal por MCP:", "Paste this (if the file has content, merge these blocks). It already has your key, the model and your personal cloud over MCP:"), code: JSON.stringify(openClawConfig(c), null, 2), lang: "json" },
+        { text: c.L("La pasarela aplica los cambios sola. Comprueba que aparece el modelo y úsalo:", "The gateway applies changes by itself. Check the model is listed and use it:"), code: `openclaw models list\nopenclaw models set spark/${c.model}`, lang: "bash" },
+      ];
+    },
+  },
+  {
+    id: "hermes", name: "Hermes Agent", kind: "agent", desc: ["Agente de Nous Research con memoria y skills.", "Nous Research agent with memory and skills."],
+    steps: (c) => {
+      const win = c.os === "windows";
+      return [
+        { text: c.L("Instala Hermes:", "Install Hermes:"), code: win ? "iex (irm https://hermes-agent.nousresearch.com/install.ps1)" : "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash", lang: win ? "powershell" : "bash" },
+        { text: c.L("Abre su configuración:", "Open its configuration:"), code: win ? `notepad "$env:USERPROFILE\\.hermes\\config.yaml"` : "mkdir -p ~/.hermes && nano ~/.hermes/config.yaml", lang: win ? "powershell" : "bash" },
+        { text: c.L("Pega esto (si ya tiene «model:» o «mcp_servers:», sustitúyelos). Ya lleva tu clave, la ventana real del modelo y tu nube personal por MCP:", "Paste this (if it already has “model:” or “mcp_servers:”, replace them). It already has your key, the model's real window and your personal cloud over MCP:"), code: hermesConfig(c), lang: "yaml" },
+        { text: c.L("Arráncalo:", "Start it:"), code: "hermes", lang: "bash" },
       ];
     },
   },
@@ -132,17 +166,15 @@ const TOOLS: ToolDef[] = [
     id: "aider", name: "Aider", kind: "agent", desc: ["Programación en pareja desde la terminal.", "Pair programming in the terminal."],
     steps: (c) => [
       { text: c.L("Instala Aider:", "Install Aider:"), code: "python -m pip install aider-install && aider-install", lang: "bash" },
-      envStep(c, "OPENAI_API_KEY", c.key),
-      { text: c.L("Ejecútalo en tu repositorio:", "Run it in your repository:"), code: `aider --model openai/${c.model} --openai-api-base ${c.base}/v1`, lang: "bash" },
+      { text: c.L("Ejecútalo en tu repositorio (lleva tu clave: no lo guardes en un script compartido):", "Run it in your repository (it contains your key: do not keep it in a shared script):"), code: `aider --model openai/${c.model} --openai-api-base ${c.base}/v1 --openai-api-key ${c.key}`, lang: "bash" },
     ],
   },
   {
     id: "python", name: "Python / Jupyter", kind: "code", desc: ["SDK oficial de OpenAI (o Anthropic) desde tus scripts y notebooks.", "Official OpenAI (or Anthropic) SDK from your scripts and notebooks."],
     steps: (c) => [
       { text: c.L("Instala el SDK:", "Install the SDK:"), code: "pip install openai", lang: "bash" },
-      envStep(c, "SPARK_API_KEY", c.key),
       { text: c.L("Ejemplo (chat con streaming):", "Example (streaming chat):"), lang: "python",
-        code: `import os\nfrom openai import OpenAI\n\nclient = OpenAI(base_url="${c.base}/v1", api_key=os.environ["SPARK_API_KEY"])\nfor chunk in client.chat.completions.create(\n        model="${c.model}", stream=True,\n        messages=[{"role": "user", "content": "Resume en 3 puntos qué es la memoria unificada"}]):\n    if chunk.choices:\n        print(chunk.choices[0].delta.content or "", end="")` },
+        code: `from openai import OpenAI\n\nclient = OpenAI(base_url="${c.base}/v1", api_key="${c.key}")\nfor chunk in client.chat.completions.create(\n        model="${c.model}", stream=True,\n        messages=[{"role": "user", "content": "Resume en 3 puntos qué es la memoria unificada"}]):\n    if chunk.choices:\n        print(chunk.choices[0].delta.content or "", end="")` },
       { text: c.L("Embeddings (para tu propio RAG):", "Embeddings (for your own RAG):"), lang: "python",
         code: `emb = client.embeddings.create(model="qwen3-embedding-0.6b", input=["texto uno", "texto dos"])\nprint(len(emb.data[0].embedding))` },
     ],
@@ -151,7 +183,7 @@ const TOOLS: ToolDef[] = [
     id: "langchain", name: "LangChain / LlamaIndex", kind: "code", desc: ["Frameworks de agentes y RAG.", "Agent and RAG frameworks."],
     steps: (c) => [
       { text: "pip install langchain-openai", code: "pip install langchain-openai", lang: "bash" },
-      { text: c.L("Uso:", "Usage:"), lang: "python", code: `import os\nfrom langchain_openai import ChatOpenAI, OpenAIEmbeddings\n\nllm = ChatOpenAI(model="${c.model}", base_url="${c.base}/v1", api_key=os.environ["SPARK_API_KEY"])\nemb = OpenAIEmbeddings(model="qwen3-embedding-0.6b", base_url="${c.base}/v1", api_key=os.environ["SPARK_API_KEY"],\n                       check_embedding_ctx_length=False)\nprint(llm.invoke("Hola").content)` },
+      { text: c.L("Uso:", "Usage:"), lang: "python", code: `from langchain_openai import ChatOpenAI, OpenAIEmbeddings\n\nllm = ChatOpenAI(model="${c.model}", base_url="${c.base}/v1", api_key="${c.key}")\nemb = OpenAIEmbeddings(model="qwen3-embedding-0.6b", base_url="${c.base}/v1", api_key="${c.key}",\n                       check_embedding_ctx_length=False)\nprint(llm.invoke("Hola").content)` },
     ],
   },
   {

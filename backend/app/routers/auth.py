@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import audit
-from ..config import get_settings
+from ..config import get_settings, public_base_url
 from ..db import get_db
 from ..deps import CSRF_COOKIE, SESSION_COOKIE, Principal, client_ip, session_principal
 from ..models import Invitation, Role, User, UserSession
@@ -284,7 +284,7 @@ def _link_token(db: Session, user: User, kind: str, hours: int, actor_id=None) -
     db.add(Invitation(token_hash=token_digest(token), kind=kind, user_id=user.id, created_by=actor_id,
                       expires_at=datetime.now(timezone.utc) + timedelta(hours=hours)))
     db.flush()
-    return f"{get_settings().public_base_url}/{'verify' if kind == 'verify' else 'invite'}/{token}"
+    return f"{public_base_url()}/{'verify' if kind == 'verify' else 'invite'}/{token}"
 
 
 @router.get("/signup-info")

@@ -62,6 +62,26 @@ rebuild, re-run smoke tests on installed models (Biblioteca → Prueba rápida) 
 2. If the database schema changed, restore the backup taken before the upgrade (docs/BACKUP_RECOVERY.md §Restore).
 3. Model files are unaffected (weights live in `/srv/spark-ai-hub/models`).
 
+## Changing the Tailscale account or address
+
+`scripts/sah.sh tailnet-install` (run by `install.sh` and `sah.sh update`) installs a systemd user timer that runs
+`scripts/tailnet-sync.py` every minute, also before anyone logs in. When the machine's Tailscale identity changes it
+updates by itself: the address the hub uses (`run/tailnet.json`, read live, no restart: invitations, e-mails, MCP links,
+sign-in callbacks), `SAH_PUBLIC_BASE_URL` in `.env`, Tailscale Serve (tailnet only, never Funnel), Sunshine's
+`bind_address` if it is bound to a Tailscale IP, and the Android app (if the build tools are in
+`cache/android-build`). Managers get a notification. A custom `SAH_PUBLIC_BASE_URL` (not `*.ts.net`) is left alone.
+
+What only a person can do, once per tailnet (Settings → Access and mail → Hub address shows the state and the links):
+
+1. Enable **MagicDNS** and **HTTPS Certificates** in the Tailscale admin console.
+2. Once per machine: `sudo bash scripts/tailnet-root-setup.sh`. Logging in with another account clears Tailscale's
+   "operator" permission; this root timer restores it (it only runs `tailscale set --operator=<user>`), so later account
+   changes need no sudo.
+3. Machines → (the Spark) → **Disable key expiry**, or the machine disconnects when its key expires (180 days by default).
+
+After a change each person opens the new address, signs in again (cookies belong to the old name) and copies their tools'
+configuration again from Connect tools. API keys stay valid; Moonlight must be pointed at the new IP.
+
 ## Removing Tailscale Serve / the hub
 
 ```bash

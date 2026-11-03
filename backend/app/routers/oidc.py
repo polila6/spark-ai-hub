@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import audit
-from ..config import get_settings
+from ..config import get_settings, public_base_url
 from ..db import get_db
 from ..models import Role, User, UserIdentity
 from ..redis_client import get_redis, rate_limit
@@ -59,7 +59,7 @@ def _providers(db: Session) -> dict[str, dict]:
 
 
 def redirect_uri(provider: str) -> str:
-    return f"{get_settings().public_base_url}/api/v1/auth/oidc/{provider}/callback"
+    return f"{public_base_url()}/api/v1/auth/oidc/{provider}/callback"
 
 
 def _discovery(issuer: str) -> dict:

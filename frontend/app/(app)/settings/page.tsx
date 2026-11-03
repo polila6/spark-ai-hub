@@ -71,6 +71,34 @@ function Privacy() {
   );
 }
 
+/** How people reach the hub: live state from the host's Tailscale sync, with the steps to fix what it cannot do alone. */
+function TailnetStatus() {
+  const L = useL();
+  const { data } = useSWR("/api/v1/admin/access", { refreshInterval: 30000 });
+  const t = data?.tailnet;
+  if (!data) return null;
+  const days = t?.key_expiry ? Math.round((new Date(t.key_expiry).getTime() - Date.now()) / 86400000) : null;
+  return (
+    <Card><CardHeader title={L("Dirección del hub", "Hub address")} subtitle={L("Se actualiza sola si cambia la cuenta o el nombre de Tailscale", "Updates by itself if the Tailscale account or name changes")} icon={<Network className="h-4 w-4" />} />
+      <CardBody className="space-y-3 text-sm">
+        <div className="flex flex-wrap items-center gap-2"><Code>{data.url}</Code>
+          {t && <Badge tone={t.serve === "ok" ? "ok" : "danger"}>{t.serve === "ok" ? L("accesible desde el tailnet", "reachable from the tailnet") : L("no accesible aún", "not reachable yet")}</Badge>}</div>
+        {t ? <p className="text-xs text-muted">{L("Cuenta de Tailscale", "Tailscale account")}: {t.account} · IP: {t.ipv4}{t.checked_at ? ` · ${L("comprobado", "checked")} ${new Date(t.checked_at * 1000).toLocaleTimeString()}` : ""}</p>
+          : <Notice tone="warn">{L("El sincronizador automático no está instalado. En el Spark ejecuta:", "The automatic sync is not installed. On the Spark run:")} <Code>scripts/sah.sh tailnet-install</Code></Notice>}
+        {t?.serve === "https_disabled" && <Notice tone="warn"><p className="font-medium">{L("Falta activar HTTPS en esta cuenta de Tailscale (solo una vez):", "HTTPS must be enabled on this Tailscale account (once):")}</p>
+          <ol className="mt-1 list-decimal space-y-1 pl-4 text-xs">
+            <li>{L("Entra con la cuenta", "Sign in with the account")} <b>{t.account}</b> {L("y abre", "and open")} <a className="underline" target="_blank" rel="noreferrer" href={t.serve_url || "https://login.tailscale.com/admin/dns"}>{t.serve_url ? L("este enlace", "this link") : "DNS → HTTPS Certificates"}</a>{L(" (comprueba que MagicDNS y «HTTPS Certificates» estén activados).", " (check MagicDNS and “HTTPS Certificates” are on).")}</li>
+            <li>{L("No hay que hacer nada más: el Spark lo reintenta cada 2 minutos y esta tarjeta se pondrá en verde.", "Nothing else to do: the Spark retries every 2 minutes and this card turns green.")}</li>
+          </ol></Notice>}
+        {t?.serve === "needs_operator" && <Notice tone="warn">{L("El Spark no tiene permiso para configurar Tailscale Serve. Ejecuta una vez en el Spark, en la carpeta del hub (sirve también para futuros cambios de cuenta):", "The Spark may not configure Tailscale Serve. Run once on the Spark, in the hub's folder (it also covers future account changes):")} <Code>sudo bash scripts/tailnet-root-setup.sh</Code></Notice>}
+        {t?.serve === "error" && <Notice tone="danger">{L("No se pudo configurar Tailscale Serve. Revisa el servicio en el Spark:", "Tailscale Serve could not be configured. Check the service on the Spark:")} <Code>journalctl --user -u sah-tailnet-sync -n 20</Code></Notice>}
+        {days !== null && <Notice tone={days < 30 ? "danger" : "warn"}>{L(`La clave de este equipo en Tailscale caduca en ${days} días: ese día el Spark se desconectaría para todos.`, `This machine's Tailscale key expires in ${days} days: that day the Spark would disconnect for everyone.`)} <a className="underline" target="_blank" rel="noreferrer" href="https://login.tailscale.com/admin/machines">{L("Machines → (el Spark) → ⋯ → Disable key expiry", "Machines → (the Spark) → ⋯ → Disable key expiry")}</a></Notice>}
+        <p className="text-xs text-muted">{L("Si cambia la dirección, invitaciones, correos y enlaces usan la nueva al momento y los administradores reciben un aviso. Cada persona debe abrir la nueva, volver a iniciar sesión y copiar de nuevo la configuración de sus herramientas (sus claves API siguen valiendo).", "If the address changes, invitations, e-mails and links use the new one at once and administrators are notified. Each person must open the new one, sign in again and copy their tools' configuration again (their API keys stay valid).")}</p>
+      </CardBody>
+    </Card>
+  );
+}
+
 function Access() {
   const L = useL();
   const { lang } = useI18n();
@@ -118,6 +146,7 @@ function Access() {
             <Td><Badge tone={o.status === "sent" ? "ok" : o.status === "failed" ? "danger" : o.status === "skipped" ? "muted" : "info"} title={o.last_error ?? undefined}>{o.status}</Badge></Td></tr>)}
         </Table>}
       </Card>
+      <TailnetStatus />
       <Card><CardHeader title={L("Acceso por Tailscale (opción A)", "Access through Tailscale (option A)")} subtitle={L("Cada persona instala Tailscale y acepta una invitación para usar solo este equipo", "Each person installs Tailscale and accepts an invitation to use only this machine")} icon={<Network className="h-4 w-4" />} />
         <CardBody className="grid gap-3 sm:grid-cols-2">
           <Field label={L("Enlace para compartir el Spark", "Spark share link")} hint={L("login.tailscale.com → Machines → (tu Spark) → ⋯ → Share → Copy share link. Se incluye en cada invitación.", "login.tailscale.com → Machines → (your Spark) → ⋯ → Share → Copy share link. Included in every invitation.")}>
