@@ -33,8 +33,22 @@ def supports_tools(model: RegisteredModel) -> bool:
     return "tools" in set(model.capabilities or [])
 
 
+def system_first(messages: list) -> list:
+    """Many chat templates reject a system message anywhere but first (Claude Code and others send them mid-conversation):
+    gather them all at the start, in order, without losing any."""
+    if not any(isinstance(m, dict) and m.get("role") in ("system", "developer") for m in messages[1:]):
+        return messages
+    def text(c):
+        return c if isinstance(c, str) else "\n".join(p.get("text", "") for p in c or [] if isinstance(p, dict))
+    is_sys = lambda m: isinstance(m, dict) and m.get("role") in ("system", "developer")  # noqa: E731
+    joined = "\n\n".join(t for t in (text(m.get("content")) for m in messages if is_sys(m)) if t)
+    return [{"role": "system", "content": joined}, *(m for m in messages if not is_sys(m))]
+
+
 def sanitize_chat_payload(model: RegisteredModel, body: dict) -> dict:
     payload = {k: v for k, v in body.items() if k in ALLOWED_CHAT_PARAMS}
+    if isinstance(payload.get("messages"), list):
+        payload["messages"] = system_first(payload["messages"])
     if model.backend == "vllm" and isinstance(body.get("chat_template_kwargs"), dict):
         # e.g. {"enable_thinking": false} for Qwen3/Qwen3.5 served with a reasoning parser
         payload["chat_template_kwargs"] = {k: v for k, v in body["chat_template_kwargs"].items()
@@ -56,6 +70,38 @@ def chat_once(model: RegisteredModel, body: dict) -> dict:
     data = r.json()
     data["model"] = model.alias
     return data
+
+
+def responses_payload(model: RegisteredModel, body: dict) -> dict:
+    """OpenAI Responses request for the engine: the engine's model name; hosted tools it cannot run are dropped."""
+    out = {**body, "model": engine_model_name(model)}
+    if isinstance(out.get("tools"), list):
+        out["tools"] = [t for t in out["tools"] if isinstance(t, dict) and t.get("type") == "function"]
+        if not out["tools"]:
+            out.pop("tools")
+            out.pop("tool_choice", None)
+    return out
+
+
+def responses_once(model: RegisteredModel, body: dict) -> dict:
+    with _client(model) as c:
+        r = c.post("/responses", json=responses_payload(model, body))
+    if r.status_code != 200:
+        raise EngineError(f"Engine returned {r.status_code}: {r.text[:500]}", status=r.status_code)
+    data = r.json()
+    data["model"] = model.alias
+    return data
+
+
+def responses_stream_raw(model: RegisteredModel, body: dict) -> Iterator[bytes]:
+    """Pass-through SSE stream of the Responses API (Codex), line by line."""
+    with _client(model, read_timeout=1800) as c:
+        with c.stream("POST", "/responses", json={**responses_payload(model, body), "stream": True}) as r:
+            if r.status_code != 200:
+                txt = r.read()[:500].decode(errors="replace")
+                raise EngineError(f"Engine returned {r.status_code}: {txt}", status=r.status_code)
+            for line in r.iter_lines():
+                yield (line + "\n").encode()
 
 
 def chat_stream_raw(model: RegisteredModel, body: dict) -> Iterator[bytes]:

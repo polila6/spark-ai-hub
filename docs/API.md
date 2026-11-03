@@ -19,6 +19,7 @@ Create keys in **Centro API → Claves API**. The full key is shown once.
 |---|---|---|
 | `GET /v1/models` | yes | models visible to the key owner, installed/ready, LLM engines only; extra `sah` field with backend/capabilities |
 | `POST /v1/chat/completions` | yes | `stream`, `temperature`, `top_p`, `max_tokens`, `stop`, `seed`, `n`, `response_format`, `logprobs`; `tools` for Ollama models whose capabilities include `tools`, and for vLLM models whose runtime config sets `enable_tool_calling` + `tool_call_parser` (else HTTP 400) |
+| `POST /v1/responses` | yes | OpenAI Responses API (Codex), streaming or not, served by the engine; only `function` tools are forwarded |
 | `POST /v1/embeddings` | yes, for models with `embeddings` capability | |
 | others (`/v1/completions`, images, audio) | not exposed | use the hub job API |
 

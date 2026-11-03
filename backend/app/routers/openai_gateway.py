@@ -68,6 +68,9 @@ def _auth(request: Request, db: Session) -> Principal:
     return p
 
 
+CLAUDE_PREFIX = "claude-spark-"
+
+
 def _resolve(db: Session, p: Principal, name: str) -> RegisteredModel:
     q = select(RegisteredModel).where(RegisteredModel.alias == name)
     if not p.is_admin:
@@ -118,9 +121,22 @@ async def list_models(request: Request, db: Session = Depends(get_db)):
                                                                   ModelStatus.busy, ModelStatus.loading]))
     if not p.is_admin:
         q = q.where(visible_filter(RegisteredModel, p, "model"))
-    data = [{"id": m.alias, "object": "model", "created": int(m.created_at.timestamp()), "owned_by": "spark-ai-hub",
+    main = get_setting(db, "preferred_resident_model")
+
+    def about(m: RegisteredModel) -> str:  # shown by clients with a model picker (Claude Code's /model)
+        ctx = llm.context_tokens(m)
+        state = "principal, siempre cargado" if m.alias == main else "en memoria" if m.status in (ModelStatus.ready, ModelStatus.busy) else \
+            "se carga bajo demanda (la primera respuesta tarda)"
+        return f"Spark · {round(ctx / 1024)}k de contexto · {state}"
+
+    data = [{"id": m.alias, "object": "model", "type": "model", "display_name": m.alias, "description": about(m),
+             "created": int(m.created_at.timestamp()), "owned_by": "spark-ai-hub",
              "sah": {"backend": m.backend, "status": m.status.value, "capabilities": m.capabilities or [],
                      "context_length": m.context_length, "modality": m.modality}} for m in db.scalars(q)]
+    # Claude Code's /model picker only lists ids containing "claude" or "anthropic": give it an extra spelling of each
+    # chat model (the Anthropic gateway resolves the prefix). Other clients keep the plain aliases.
+    if "claude" in request.headers.get("user-agent", "").lower() or request.headers.get("anthropic-version"):
+        data = [{**d, "id": f"{CLAUDE_PREFIX}{d['id']}"} for d in data if "chat" in (d["sah"]["capabilities"] or [])]
     return {"object": "list", "data": data}
 
 
@@ -182,6 +198,66 @@ async def chat_completions(request: Request, db: Session = Depends(get_db)):
         scheduler.end_request(inst.id)
     _record(p, "chat.completions", model.alias, 200, data.get("usage"), t0,
             {"messages": body.get("messages"), "response": data.get("choices")})
+    return data
+
+
+@router.post("/responses")
+@_handle
+async def responses(request: Request, db: Session = Depends(get_db)):
+    """OpenAI Responses API (Codex needs it): served by the engine itself, with the hub's keys, quotas and usage."""
+    import asyncio
+
+    t0 = time.perf_counter()
+    p = _auth(request, db)
+    try:
+        body = await request.json()
+    except ValueError:
+        raise GatewayError(400, "Request body must be JSON")
+    if not isinstance(body, dict) or not body.get("model"):
+        raise GatewayError(400, "'model' is required")
+    model = _resolve(db, p, str(body["model"]))
+    if "chat" not in (model.capabilities or []):
+        raise GatewayError(400, f"Model '{model.alias}' does not support chat", code="unsupported_capability")
+    try:
+        inst = await asyncio.to_thread(scheduler.ensure_loaded, model.id, wait_s=1800)
+    except scheduler.SchedulingError as e:
+        _record(p, "responses", model.alias, 503, None, t0)
+        raise GatewayError(503, e.message, "server_error", e.code, {"Retry-After": str(e.retry_after or 60)})
+    except EngineError as e:
+        _record(p, "responses", model.alias, 502, None, t0)
+        raise GatewayError(502, f"Engine failed to load model: {e.message}", "server_error", "engine_error")
+    scheduler.begin_request(inst.id)
+    if body.get("stream"):
+        def gen():
+            usage = None
+            status = 200
+            try:
+                for line in llm.responses_stream_raw(model, body):
+                    if line.startswith(b"data: ") and b'"response.completed"' in line:
+                        try:
+                            u = (orjson.loads(line[6:]).get("response") or {}).get("usage") or {}
+                            usage = {"prompt_tokens": u.get("input_tokens"), "completion_tokens": u.get("output_tokens")}
+                        except ValueError:
+                            pass
+                    yield line
+            except EngineError as e:
+                status = 502
+                yield b"event: error\ndata: " + orjson.dumps({"type": "error", "message": e.message}) + b"\n\n"
+            finally:
+                scheduler.end_request(inst.id)
+                _record(p, "responses", model.alias, status, usage, t0)
+
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    try:
+        data = await asyncio.to_thread(llm.responses_once, model, body)
+    except EngineError as e:
+        _record(p, "responses", model.alias, e.status, None, t0)
+        raise GatewayError(e.status if 400 <= e.status < 600 else 502, e.message, "server_error")
+    finally:
+        scheduler.end_request(inst.id)
+    u = data.get("usage") or {}
+    _record(p, "responses", model.alias, 200, {"prompt_tokens": u.get("input_tokens"), "completion_tokens": u.get("output_tokens")}, t0)
     return data
 
 

@@ -38,13 +38,26 @@ html, body { background: rgb(var(--bg)); color: rgb(var(--fg)); }
 body { font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; }
 ::selection { background: rgb(var(--accent) / 0.25); }
 * { scrollbar-width: thin; scrollbar-color: rgb(var(--border)) transparent; }
-.prose-chat p { margin: 0.4em 0; }
+.prose-chat { line-height: 1.65; }
+.prose-chat > :first-child { margin-top: 0; }
+.prose-chat > :last-child { margin-bottom: 0; }
+.prose-chat p { margin: 0.75em 0; }
+.prose-chat ul, .prose-chat ol { margin: 0.75em 0; }
+.prose-chat li { margin: 0.3em 0; }
+.prose-chat pre { margin: 0.9em 0; }
 .prose-chat pre { background: rgb(var(--bg)); border: 1px solid rgb(var(--border)); border-radius: 0.6rem; padding: 0.75rem; overflow-x: auto; font-size: 0.78rem; }
 .prose-chat code { font-family: var(--font-mono); font-size: 0.85em; }
 .prose-chat ul { list-style: disc; padding-left: 1.25rem; }
 .prose-chat ol { list-style: decimal; padding-left: 1.25rem; }
 .prose-chat table { border-collapse: collapse; font-size: 0.8rem; }
 .prose-chat th, .prose-chat td { border: 1px solid rgb(var(--border)); padding: 0.25rem 0.5rem; }
-.prose-chat h1, .prose-chat h2, .prose-chat h3 { font-weight: 600; margin: 0.6em 0 0.3em; }
+.prose-chat h1, .prose-chat h2, .prose-chat h3 { font-weight: 600; margin: 1.2em 0 0.45em; }
 .prose-chat a { color: rgb(var(--info)); text-decoration: underline; }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
+/* Loading spinners: turn as one smooth layer around their exact centre (a small SVG otherwise wobbles while the page repaints). */
+.animate-spin { transform-origin: center; transform-box: fill-box; will-change: transform; backface-visibility: hidden; }
+/* Reduced motion: end one-off animations at once. Infinite ones must not inherit the tiny duration: a spinner turned
+   100,000 times faster than normal, which looks like shaking. It stays, slowly, because it says that work is going on. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  .animate-spin { animation-duration: 2s !important; animation-iteration-count: infinite !important; }
+}

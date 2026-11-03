@@ -94,6 +94,20 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    id: "codex", name: "ChatGPT Codex", kind: "agent", desc: ["CLI de Codex usando los modelos del Spark (API Responses).", "Codex CLI using the Spark's models (Responses API)."],
+    steps: (c) => {
+      const win = c.os === "windows";
+      const ctx = ctxFor(c.models.find((x) => x.alias === c.model));
+      const toml = `model = "${c.model}"\nmodel_provider = "spark"\nmodel_context_window = ${ctx}\n\n[model_providers.spark]\nname = "Spark AI Hub"\nbase_url = "${c.base}/v1"\nwire_api = "responses"\nexperimental_bearer_token = "${c.key}"\nstream_idle_timeout_ms = 1800000\n\n[mcp_servers.spark-cloud]\nurl = "${c.base}/mcp"\nhttp_headers = { Authorization = "Bearer ${c.key}" }\n`;
+      return [
+        { text: c.L("Instala Codex:", "Install Codex:"), code: "npm install -g @openai/codex", lang: "bash" },
+        { text: c.L("Abre su configuración:", "Open its configuration:"), code: win ? `New-Item -ItemType Directory -Force "$env:USERPROFILE\\.codex" | Out-Null\nnotepad "$env:USERPROFILE\\.codex\\config.toml"` : "mkdir -p ~/.codex && nano ~/.codex/config.toml", lang: win ? "powershell" : "bash" },
+        { text: c.L("Pega esto (si ya tienes «model» o «model_provider», sustitúyelos). Lleva tu clave y tu nube personal por MCP:", "Paste this (if you already have “model” or “model_provider”, replace them). It has your key and your personal cloud over MCP:"), code: toml, lang: "toml" },
+        { text: c.L("Úsalo en tu proyecto. Para otro modelo, sin tocar el archivo:", "Use it in your project. For another model, without editing the file:"), code: `codex\ncodex -m otro-modelo`, lang: "bash" },
+      ];
+    },
+  },
+  {
     id: "openclaw", name: "OpenClaw", kind: "agent", desc: ["Asistente personal autónomo con pasarela propia (chat, mensajería, herramientas).", "Autonomous personal assistant with its own gateway (chat, messaging, tools)."],
     steps: (c) => {
       const win = c.os === "windows";
@@ -118,14 +132,24 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
-    id: "claude-code", name: "Claude Code", kind: "agent", desc: ["Claude Code apuntando a los modelos locales (API compatible con Anthropic).", "Claude Code pointed at the local models (Anthropic-compatible API)."],
+    id: "claude-code", name: "Claude Code", kind: "agent", desc: ["Claude Code usando los modelos del Spark, sin tocar tu Claude normal; /model cambia de modelo.", "Claude Code using the Spark's models, leaving your normal Claude alone; /model switches model."],
     steps: (c) => {
-      const settings = { env: { ANTHROPIC_BASE_URL: c.base, ANTHROPIC_AUTH_TOKEN: c.key, ANTHROPIC_MODEL: c.model, ANTHROPIC_DEFAULT_SONNET_MODEL: c.model, ANTHROPIC_DEFAULT_OPUS_MODEL: c.model, ANTHROPIC_DEFAULT_HAIKU_MODEL: c.model, ANTHROPIC_SMALL_FAST_MODEL: c.model, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" } };
+      const win = c.os === "windows";
+      const m = c.models.find((x) => x.alias === c.model);
+      // A separate config dir: `claude` keeps the user's own account, `claude-spark` uses the Spark. All aliases point at the
+      // chosen model so background tasks never load a second one; /model lists the rest (gateway model discovery).
+      const settings = { model: c.model, env: { ANTHROPIC_BASE_URL: c.base, ANTHROPIC_AUTH_TOKEN: c.key, CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: c.model, ANTHROPIC_DEFAULT_SONNET_MODEL: c.model, ANTHROPIC_DEFAULT_HAIKU_MODEL: c.model,
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(ctxFor(m)), CLAUDE_CODE_MAX_OUTPUT_TOKENS: "32000", CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" } };
       return [
-        { text: c.L("Instala Claude Code (necesita Node.js 18+):", "Install Claude Code (needs Node.js 18+):"), code: "npm install -g @anthropic-ai/claude-code", lang: c.os === "windows" ? "powershell" : "bash" },
-        { text: c.L(`Edita ${cfgPath(c, "~/.claude/settings.json", "%USERPROFILE%\\.claude\\settings.json")} y añade (o fusiona) este bloque "env":`, `Edit ${cfgPath(c, "~/.claude/settings.json", "%USERPROFILE%\\.claude\\settings.json")} and add (or merge) this "env" block:`), code: JSON.stringify(settings, null, 2), lang: "json" },
-        { text: c.L("Opcional: conecta tu nube personal (documentos, archivos, chats, memoria) como servidor MCP:", "Optional: connect your personal cloud (documents, files, chats, memory) as an MCP server:"), code: `claude mcp add --transport http spark-cloud ${c.base}/mcp --header "Authorization: Bearer ${c.key}"`, lang: "bash" },
-        { text: c.L("Abre Claude Code en tu proyecto. Con modelos locales, las tareas largas pueden ser más lentas que con Claude.", "Open Claude Code in your project. With local models, long tasks may be slower than with Claude."), code: "claude", lang: "bash" },
+        { text: c.L("Instala Claude Code:", "Install Claude Code:"), code: "npm install -g @anthropic-ai/claude-code", lang: win ? "powershell" : "bash" },
+        { text: c.L("Crea una configuración aparte para el Spark (tu Claude normal no cambia):", "Create a separate configuration for the Spark (your normal Claude does not change):"), code: win ? `New-Item -ItemType Directory -Force "$env:USERPROFILE\\.claude-spark" | Out-Null\nnotepad "$env:USERPROFILE\\.claude-spark\\settings.json"` : "mkdir -p ~/.claude-spark && nano ~/.claude-spark/settings.json", lang: win ? "powershell" : "bash" },
+        { text: c.L("Pega esto (lleva tu clave):", "Paste this (it has your key):"), code: JSON.stringify(settings, null, 2), lang: "json" },
+        { text: c.L("Crea el comando «claude-spark» (una sola vez; abre una terminal nueva después):", "Create the “claude-spark” command (once; open a new terminal afterwards):"), lang: win ? "powershell" : "bash",
+          code: win ? `Add-Content $PROFILE 'function claude-spark { $env:CLAUDE_CONFIG_DIR = "$HOME\\.claude-spark"; try { claude @args } finally { Remove-Item Env:CLAUDE_CONFIG_DIR } }'` : `echo "alias claude-spark='CLAUDE_CONFIG_DIR=\$HOME/.claude-spark claude'" >> ${c.os === "macos" ? "~/.zshrc" : "~/.bashrc"}` },
+        { text: c.L("Úsalo en tu proyecto. Dentro, «/model» lista los modelos del Spark para cambiar al momento; también puedes elegir al abrir:", "Use it in your project. Inside, “/model” lists the Spark's models to switch at once; you can also choose when starting:"), code: `claude-spark\nclaude-spark --model otro-modelo`, lang: "bash" },
+        { text: c.L("Opcional: conecta tu nube personal (documentos, archivos, chats, memoria) como servidor MCP, dentro de esa configuración:", "Optional: connect your personal cloud (documents, files, chats, memory) as an MCP server, inside that configuration:"), code: `claude-spark mcp add --transport http spark-cloud ${c.base}/mcp --header "Authorization: Bearer ${c.key}"`, lang: "bash" },
+        { text: c.L("Aviso: Anthropic no da soporte a usar Claude Code con modelos que no son Claude. Funciona porque el hub habla su API, pero alguna función nueva podría no estar disponible.", "Note: Anthropic does not support using Claude Code with non-Claude models. It works because the hub speaks its API, but some new features might not be available.") },
       ];
     },
   },

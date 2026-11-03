@@ -57,7 +57,7 @@ function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastCtx.Provider value={{ push }}>
       {children}
-      <div className="fixed bottom-4 right-4 z-[100] flex w-[min(420px,calc(100vw-2rem))] flex-col gap-2" role="status" aria-live="polite">
+      <div className="fixed right-4 top-16 z-[100] flex w-[min(420px,calc(100vw-2rem))] flex-col gap-2" role="status" aria-live="polite">
         {items.map((t) => (
           <div
             key={t.id}
@@ -99,7 +99,27 @@ function MeProvider({ children }: { children: React.ReactNode }) {
 }
 export const useMe = () => useContext(MeCtx);
 
+/** All spinners turn in step: one that appears or re-renders joins the same rotation instead of jumping or going out of phase. */
+function useSpinnersInStep() {
+  useEffect(() => {
+    const done = new WeakSet<Element>();
+    let queued = false;
+    const sync = () => {
+      queued = false;
+      document.querySelectorAll(".animate-spin").forEach((el) => {
+        if (done.has(el)) return;
+        done.add(el);
+        el.getAnimations().forEach((a) => { a.startTime = 0; });
+      });
+    };
+    const mo = new MutationObserver(() => { if (!queued) { queued = true; requestAnimationFrame(sync); } });
+    mo.observe(document.body, { childList: true, subtree: true });
+    return () => mo.disconnect();
+  }, []);
+}
+
 export function Providers({ children }: { children: React.ReactNode }) {
+  useSpinnersInStep();
   return (
     <SWRConfig value={{ fetcher, revalidateOnFocus: true, errorRetryCount: 2 }}>
       <I18nProvider>

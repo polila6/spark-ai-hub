@@ -1,7 +1,7 @@
 "use client";
 import {
-  Bookmark, Bot, Brain, ChevronDown, Globe, Download, FileText, FolderKanban, Image as ImageIcon, ListPlus, Loader2, MessageSquarePlus, MessagesSquare,
-  Paintbrush, Paperclip, Search, Send, Sparkles, Square, Table2, Trash2, Wrench, X,
+  Bookmark, Bot, Brain, ChevronDown, Eye, Globe, Download, FileText, FolderKanban, Image as ImageIcon, ListPlus, Loader2, MessageSquarePlus, MessagesSquare,
+  Paintbrush, Paperclip, Search, Send, SlidersHorizontal, Sparkles, Square, Table2, Telescope, Trash2, Volume2, Wrench, X,
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -12,9 +12,10 @@ import { CanvasChip, CanvasPanel } from "@/components/canvas";
 import { AgentReport, ContextMeter, SkillNote, TOOL_ICONS, WebSources, CodeRun, MicButton, SpeakButton, speakText } from "@/components/assistant";
 import { Guide } from "@/components/guide";
 import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markInjected, QueuedChip, toMs, type Activity } from "@/components/live-activity";
-import { LoadConfirm, MemoryPill } from "@/components/memory";
-import { CodeBlock, MSG_GROUP, MessageActions, MessageEditor, SelectionQuote, USER_BUBBLE_SELECTION, quoteMarkdown, quoteStart } from "@/components/message-actions";
-import { Badge, Button, Card, Confirm, ErrorBox, Field, Input, Notice, Select, Switch, Textarea, Tip, cx } from "@/components/ui";
+import { LoadConfirm } from "@/components/memory";
+import { CodeBlock, MSG_GROUP, MessageActions, MessageEditor, SelectionQuote, quoteMarkdown, quoteStart } from "@/components/message-actions";
+import { Badge, Button, Card, Confirm, ErrorBox, Field, Input, Notice, Select, Textarea, Tip, cx } from "@/components/ui";
+import { useAutoGrow } from "@/components/workspace/common";
 import { api, streamGet, streamPost, upload } from "@/lib/api";
 import { bytes, num } from "@/lib/format";
 import { useI18n, useL } from "@/lib/i18n";
@@ -25,10 +26,22 @@ type ToolRun = { id: string; name: string; label?: string; args?: any; progress?
 type Msg = { id?: number; role: string; content: string; reasoning?: string; metrics?: any; model_alias?: string; pending?: boolean; attachments?: Att[]; tools?: ToolRun[];
   activity?: Activity; queued?: "queued" | "added" | "late"; key?: string };
 
+/** One composer option (web, think…): a compact on/off chip instead of a labelled switch. */
+function Chip({ on, onChange, icon: Icon, label, tip }: { on: boolean; onChange: (v: boolean) => void; icon: any; label: string; tip?: string }) {
+  return (
+    <Tip text={tip ?? label}>
+      <button type="button" role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)}
+        className={cx("inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors", on ? "border-accent/40 bg-accent/12 font-medium text-fg" : "border-transparent text-muted hover:bg-elevated")}>
+        <Icon className={cx("h-3.5 w-3.5", on && "text-accent")} /><span>{label}</span>
+      </button>
+    </Tip>
+  );
+}
+
 function Metrics({ m }: { m: any }) {
   if (!m) return null;
   return (
-    <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-subtle">
+    <div className="flex flex-wrap gap-1.5 text-[10px] text-subtle">
       {m.ttft_ms != null && <span>TTFT {num(m.ttft_ms, 0)} ms</span>}
       {m.tokens_per_s != null && <span>· {num(m.tokens_per_s, 1)} tok/s</span>}
       {m.completion_tokens != null && <span>· {m.completion_tokens} tok</span>}
@@ -416,21 +429,25 @@ function Chat() {
   }
 
   const [drawer, setDrawer] = useState(false);
-  const statusLabel = status === "loading" ? t("play.loading_model") : status === "tool" ? L("usando herramientas…", "using tools…") : status === "compacting" ? L("compactando contexto…", "compacting context…") : status === "generating" ? L("generando…", "generating…") : status;
+  // Chat options (system prompt, temperature, saved prompts…): closed by default so the conversation gets the width.
+  const [options, setOptionsState] = useState(false);
+  useEffect(() => { try { setOptionsState(localStorage.getItem("sah-chat-options") === "1"); } catch { /* storage unavailable */ } }, []);
+  const setOptions = (v: boolean) => { setOptionsState(v); try { localStorage.setItem("sah-chat-options", v ? "1" : "0"); } catch { /* storage unavailable */ } };
+  useAutoGrow(textRef, input, 220);
   const queuedCount = msgs.filter((m) => m.queued === "queued").length;
   const newChat = () => { abort.current?.abort(); viewing.current = null; setCanvas(null); setCid(null); setMsgs([]); setAtts([]); setErr(null); setStatus(null); setCtxUsed(null); setEditing(null); };
   return (
-    <div className={cx("grid h-[calc(100dvh-10.5rem)] gap-4 lg:h-[calc(100vh-7.5rem)]", canvas ? "lg:grid-cols-[250px_minmax(0,1fr)_minmax(0,1.1fr)]" : "lg:grid-cols-[270px_minmax(0,1fr)_290px]")}>
+    <div className={cx("grid h-[calc(100dvh-10.5rem)] gap-4 lg:h-[calc(100vh-7.5rem)]", canvas ? "lg:grid-cols-[230px_minmax(0,1fr)_minmax(0,1.1fr)]" : options ? "lg:grid-cols-[230px_minmax(0,1fr)] xl:grid-cols-[230px_minmax(0,1fr)_280px]" : "lg:grid-cols-[230px_minmax(0,1fr)]")}>
       <h1 className="sr-only">{L("Chat", "Chat")}</h1>
       {drawer && <div className="fixed inset-0 z-[60] bg-black/40 lg:hidden" onClick={() => setDrawer(false)} />}
       <Card className={cx("flex-col overflow-hidden lg:flex", drawer ? "fixed inset-y-0 left-0 z-[61] flex w-[85vw] max-w-sm rounded-none" : "hidden")} onClick={(e) => { if ((e.target as HTMLElement).closest("li button")) setDrawer(false); }}>
         <div className="space-y-2 border-b border-border p-3">
           <Button variant="primary" className="w-full" onClick={newChat}><MessageSquarePlus className="h-4 w-4" />{t("play.new")}</Button>
           <div className="relative"><Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-subtle" /><Input className="h-8 pl-8 text-xs" placeholder={L("Buscar en tus chats…", "Search your chats…")} value={q} onChange={(e) => setQ(e.target.value)} /></div>
-          <Select className="h-8 text-xs" aria-label={L("Proyecto", "Project")} value={projectId} onChange={(e) => { setProjectId(e.target.value); setCid(null); setMsgs([]); }}>
+          {(projects?.length ?? 0) > 0 && <Select className="h-8 text-xs" aria-label={L("Proyecto", "Project")} value={projectId} onChange={(e) => { setProjectId(e.target.value); setCid(null); setMsgs([]); }}>
             <option value="">{L("Todos los chats (sin proyecto)", "All chats (no project)")}</option>
             {(projects ?? []).map((p: any) => <option key={p.id} value={p.id}>📁 {p.name}</option>)}
-          </Select>
+          </Select>}
         </div>
         <ul className="flex-1 space-y-0.5 overflow-y-auto p-2">
           {q.trim().length > 1 ? (found ?? []).map((r: any) => (
@@ -449,31 +466,37 @@ function Chat() {
       <Card className={cx("relative flex min-h-0 flex-col overflow-hidden", drag && "ring-2 ring-accent")}
         onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
         onDrop={(e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); }}>
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
           <Button size="icon" variant="ghost" className="lg:hidden" aria-label={L("Conversaciones", "Conversations")} onClick={() => setDrawer(true)}><MessagesSquare className="h-5 w-5 text-accent" /></Button>
-          <MessagesSquare className="hidden h-4 w-4 text-accent lg:block" />
           <Button size="sm" variant="ghost" className="lg:hidden" onClick={newChat}><MessageSquarePlus className="h-4 w-4" /></Button>
-          <Select aria-label={t("common.model")} className="w-auto min-w-0 max-w-[60vw] sm:min-w-[220px]" value={model} onChange={(e) => setModel(e.target.value)}>
+          <Select aria-label={t("common.model")} className="h-8 w-auto min-w-0 max-w-[60vw] border-transparent bg-transparent text-sm font-medium hover:bg-elevated sm:max-w-none" value={model} onChange={(e) => setModel(e.target.value)}>
             {chatModels.length === 0 && <option value="">{t("play.select_model")}</option>}
             {chatModels.map((m: any) => <option key={m.id} value={m.alias}>{m.alias === generalModel ? "★ " : ""}{m.alias}{m.capabilities.includes("vision") ? " 👁" : ""}{m.tools_enabled ? " 🛠" : ""}{m.runtime ? ` · ${L("en memoria", "loaded")}` : ` · ${L("hay que cargarlo", "needs loading")}`}</option>)}
           </Select>
-          {sel && <div className="flex flex-wrap gap-1">{sel.capabilities.includes("vision") && <Badge tone="accent">vision</Badge>}{sel.tools_enabled && <Badge tone="accent">tools</Badge>}{sel.runtime ? <Badge tone="ok">{L("en memoria", "loaded")}</Badge> : <Badge>{L("se cargará al enviar", "loads on send")}</Badge>}</div>}
+          {sel && <div className="flex items-center gap-1.5 text-muted">
+            {sel.capabilities.includes("vision") && <Tip text={L("Puede ver imágenes", "Can see images")}><span tabIndex={0} aria-label="vision"><Eye className="h-3.5 w-3.5" /></span></Tip>}
+            {sel.tools_enabled && <Tip text={L("Puede usar herramientas", "Can use tools")}><span tabIndex={0} aria-label="tools"><Wrench className="h-3.5 w-3.5" /></span></Tip>}
+            <Tip text={sel.runtime ? L("En memoria: responde al momento", "Loaded: answers right away") : L("Se cargará al enviar: la primera respuesta tarda", "Loads on send: the first answer takes longer")}><span tabIndex={0} aria-label={sel.runtime ? L("en memoria", "loaded") : L("se cargará al enviar", "loads on send")} className={cx("h-2 w-2 rounded-full", sel.runtime ? "bg-ok" : "bg-subtle")} /></Tip>
+          </div>}
           {proj && <Badge tone="info"><FolderKanban className="h-3 w-3" />{proj.name}</Badge>}
           {sel && <ContextMeter cid={cid} modelAlias={sel.alias} windowMax={sel.context_window} used={ctxUsed} limit={ctxLimit} setLimit={setCtxLimit} autoCompact={autoCompact} setAutoCompact={setAutoCompact} busy={!!status} />}
           {!canvas && (canvases?.length ?? 0) > 0 && <Button size="sm" variant="outline" onClick={() => setCanvas({ id: canvases[0].id, v: canvases[0].version })}><FileText className="h-3.5 w-3.5" />{L("Lienzo", "Canvas")}{canvases.length > 1 ? ` (${canvases.length})` : ""}</Button>}
-          {statusLabel && <Badge tone="info" className="ml-auto"><Loader2 className="h-3 w-3 animate-spin" />{statusLabel}</Badge>}
-          <div className={cx("lg:hidden", !statusLabel && "ml-auto")}><MemoryPill /></div>
+          <div className="ml-auto flex items-center gap-1">
+            <Tip text={L("Opciones: instrucciones, temperatura, longitud, prompts guardados y atajos", "Options: instructions, temperature, length, saved prompts and shortcuts")}><Button size="icon" variant={options ? "outline" : "ghost"} aria-label={L("Opciones del chat", "Chat options")} aria-expanded={options} onClick={() => setOptions(!options)}><SlidersHorizontal className="h-4 w-4" /></Button></Tip>
+          </div>
         </div>
-        <div ref={listRef} className="flex-1 space-y-4 overflow-y-auto p-4">
+        <div ref={listRef} className="flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-3xl space-y-7 px-4 py-6 sm:px-6">
           {msgs.length === 0 && (
-            <div className="mx-auto max-w-2xl pt-4">
-              <Guide id="chat" />
+            <div className="pt-[6vh]">
+              <p className="mb-6 text-center text-2xl font-semibold tracking-tight">{L("¿En qué trabajamos hoy?", "What are we working on today?")}</p>
               <div className="grid gap-2 sm:grid-cols-2">
                 {[[L("Resume este PDF en 5 puntos", "Summarise this PDF in 5 points"), FileText], [L("Genera una ilustración de un taller de diseño con luz cálida", "Generate an illustration of a design workshop with warm light"), ImageIcon],
                   [L("¿Qué dicen mis documentos sobre …?", "What do my documents say about …?"), Search], [L("Con este Excel, calcula las ventas por mes y haz una tabla", "With this Excel, compute sales per month as a table"), Table2],
                   [L("Busca en internet las últimas novedades sobre impresión 3D en metal y cita las fuentes", "Search the web for the latest news on metal 3D printing and cite sources"), Globe], [L("Lanza dos agentes en paralelo: uno que busque artículos científicos sobre … y otro que revise mi borrador", "Run two agents in parallel: one finding papers on … and one reviewing my draft"), Bot]].map(([s, I]: any) => (
-                  <button key={s} className="flex items-center gap-2 rounded-xl border border-border p-3 text-left text-sm hover:bg-elevated" onClick={() => { setInput(s); textRef.current?.focus(); }}><I className="h-4 w-4 shrink-0 text-accent" />{s}</button>))}
+                  <button key={s} className="flex items-start gap-2.5 rounded-xl border border-border p-3 text-left text-[13px] leading-snug text-muted transition-colors hover:bg-elevated hover:text-fg" onClick={() => { setInput(s); textRef.current?.focus(); }}><I className="mt-0.5 h-4 w-4 shrink-0 text-accent" />{s}</button>))}
               </div>
+              <Guide id="chat" className="mb-0 mt-6" />
             </div>
           )}
           {msgs.map((m, i) => {
@@ -483,10 +506,10 @@ function Chat() {
             return (
             <div key={i} className={cx("flex flex-col", MSG_GROUP, m.role === "user" ? "items-end" : "items-start")}>
               {editing === i ? <MessageEditor initial={m.content} busy={!!status} onCancel={() => setEditing(null)} onSave={(txt) => regenerate(i, txt)} /> : (
-              <div className={cx("max-w-[88%] rounded-2xl px-4 py-2.5 text-sm", m.role === "user" ? cx("bg-accent text-accent-fg", USER_BUBBLE_SELECTION) : "w-full border border-border bg-elevated/60")}>
+              <div className={cx("text-[14.5px]", m.role === "user" ? "max-w-[85%] rounded-2xl rounded-br-md border border-accent/20 bg-accent/10 px-4 py-2.5 leading-relaxed" : "w-full")}>
                 {m.role === "user" ? (
                   <>
-                    {m.attachments && m.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-1.5">{m.attachments.map((a) => a.kind === "image" ? <a key={a.file_id} href={a.url} target="_blank" rel="noreferrer"><img src={a.url} alt={a.name} className="max-h-40 rounded-lg" /></a> : <span key={a.file_id} className="inline-flex items-center gap-1 rounded-md bg-white/15 px-2 py-0.5 text-xs"><FileText className="h-3 w-3" />{a.name}</span>)}</div>}
+                    {m.attachments && m.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-1.5">{m.attachments.map((a) => a.kind === "image" ? <a key={a.file_id} href={a.url} target="_blank" rel="noreferrer"><img src={a.url} alt={a.name} className="max-h-40 rounded-lg" /></a> : <span key={a.file_id} className="inline-flex items-center gap-1 rounded-md bg-bg/70 px-2 py-0.5 text-xs"><FileText className="h-3 w-3" />{a.name}</span>)}</div>}
                     <p className="whitespace-pre-wrap break-words">{m.content}</p>
                   </>
                 ) : (
@@ -495,8 +518,8 @@ function Chat() {
                       seconds={m.metrics?.latency_ms != null ? m.metrics.latency_ms / 1000 : undefined} />
                     {m.tools?.filter(hasOutput).map((tr) => <ToolCard key={tr.id} t={tr} onEdit={editImage} onCanvas={(id, v) => setCanvas({ id, v })} />)}
                     <div className="prose-chat" data-quote-scope>{m.content && <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.content}</ReactMarkdown>}</div>
-                    <Metrics m={m.metrics} />
-                    <div className="mt-1 flex items-center gap-3">{m.model_alias && <span className="text-[10px] text-subtle">{m.model_alias}</span>}{voice?.enabled && voice?.read_aloud && m.content && !m.pending && <SpeakButton text={m.content} lang={lang} />}</div>
+                    {!m.pending && <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:group-hover/msg:opacity-100">
+                      {m.model_alias && <span className="text-[10px] text-subtle">{m.model_alias}</span>}<Metrics m={m.metrics} />{voice?.enabled && voice?.read_aloud && m.content && <SpeakButton text={m.content} lang={lang} />}</div>}
                   </>
                 )}
               </div>)}
@@ -511,40 +534,43 @@ function Chat() {
           })}
           {err && <ErrorBox error={err} />}
           <div ref={bottom} />
+          </div>
         </div>
-        <form className="space-y-2 border-t border-border p-3" onSubmit={(e) => { e.preventDefault(); send(); }}>
-          {atts.length > 0 && <div className="flex flex-wrap gap-1.5">{atts.map((a) => <AttachmentChip key={a.file_id} a={a} onRemove={() => setAtts((x) => x.filter((y) => y.file_id !== a.file_id))} />)}</div>}
-          <div className="flex items-end gap-2">
-            <div className="flex flex-col gap-1">
+        <form className="px-3 pb-3 pt-1 sm:px-6" onSubmit={(e) => { e.preventDefault(); send(); }}>
+          <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-surface shadow-sm transition-colors focus-within:border-accent/60">
+          {atts.length > 0 && <div className="flex flex-wrap gap-1.5 px-3 pt-3">{atts.map((a) => <AttachmentChip key={a.file_id} a={a} onRemove={() => setAtts((x) => x.filter((y) => y.file_id !== a.file_id))} />)}</div>}
+            <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
+            <textarea ref={textRef} aria-label={t("play.placeholder")} rows={1} className="block w-full resize-none bg-transparent px-4 pb-1 pt-3 text-[14.5px] leading-relaxed text-fg placeholder:text-subtle focus:outline-none" value={input} onChange={(e) => setInput(e.target.value)}
+              placeholder={status ? L("Añade indicaciones a la tarea en curso (no la interrumpe)…", "Add instructions to the running task (it is not interrupted)…") : mode === "image" ? L("Describe la imagen que quieres (o qué cambiar en la adjunta)…", "Describe the image you want (or what to change in the attached one)…") : L("Escribe tu mensaje…", "Type your message…")}
+              onPaste={(e) => { const fs = Array.from(e.clipboardData.files); if (fs.length) { e.preventDefault(); addFiles(fs); } }}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
+          <div className="flex items-end gap-2 px-2 pb-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
               <Tip text={L("Adjuntar archivos o imágenes (también puedes arrastrar o pegar)", "Attach files or images (you can also drag or paste)")}><Button type="button" size="icon" variant="ghost" onClick={() => fileInput.current?.click()}><Paperclip className="h-4 w-4" /></Button></Tip>
               <Tip text={mode === "image" ? L("Modo imagen activo: tu mensaje es el prompt (con imagen adjunta, la edita)", "Image mode on: your message is the prompt (with an attached image, it edits it)") : L("Activar modo imagen", "Switch to image mode")}>
                 <Button type="button" size="icon" variant={mode === "image" ? "primary" : "ghost"} onClick={() => setMode(mode === "image" ? "chat" : "image")}><Paintbrush className="h-4 w-4" /></Button></Tip>
               {voice?.enabled && voice?.dictation && <MicButton lang={lang} onText={(txt) => { setInput((x) => (x ? `${x} ${txt}` : txt)); textRef.current?.focus(); }} />}
-            </div>
-            <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
-            <Textarea ref={textRef} aria-label={t("play.placeholder")} rows={3} className="resize-none" value={input} onChange={(e) => setInput(e.target.value)}
-              placeholder={status ? L("Añade indicaciones a la tarea en curso (no la interrumpe)…", "Add instructions to the running task (it is not interrupted)…") : mode === "image" ? L("Describe la imagen que quieres (o qué cambiar en la adjunta)…", "Describe the image you want (or what to change in the attached one)…") : L("Escribe tu mensaje…", "Type your message…")}
-              onPaste={(e) => { const fs = Array.from(e.clipboardData.files); if (fs.length) { e.preventDefault(); addFiles(fs); } }}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
-            {status ? <div className="flex flex-col gap-1.5">
-              <Button key="add" type="submit" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)} title={L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it")}><ListPlus className="h-4 w-4" />{L("Añadir a la tarea", "Add to the task")}</Button>
-              <Button key="stop" type="button" variant="danger" onClick={stop}><Square className="h-4 w-4" />{t("play.stop")}</Button></div>
-              : <Button key="send" type="submit" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)}>{mode === "image" ? <Sparkles className="h-4 w-4" /> : <Send className="h-4 w-4" />}{mode === "image" ? L("Crear", "Create") : t("play.send")}</Button>}
-          </div>
-          <div className="flex flex-wrap items-center gap-4 text-xs text-muted">
             {mode === "image" ? (
-              <label className="flex items-center gap-2">{L("Formato", "Format")}<Select className="h-7 w-auto text-xs" value={aspect} onChange={(e) => setAspect(e.target.value)}>
+              <label className="flex items-center gap-2 px-1 text-xs text-muted">{L("Formato", "Format")}<Select className="h-7 w-auto text-xs" value={aspect} onChange={(e) => setAspect(e.target.value)}>
                 <option value="square">{L("Cuadrado", "Square")}</option><option value="landscape">{L("Horizontal 4:3", "Landscape 4:3")}</option><option value="portrait">{L("Vertical 3:4", "Portrait 3:4")}</option><option value="wide">16:9</option><option value="tall">9:16</option></Select></label>
             ) : (
               <>
-                <Switch checked={tools} onChange={setTools} label={L("Herramientas", "Tools")} />
-                {tools && sel?.tools_enabled && pub?.web_search_enabled !== false && <Switch checked={web} onChange={setWeb} label={L("Internet", "Web")} />}
-                {sel?.backend === "vllm" && <Switch checked={thinking} onChange={setThinking} label={L("Pensar", "Think")} />}
-                {tools && web && sel?.tools_enabled && pub?.web_search_enabled !== false && pub?.agents_enabled !== false && <Switch checked={research} onChange={setResearch} label={L("Investigación a fondo", "Deep research")} />}
-                {voice?.enabled && voice?.read_aloud && <Switch checked={autoRead} onChange={setAutoRead} label={L("Leer respuestas", "Read answers")} />}
-                {sel && !sel.tools_enabled && <span className="text-warn">{L("Este modelo no usa herramientas: para imágenes usa el modo 🎨.", "This model has no tools: use 🎨 mode for images.")}</span>}
+                <Chip on={tools} onChange={setTools} icon={Wrench} label={L("Herramientas", "Tools")} tip={L("Archivos, código, imágenes, agentes y skills", "Files, code, images, agents and skills")} />
+                {tools && sel?.tools_enabled && pub?.web_search_enabled !== false && <Chip on={web} onChange={setWeb} icon={Globe} label={L("Internet", "Web")} tip={L("Buscar y leer páginas web", "Search and read web pages")} />}
+                {sel?.backend === "vllm" && <Chip on={thinking} onChange={setThinking} icon={Brain} label={L("Pensar", "Think")} tip={L("Razona antes de responder: más lento, mejor en problemas difíciles", "Reasons before answering: slower, better for hard problems")} />}
+                {tools && web && sel?.tools_enabled && pub?.web_search_enabled !== false && pub?.agents_enabled !== false && <Chip on={research} onChange={setResearch} icon={Telescope} label={L("Investigar", "Research")} tip={L("Investigación a fondo: varios agentes y un informe largo con fuentes", "Deep research: several agents and a long report with sources")} />}
+                {voice?.enabled && voice?.read_aloud && <Chip on={autoRead} onChange={setAutoRead} icon={Volume2} label={L("Leer", "Read")} tip={L("Leer las respuestas en voz alta", "Read answers aloud")} />}
+                {sel && !sel.tools_enabled && <span className="px-1 text-xs text-warn">{L("Este modelo no usa herramientas: para imágenes usa el modo 🎨.", "This model has no tools: use 🎨 mode for images.")}</span>}
               </>
             )}
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+            {status ? <>
+              <Button key="add" type="submit" size="sm" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)} title={L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it")}><ListPlus className="h-4 w-4" /><span className="hidden sm:inline">{L("Añadir a la tarea", "Add to the task")}</span></Button>
+              <Button key="stop" type="button" size="sm" variant="danger" onClick={stop}><Square className="h-3.5 w-3.5" /><span className="hidden sm:inline">{t("play.stop")}</span></Button></>
+              : <Button key="send" type="submit" size="sm" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)}>{mode === "image" ? <Sparkles className="h-4 w-4" /> : <Send className="h-4 w-4" />}{mode === "image" ? L("Crear", "Create") : t("play.send")}</Button>}
+            </div>
+          </div>
           </div>
         </form>
         {drag && <div className="pointer-events-none absolute inset-0 grid place-items-center bg-accent/10 text-sm font-medium text-accent">{L("Suelta para adjuntar", "Drop to attach")}</div>}
@@ -553,8 +579,10 @@ function Chat() {
       {canvas && <Card className="fixed inset-0 z-[62] flex min-h-0 flex-col overflow-hidden rounded-none lg:static lg:z-auto lg:rounded-2xl">
         <CanvasPanel id={canvas.id} version={canvas.v} onClose={() => setCanvas(null)} busy={!!status} onAsk={(text) => { send(text); }} />
       </Card>}
-      <Card className={cx("hidden overflow-y-auto p-4", !canvas && "lg:block")}>
+      {options && <div className={cx("fixed inset-0 z-[60] bg-black/30", !canvas && "xl:hidden")} onClick={() => setOptions(false)} />}
+      <Card className={cx("overflow-y-auto p-4", !options ? "hidden" : cx("fixed inset-y-0 right-0 z-[61] block w-[min(340px,92vw)] rounded-none", !canvas && "xl:static xl:z-auto xl:w-auto xl:rounded-2xl"))}>
         <div className="space-y-4">
+          <div className="flex items-center justify-between"><span className="text-sm font-semibold">{L("Opciones del chat", "Chat options")}</span><Button size="icon" variant="ghost" aria-label={t("common.close")} onClick={() => setOptions(false)}><X className="h-4 w-4" /></Button></div>
           <Field label={t("play.system")} hint={L("Se suma a tus instrucciones personales y a las del proyecto", "Added to your personal and project instructions")}><Textarea rows={5} value={system} onChange={(e) => setSystem(e.target.value)} /></Field>
           <Field label={`${t("play.temperature")}: ${temp}`}><input aria-label={t("play.temperature")} type="range" min={0} max={2} step={0.05} value={temp} onChange={(e) => setTemp(Number(e.target.value))} className="w-full accent-[rgb(var(--accent))]" /></Field>
           <Field label={t("play.max_tokens")}><Input type="number" min={1} max={32768} value={maxTok} onChange={(e) => setMaxTok(Number(e.target.value))} /></Field>

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.11.0 — 2026-11-03
+A calmer chat, a smooth spinner, Codex and an easier Claude Code.
+
+* **Chat layout**: the conversation gets the width (≈890 px instead of ≈540 on a 1440 px screen). Chat options
+  (instructions, temperature, length, saved prompts, shortcuts) move to a panel opened with a button; the header is one
+  row; only your messages have a bubble and answers read in a centred column; details under an answer appear on hover;
+  the composer is one box with compact option chips. No feature was removed.
+* **"How does it work?" guides** start minimised everywhere and open only when clicked.
+* **Loading spinner**: with the system's "reduce motion" on (also common over remote desktops) it turned 100,000 times
+  too fast, which looked like shaking; it now turns slowly. Spinners turn in step on their exact centre, and fewer run
+  at once.
+* **ChatGPT Codex**: new `POST /v1/responses` (OpenAI Responses API, with the hub's keys, quotas and usage) and a guide
+  in Connect tools.
+* **Claude Code**: `/model` lists the Spark's models (`GET /v1/models` adds `claude-spark-<alias>` for Claude Code, whose
+  picker only shows ids containing "claude"), with context and state in the description. The guide creates a separate
+  `claude-spark` command so your normal Claude account stays untouched. Fixed `System message must be at the beginning`:
+  system messages sent mid-conversation are gathered first, for every client.
+
 ## 0.10.2 — 2026-11-03
 Publishes the 0.10.1 changes below: the v0.10.1 tag was created by mistake on the 0.10.0 code. No other changes.
 

@@ -201,7 +201,7 @@ function Thinking({ text, live }: { text: string; live: boolean }) {
   return (
     <div className="border-t border-border/60 px-3 py-2">
       <button type="button" className="flex w-full items-center gap-1.5 text-left text-muted" onClick={() => setOpen(!isOpen)} aria-expanded={isOpen}>
-        <Brain className={cx("h-3.5 w-3.5", live && "animate-pulse text-info")} /><span className="font-medium">{live ? L("Pensando…", "Thinking…") : L("Razonamiento", "Reasoning")}</span>
+        <Brain className={cx("h-3.5 w-3.5", live && "text-info")} /><span className="font-medium">{live ? L("Pensando…", "Thinking…") : L("Razonamiento", "Reasoning")}</span>
         <span className="text-[10.5px] text-subtle">~{kTok(Math.round(text.length / 4))} tok</span>
         {isOpen ? <ChevronDown className="ml-auto h-3 w-3" /> : <ChevronRight className="ml-auto h-3 w-3" />}
       </button>
@@ -223,7 +223,7 @@ function Plan({ items }: { items: PlanItem[] }) {
         <span className="ml-1 h-1 w-20 overflow-hidden rounded bg-elevated"><span className="block h-full bg-ok transition-all" style={{ width: `${items.length ? (done / items.length) * 100 : 0}%` }} /></span></p>
       <ul className="space-y-0.5">{items.map((it, i) => (
         <li key={i} className={cx("flex items-start gap-1.5 rounded px-1 py-0.5", it.status === "in_progress" && "bg-info/10 font-medium text-fg", it.status === "completed" && "text-subtle line-through decoration-subtle/50", it.status === "pending" && "text-muted")}>
-          {it.status === "completed" ? <Check className="mt-px h-3 w-3 shrink-0 text-ok" /> : it.status === "in_progress" ? <Loader2 className="mt-px h-3 w-3 shrink-0 animate-spin text-info" /> : <Circle className="mt-px h-3 w-3 shrink-0 text-subtle" />}
+          {it.status === "completed" ? <Check className="mt-px h-3 w-3 shrink-0 text-ok" /> : it.status === "in_progress" ? <ChevronRight className="mt-px h-3 w-3 shrink-0 text-info" /> : <Circle className="mt-px h-3 w-3 shrink-0 text-subtle" />}
           <span className="min-w-0 break-words">{it.content}</span></li>))}</ul>
     </div>
   );

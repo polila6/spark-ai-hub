@@ -21,7 +21,7 @@ from ..db import get_db
 from ..engines import EngineError
 from ..services import llm, scheduler
 from ..settings_store import get_setting
-from .openai_gateway import GatewayError, _auth, _record, _resolve
+from .openai_gateway import CLAUDE_PREFIX, GatewayError, _auth, _record, _resolve
 
 router = APIRouter(prefix="/v1", tags=["anthropic-compatible"])
 
@@ -34,6 +34,8 @@ def a_error(status: int, message: str, type_: str = "invalid_request_error", hea
 
 
 def _map_model(db: Session, name: str) -> str:
+    if name.startswith(CLAUDE_PREFIX):  # a Spark model picked in Claude Code's /model
+        return name[len(CLAUDE_PREFIX):]
     if not name.lower().startswith("claude"):
         return name
     small = any(x in name.lower() for x in ("haiku",))
@@ -253,7 +255,7 @@ async def messages(request: Request, db: Session = Depends(get_db)):
     oa = to_openai(body)
     if oa.get("tools") and not llm.supports_tools(model):
         return a_error(400, f"Model '{model.alias}' does not support tool use on its backend; choose a model with tools")
-    thinking = (body.get("thinking") or {}).get("type") == "enabled"
+    thinking = (body.get("thinking") or {}).get("type") in ("enabled", "adaptive")
     try:
         inst = await asyncio.to_thread(scheduler.ensure_loaded, model.id, wait_s=1800)
     except scheduler.SchedulingError as e:

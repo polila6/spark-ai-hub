@@ -1,20 +1,10 @@
 "use client";
 import { ChevronDown, Lightbulb, LifeBuoy } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { GUIDES, type Bi, type GuideDef } from "@/lib/guides";
 import { useI18n } from "@/lib/i18n";
 import { cx } from "./ui";
-
-const KEY = "sah-guides-closed";
-
-function closedSet(): Set<string> {
-  try {
-    return new Set(JSON.parse(localStorage.getItem(KEY) || "[]"));
-  } catch {
-    return new Set();
-  }
-}
 
 export function GuideBody({ g }: { g: GuideDef }) {
   const { lang } = useI18n();
@@ -38,27 +28,15 @@ export function GuideBody({ g }: { g: GuideDef }) {
   );
 }
 
-/** Collapsible "How does it work?" panel. Open on the first visit of each page; remembers when the user closes it. */
+/** Collapsible "How does it work?" panel: minimised until the user clicks it, on every visit. */
 export function Guide({ id, className }: { id: keyof typeof GUIDES | string; className?: string }) {
   const { lang } = useI18n();
   const g = GUIDES[id];
   const [open, setOpen] = useState(false);
-  useEffect(() => { setOpen(!closedSet().has(String(id))); }, [id]);
   if (!g) return null;
-  function toggle() {
-    const next = !open;
-    setOpen(next);
-    try {
-      const s = closedSet();
-      if (next) s.delete(String(id)); else s.add(String(id));
-      localStorage.setItem(KEY, JSON.stringify([...s]));
-    } catch {
-      /* storage unavailable */
-    }
-  }
   return (
     <section className={cx("mb-5 rounded-2xl border border-accent/25 bg-accent/[0.04]", className)} aria-label={lang === "en" ? "Guide" : "Guía"}>
-      <button type="button" onClick={toggle} aria-expanded={open} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm font-medium text-fg">
+      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm font-medium text-fg">
         <LifeBuoy className="h-4 w-4 text-accent" />
         <span>{lang === "en" ? "How does it work?" : "¿Cómo se usa?"}</span>
         <span className="text-xs font-normal text-muted">· {lang === "en" ? g.title.en : g.title.es}</span>
