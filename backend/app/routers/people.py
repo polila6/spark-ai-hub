@@ -38,6 +38,7 @@ def _running_turns(user_id) -> int:
 @router.get("")
 def list_people(_: Principal = Depends(require_admin), db: Session = Depends(get_db)):
     now = utcnow()
+    mode = people.content_mode(db)
     week = now - timedelta(days=7)
     seen = dict(db.execute(select(UserSession.user_id, func.max(UserSession.last_seen_at)).group_by(UserSession.user_id)).all())
     used = dict(db.execute(select(ApiUsage.user_id, func.max(ApiUsage.ts)).group_by(ApiUsage.user_id)).all())
@@ -52,8 +53,8 @@ def list_people(_: Principal = Depends(require_admin), db: Session = Depends(get
         out.append({"id": str(u.id), "username": u.username, "display_name": u.display_name, "role": u.role.value,
                     "state": people.presence(last, u.is_active, now), "last_seen": last, "requests_7d": requests, "tokens_7d": int(tokens),
                     "jobs_running": jobs.get(u.id, 0), "turns_running": _running_turns(u.id), "used_bytes": storage.user_usage_bytes(db, u.id),
-                    "content_consent": people.consented(u)})
-    return {"users": out, "online_minutes": int(people.ONLINE_WINDOW.total_seconds() // 60), "active_days": people.ACTIVE_WINDOW.days}
+                    "content_consent": people.consented(u, mode)})
+    return {"content_mode": mode, "users": out, "online_minutes": int(people.ONLINE_WINDOW.total_seconds() // 60), "active_days": people.ACTIVE_WINDOW.days}
 
 
 @router.get("/{user_id}")
@@ -69,14 +70,15 @@ def person(user_id: uuid.UUID, _: Principal = Depends(require_admin), db: Sessio
             "turns_running": _running_turns(u.id), "jobs_running": [people.job_public(j) for j in live],
             "jobs_recent": [people.job_public(j) for j in past], "requests": [people.request_public(r) for r in requests],
             "counts": {"conversations": count(Conversation), "files": count(UserFile), "workspaces": count(Workspace)},
-            "used_bytes": storage.user_usage_bytes(db, u.id), "content_consent": people.consented(u)}
+            "used_bytes": storage.user_usage_bytes(db, u.id),
+            "content_consent": people.consented(u, people.content_mode(db)), "content_mode": people.content_mode(db)}
 
 
 # ------------------------------------------------------------------ content, with consent and a reason
 
 
 class ReasonIn(BaseModel):
-    reason: str = Field(min_length=10, max_length=500)
+    reason: str = Field(default="", max_length=500)  # required in consent mode (checked against the mode), optional in institutional
 
 
 class WorkspaceFileIn(ReasonIn):
@@ -87,14 +89,17 @@ def _consenting(db: Session, user_id: uuid.UUID) -> User:
     u = db.get(User, user_id)
     if u is None:
         raise HTTPException(404, detail={"code": "not_found", "message": "User not found"})
-    if not people.consented(u):
+    if not people.consented(u, people.content_mode(db)):
         raise HTTPException(403, detail={"code": "content_consent_missing", "message": "This person has not accepted the terms that allow it"})
     return u
 
 
 def _log(db: Session, request: Request, p: Principal, owner: User, kind: str, what: str, reason: str) -> None:
+    mode = people.content_mode(db)
+    if not people.reason_ok(mode, reason):
+        raise HTTPException(422, detail={"code": "reason_required", "message": f"Write a reason of at least {people.MIN_REASON} characters"})
     audit(db, people.CONTENT_ACTION, actor=p.user, request=request, target_type=people.CONTENT_TARGET, target_id=str(owner.id),
-          details={"kind": kind, "what": what[:200], "reason": reason.strip()})
+          details={"kind": kind, "what": what[:200], "reason": reason.strip(), "mode": mode})
 
 
 def _owned(db: Session, model, object_id: uuid.UUID, owner: User):

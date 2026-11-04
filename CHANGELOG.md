@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.0 — 2026-11-04
+Content access on the institution's rules, without asking each person to accept.
+
+* **Institutional mode** (`POST /api/v1/admin/content-access-mode`): for when the institution's own rules already authorise
+  administrators to consult content. Nobody is asked to accept anything and the reason is optional. The default stays `consent`.
+* Switching to it tells every active person once, by notification and e-mail, and the terms text changes to say so.
+* Every consultation is still logged and each person still sees it in Settings → Privacy, with its reason if there is one.
+  That is not a setting.
+
 ## 0.15.0 — 2026-11-04
 Administrators can consult a person's content, openly.
 

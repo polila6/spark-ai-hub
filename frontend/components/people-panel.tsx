@@ -2,7 +2,7 @@
 import { Download, Lock, Users } from "lucide-react";
 import { useState } from "react";
 import useSWR from "swr";
-import { Badge, Button, Card, CardHeader, Empty, Field, Modal, Notice, Skeleton, Table, Td, Textarea } from "@/components/ui";
+import { Badge, Button, Card, CardHeader, Confirm, Empty, Field, Modal, Notice, Skeleton, Table, Td, Textarea } from "@/components/ui";
 import { api, postBlob } from "@/lib/api";
 import { ago, bytes, compact, dt } from "@/lib/format";
 import { useI18n, useL } from "@/lib/i18n";
@@ -10,7 +10,7 @@ import { useToast } from "@/lib/providers";
 
 const TONES: Record<string, "ok" | "accent" | "muted" | "warn"> = { online: "ok", active: "accent", inactive: "muted", never: "muted", disabled: "warn" };
 
-function ContentAccess({ id, name, consent }: { id: string; name: string; consent: boolean }) {
+function ContentAccess({ id, name, consent, mode }: { id: string; name: string; consent: boolean; mode: string }) {
   const L = useL();
   const { push } = useToast();
   const [reason, setReason] = useState("");
@@ -18,7 +18,8 @@ function ContentAccess({ id, name, consent }: { id: string; name: string; consen
   const [chat, setChat] = useState<any>(null);
   const [space, setSpace] = useState<any>(null);
   const base = `/api/v1/admin/people/${id}`;
-  const ready = reason.trim().length >= 10;
+  const institutional = mode === "institutional";
+  const ready = institutional || reason.trim().length >= 10;
   const run = async (fn: () => Promise<void>) => { try { await fn(); } catch (e: any) { push("error", e?.message ?? String(e)); } };
   const save = (json: any, path: string, filename: string) => run(async () => {
     const url = URL.createObjectURL(await postBlob(path, json));
@@ -32,8 +33,8 @@ function ContentAccess({ id, name, consent }: { id: string; name: string; consen
   return (
     <div className="space-y-3 rounded-xl border border-border p-4">
       <h3 className="font-semibold">{L("Consultar su contenido", "Consult their content")}</h3>
-      <Notice tone="warn">{L(`${name} verá en Ajustes → Privacidad cada consulta: tu nombre, cuándo, qué y este motivo.`, `${name} will see each consultation in Settings → Privacy: your name, when, what and this reason.`)}</Notice>
-      <Field label={L("Motivo (mínimo 10 caracteres)", "Reason (at least 10 characters)")}><Textarea rows={2} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
+      <Notice tone="warn">{institutional ? L(`${name} verá en Ajustes → Privacidad cada consulta: tu nombre, cuándo y qué${reason.trim() ? " y este motivo" : ""}.`, `${name} will see each consultation in Settings → Privacy: your name, when and what${reason.trim() ? " and this reason" : ""}.`) : L(`${name} verá en Ajustes → Privacidad cada consulta: tu nombre, cuándo, qué y este motivo.`, `${name} will see each consultation in Settings → Privacy: your name, when, what and this reason.`)}</Notice>
+      <Field label={institutional ? L("Motivo (opcional; se muestra a la persona)", "Reason (optional; shown to the person)") : L("Motivo (mínimo 10 caracteres)", "Reason (at least 10 characters)")}><Textarea rows={2} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
       <Button disabled={!ready} onClick={() => run(async () => setIndex(await api(`${base}/content`, { method: "POST", json: { reason } })))}>{L("Ver sus chats y archivos", "See their chats and files")}</Button>
       {index && <div className="space-y-3">
         <details open><summary className="cursor-pointer font-semibold">{L(`Chats (${index.conversations.length})`, `Chats (${index.conversations.length})`)}</summary>
@@ -86,17 +87,49 @@ function Detail({ id, onClose }: { id: string; onClose: () => void }) {
               </Table>
             )}
           </div>
-          <ContentAccess id={id} name={data.display_name || data.username} consent={data.content_consent} />
+          <ContentAccess id={id} name={data.display_name || data.username} consent={data.content_consent} mode={data.content_mode} />
         </div>
       )}
     </Modal>
   );
 }
 
+function ModeCard({ mode, onDone }: { mode: string; onDone: () => void }) {
+  const L = useL();
+  const { push } = useToast();
+  const [ask, setAsk] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const institutional = mode === "institutional";
+  const target = institutional ? "consent" : "institutional";
+  return (
+    <div className="mx-5 mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-border p-3 text-sm">
+      <div className="min-w-0 flex-1">
+        <b>{L("Base del acceso a contenido", "Basis for content access")}:</b>{" "}
+        {institutional ? L("normativa de la institución (nadie tiene que aceptar nada; el motivo es opcional)", "institution's rules (nobody has to accept anything; the reason is optional)")
+          : L("consentimiento (cada persona acepta las normas; el motivo es obligatorio)", "consent (each person accepts the terms; the reason is required)")}
+        <div className="text-xs text-muted">{L("En ambos casos cada consulta queda registrada y la persona la ve en Ajustes → Privacidad.", "In both cases each consultation is logged and the person sees it in Settings → Privacy.")}</div>
+      </div>
+      <Button size="sm" variant="ghost" onClick={() => setAsk(true)}>{institutional ? L("Volver a consentimiento", "Back to consent") : L("Cambiar a normativa de la institución", "Switch to the institution's rules")}</Button>
+      <Confirm open={ask} onOpenChange={setAsk} busy={busy} title={L("Cambiar la base del acceso", "Change the basis for access")}
+        text={institutional ? L("Volverán a pedir aceptar las normas a quien no las haya aceptado, y hasta entonces no podrás consultar su contenido.", "Anyone who has not accepted the terms will be asked to, and until then you cannot consult their content.")
+          : L("Se avisará una vez a todas las personas activas, por notificación y correo, de que los administradores pueden consultar su contenido conforme a la normativa de la institución, y las normas cambian. Úsalo solo si esa normativa ya lo autoriza.", "Every active person will be told once, by notification and e-mail, that administrators can consult their content under the institution's rules, and the terms change. Use it only if those rules already authorise it.")}
+        onConfirm={async () => {
+          setBusy(true);
+          try {
+            const r = await api("/api/v1/admin/content-access-mode", { method: "POST", json: { mode: target } });
+            push("ok", r.notified ? L(`Hecho. Se ha avisado a ${r.notified} personas.`, `Done. ${r.notified} people were told.`) : L("Hecho.", "Done."));
+            setAsk(false);
+            onDone();
+          } catch (e: any) { push("error", e?.message ?? String(e)); } finally { setBusy(false); }
+        }} />
+    </div>
+  );
+}
+
 export function PeoplePanel() {
   const L = useL();
   const { lang } = useI18n();
-  const { data } = useSWR("/api/v1/admin/people", { refreshInterval: 15000 });
+  const { data, mutate } = useSWR("/api/v1/admin/people", { refreshInterval: 15000 });
   const [filter, setFilter] = useState("all");
   const [open, setOpen] = useState<string | null>(null);
   const labels: Record<string, string> = {
@@ -114,6 +147,7 @@ export function PeoplePanel() {
       <CardHeader icon={<Users className="h-4 w-4" />} title={L("Usuarios", "Users")}
         subtitle={data && L(`Conectado: actividad en los últimos ${data.online_minutes} minutos. Activo: en los últimos ${data.active_days} días.`, `Online: activity in the last ${data.online_minutes} minutes. Active: in the last ${data.active_days} days.`)} />
       {!data ? <Skeleton className="h-32" /> : <>
+        <div className="pt-3" /><ModeCard mode={data.content_mode} onDone={() => mutate()} />
         <div className="flex flex-wrap gap-2 px-5 py-3">
           {Object.keys(groups).map((k) => <Button key={k} size="sm" variant={filter === k ? "primary" : "ghost"} onClick={() => setFilter(k)}>{names[k]} ({users.filter(groups[k]).length})</Button>)}
         </div>

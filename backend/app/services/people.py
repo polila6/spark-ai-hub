@@ -7,6 +7,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from sqlalchemy.orm import Session
+
+from ..audit import audit
+from ..settings_store import get_setting, set_setting
+
 ONLINE_WINDOW = timedelta(minutes=10)  # sessions record activity every 5 minutes at most
 ACTIVE_WINDOW = timedelta(days=30)
 
@@ -30,9 +35,32 @@ CONTENT_ACTION = "admin.content_access"
 CONTENT_TARGET = "user_content"
 
 
-def consented(user) -> bool:
-    """Accepting the earlier terms does not count: they said administrators do not read content."""
-    return user.content_access_accepted_at is not None
+MODES = ("consent", "institutional")
+MIN_REASON = 10
+
+
+def content_mode(db: Session) -> str:
+    mode = get_setting(db, "content_access_mode")
+    return mode if mode in MODES else "consent"
+
+
+def consented(user, mode: str = "consent") -> bool:
+    """In consent mode the earlier acceptance does not count: those terms said administrators do not read content."""
+    return mode == "institutional" or user.content_access_accepted_at is not None
+
+
+def reason_ok(mode: str, reason: str) -> bool:
+    return mode == "institutional" or len((reason or "").strip()) >= MIN_REASON
+
+
+NOTICE_TITLE = "Cambio en las normas de uso: acceso de los administradores / Terms change: administrator access"
+NOTICE_BODY = (
+    "ES: Los administradores de la plataforma pueden consultar tus chats, archivos y workspaces por motivos de seguridad y "
+    "administración, conforme a la normativa de uso de los sistemas de información de tu institución. Cada consulta queda "
+    "registrada y la ves en Ajustes → Privacidad: quién, cuándo y qué. Las normas completas están en esa misma página.\n\n"
+    "EN: Platform administrators may consult your chats, files and workspaces for security and administration, under your "
+    "institution's rules on the use of information systems. Each consultation is logged and you see it in Settings → Privacy: "
+    "who, when and what. The full terms are on that page.")
 
 
 def access_public(event) -> dict:
@@ -49,3 +77,25 @@ def job_public(job) -> dict:
 def request_public(row) -> dict:
     return {"ts": row.ts, "source": row.source, "endpoint": row.endpoint, "model": row.model, "status_code": row.status_code,
             "prompt_tokens": row.prompt_tokens, "completion_tokens": row.completion_tokens, "latency_ms": row.latency_ms}
+
+
+def switch_mode(db: Session, mode: str, actor=None, request=None, via: str = "api") -> dict:
+    """Change the basis for administrators consulting content. Going institutional tells every active person, once, and never
+    asks anyone to accept anything. The log each person sees in Settings, Privacy does not depend on the mode."""
+    from sqlalchemy import select
+
+    from ..models import User
+    from . import notify
+
+    if mode not in MODES:
+        raise ValueError("mode must be consent|institutional")
+    before = content_mode(db)
+    set_setting(db, "content_access_mode", mode, getattr(actor, "id", None))
+    told = 0
+    if mode == "institutional" and before != "institutional":
+        for u in db.scalars(select(User).where(User.is_active.is_(True))):
+            notify.notify(db, u.id, "policy", NOTICE_TITLE, NOTICE_BODY, link="/settings")
+            told += 1
+        db.commit()
+    audit(db, "settings.content_access_mode", actor=actor, request=request, details={"from": before, "to": mode, "notified": told, "via": via})
+    return {"mode": mode, "notified": told}

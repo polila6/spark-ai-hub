@@ -91,6 +91,11 @@ that say so (`users.content_access_accepted_at`; earlier acceptances do not coun
 `terms_cover_content_access` is set), interactive administrator session only, a written reason each time, and the access is
 logged before anything is returned. Each person sees their own log in Settings → Privacy. Check this against your data
 protection rules before relying on it.
+
+`content_access_mode` is `consent` by default. `institutional` is for when the institution's own rules already authorise
+administrators to consult content: nobody has to accept anything, the reason is optional, everyone is told once by notification
+and the terms say so. **The log each person sees stays on in both modes**, and it is not a setting. Switch with
+`POST /api/v1/admin/content-access-mode`.
 Content logging exists as an admin setting, **off by default**. Playground conversations are private per user.
 
 ## Resource exhaustion

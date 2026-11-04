@@ -42,6 +42,11 @@ DEFAULTS: dict[str, Any] = {
     "terms_text": None,  # markdown shown at first login; None = built-in default text
     # Custom terms only count as consent to administrators reading content if the administrator says they cover it.
     "terms_cover_content_access": False,
+    # "consent": an administrator reads content only of people who accepted terms saying so, stating a reason.
+    # "institutional": the institution's own rules authorise it: nobody has to accept anything and the reason is optional.
+    # In both modes every consultation is logged and each person sees it in Settings, Privacy. Changed only through
+    # POST /api/v1/admin/content-access-mode, which also tells everyone.
+    "content_access_mode": "consent",
     "last_public_url": None,  # last address announced to the managers (see notify.announce_address_change)
     "tailscale_share_url": None,  # optional multi-use device-share link pasted from the Tailscale console
     "tailscale_device_id": None,  # node id used with the optional Tailscale API key to create per-user invites

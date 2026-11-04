@@ -55,7 +55,8 @@ def content_accesses(p: Principal = Depends(session_principal), db: Session = De
     """Each time an administrator consulted this person's content: who, when, what and why."""
     rows = db.scalars(select(AuditEvent).where(AuditEvent.action == people.CONTENT_ACTION, AuditEvent.target_type == people.CONTENT_TARGET,
                                                AuditEvent.target_id == str(p.id)).order_by(AuditEvent.ts.desc()).limit(500)).all()
-    return {"accesses": [people.access_public(e) for e in rows], "accepted_at": p.user.content_access_accepted_at}
+    return {"accesses": [people.access_public(e) for e in rows], "accepted_at": p.user.content_access_accepted_at,
+            "mode": people.content_mode(db)}
 
 
 @router.get("/account/summary")

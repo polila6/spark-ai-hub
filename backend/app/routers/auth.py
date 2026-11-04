@@ -15,7 +15,7 @@ from ..deps import CSRF_COOKIE, SESSION_COOKIE, Principal, client_ip, session_pr
 from ..models import Invitation, Role, User, UserSession
 from ..redis_client import rate_limit
 from ..security import hash_password, new_token, password_problems, token_digest, verify_password
-from ..services import mailer, notify
+from ..services import mailer, notify, people
 from ..settings_store import get_setting
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -63,40 +63,73 @@ DEFAULT_TERMS = {
     "es": """**Normas de uso de Spark AI Hub{org_paren}**
 
 1. La plataforma es para actividades de investigación, docencia y trabajo{org_de}. No la uses para fines ajenos.
-2. Tus chats, archivos, documentos y memoria son **privados** frente a los demás usuarios: solo los ve quien tú compartas. **Un administrador puede consultarlos**, incluido lo que ya tengas guardado, indicando un motivo. Cada consulta queda registrada y la ves en Ajustes → Privacidad: quién, cuándo, qué y por qué. Fuera de eso, los administradores solo ven metadatos de uso (tokens, tiempos, tamaño ocupado).
+2. {clause2}
 3. Los modelos se ejecutan en este DGX Spark: nada se envía a servicios de IA externos. Si la búsqueda en internet está activada, solo salen las consultas de búsqueda, sin datos personales.
 4. No subas datos personales de terceros ni información confidencial sin autorización. Eres responsable del contenido que subes y generas.
 5. Respeta las licencias de los modelos (se muestran al instalarlos) y no generes contenido ilegal o que dañe a otras personas.
 6. Los recursos (memoria, GPU, disco) son compartidos: libera lo que no uses y respeta las cuotas.
 7. Puedes descargar todos tus datos o eliminar tu cuenta en Ajustes → Privacidad.
-8. Si no aceptas estas normas, pulsa «Salir»: no podrás usar la plataforma, pero ningún administrador podrá consultar tu contenido. Para recuperar tus datos o darte de baja, habla con un administrador.""",
+{clause8_es}""".rstrip("\n"),
     "en": """**Spark AI Hub terms of use{org_paren}**
 
 1. The platform is for research, teaching and work{org_of}. Do not use it for unrelated purposes.
-2. Your chats, files, documents and memory are **private** from other users: only whoever you share with sees them. **An administrator can consult them**, including what you already have stored, by stating a reason. Each consultation is logged and you see it in Settings → Privacy: who, when, what and why. Apart from that, administrators only see usage metadata (tokens, times, space used).
+2. {clause2}
 3. Models run on this DGX Spark: nothing is sent to external AI services. If web search is enabled, only the search queries leave the machine, without personal data.
 4. Do not upload third parties' personal data or confidential information without authorisation. You are responsible for what you upload and generate.
 5. Respect model licences (shown at install time) and do not generate illegal or harmful content.
 6. Resources (memory, GPU, disk) are shared: free what you do not use and respect quotas.
 7. You can download all your data or delete your account in Settings → Privacy.
-8. If you do not accept these terms, press “Sign out”: you will not be able to use the platform, but no administrator can consult your content. To get your data back or close your account, talk to an administrator.""",
+{clause8_en}""".rstrip("\n"),
 }
 
 
-def _default_terms() -> dict:
+CLAUSES = {
+    "consent": {
+        "es": ("Tus chats, archivos, documentos y memoria son **privados** frente a los demás usuarios: solo los ve quien tú compartas. "
+               "**Un administrador puede consultarlos**, incluido lo que ya tengas guardado, indicando un motivo. Cada consulta queda "
+               "registrada y la ves en Ajustes → Privacidad: quién, cuándo, qué y por qué. Fuera de eso, los administradores solo ven "
+               "metadatos de uso (tokens, tiempos, tamaño ocupado)."),
+        "en": ("Your chats, files, documents and memory are **private** from other users: only whoever you share with sees them. "
+               "**An administrator can consult them**, including what you already have stored, by stating a reason. Each consultation is "
+               "logged and you see it in Settings → Privacy: who, when, what and why. Apart from that, administrators only see usage "
+               "metadata (tokens, times, space used)."),
+        "8_es": "8. Si no aceptas estas normas, pulsa «Salir»: no podrás usar la plataforma, pero ningún administrador podrá consultar tu contenido. Para recuperar tus datos o darte de baja, habla con un administrador.",
+        "8_en": "8. If you do not accept these terms, press “Sign out”: you will not be able to use the platform, but no administrator can consult your content. To get your data back or close your account, talk to an administrator.",
+    },
+    "institutional": {
+        "es": ("Tus chats, archivos, documentos y memoria son **privados** frente a los demás usuarios: solo los ve quien tú compartas. "
+               "**Los administradores de la plataforma pueden consultarlos** por motivos de seguridad y administración, conforme a la "
+               "normativa de uso de los sistemas de información de tu institución, incluido lo que ya tengas guardado. Cada consulta "
+               "queda registrada y la ves en Ajustes → Privacidad: quién, cuándo y qué. Fuera de eso, los administradores solo ven "
+               "metadatos de uso (tokens, tiempos, tamaño ocupado)."),
+        "en": ("Your chats, files, documents and memory are **private** from other users: only whoever you share with sees them. "
+               "**Platform administrators can consult them** for security and administration, under your institution's rules on the use "
+               "of information systems, including what you already have stored. Each consultation is logged and you see it in "
+               "Settings → Privacy: who, when and what. Apart from that, administrators only see usage metadata (tokens, times, "
+               "space used)."),
+        "8_es": "", "8_en": "",
+    },
+}
+
+
+def _default_terms(mode: str = "consent") -> dict:
     org = get_settings().org_name.strip()
+    c = CLAUSES.get(mode, CLAUSES["consent"])
     fill = {"org_paren": f" ({org})" if org else ""}
-    return {"es": DEFAULT_TERMS["es"].format(**fill, org_de=f" de {org}" if org else ""),
-            "en": DEFAULT_TERMS["en"].format(**fill, org_of=f" at {org}" if org else "")}
+    return {"es": DEFAULT_TERMS["es"].format(**fill, org_de=f" de {org}" if org else "", clause2=c["es"], clause8_es=c["8_es"], clause8_en=""),
+            "en": DEFAULT_TERMS["en"].format(**fill, org_of=f" at {org}" if org else "", clause2=c["en"], clause8_en=c["8_en"], clause8_es="")}
 
 
 def terms_info(db: Session) -> dict:
     custom = get_setting(db, "terms_text")
     return {"version": int(get_setting(db, "terms_version") or 1),
-            "text": {"es": custom, "en": custom} if custom else _default_terms()}
+            "text": {"es": custom, "en": custom} if custom else _default_terms(people.content_mode(db))}
 
 
 def terms_cover_content(db: Session) -> bool:
+    """Does accepting the terms mean consenting to content access? Not in institutional mode: nobody is asked to accept anything."""
+    if people.content_mode(db) == "institutional":
+        return False
     return not get_setting(db, "terms_text") or bool(get_setting(db, "terms_cover_content_access"))
 
 

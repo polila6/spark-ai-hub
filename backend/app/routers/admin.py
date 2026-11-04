@@ -27,7 +27,7 @@ from ..models import (
     SchedClass,
     User,
 )
-from ..services import hf, mailer, orchestrator, scheduler, storage, tailscale, telemetry
+from ..services import hf, mailer, orchestrator, people, scheduler, storage, tailscale, telemetry
 from ..services.jobs import create_job
 from ..settings_store import DEFAULTS, SECRET_KEYS, all_settings, get_setting, set_setting
 
@@ -145,6 +145,8 @@ def put_settings(body: dict, request: Request, p: Principal = Depends(require_ad
     for k, v in body.items():
         if k not in DEFAULTS and k not in SECRET_KEYS:
             raise HTTPException(422, detail={"code": "unknown_setting", "message": f"Unknown setting {k}"})
+        if k == "content_access_mode":
+            raise HTTPException(422, detail={"code": "use_dedicated_route", "message": "Use POST /api/v1/admin/content-access-mode: it also tells every user"})
         if k == "scheduler_mode" and v not in ("persistent", "on_demand", "hybrid"):
             raise HTTPException(422, detail={"code": "invalid", "message": "scheduler_mode invalid"})
         if k == "hf_token" and v:
@@ -195,6 +197,18 @@ def put_settings(body: dict, request: Request, p: Principal = Depends(require_ad
         changed[k] = "***" if k in SECRET_KEYS else v
     audit(db, "settings.update", actor=p.user, request=request, details=changed)
     return all_settings(db)
+
+
+class ContentModeIn(BaseModel):
+    mode: str
+
+
+@router.post("/api/v1/admin/content-access-mode")
+def set_content_mode(body: ContentModeIn, request: Request, p: Principal = Depends(require_admin), db: Session = Depends(get_db)):
+    """Switch the basis on which administrators may consult content (see services/people.switch_mode)."""
+    if body.mode not in people.MODES:
+        raise HTTPException(422, detail={"code": "invalid", "message": "mode must be consent|institutional"})
+    return people.switch_mode(db, body.mode, p.user, request)
 
 
 @router.get("/api/v1/admin/hf-token/status")
