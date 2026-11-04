@@ -12,6 +12,7 @@ import { useL } from "@/lib/i18n";
 import { useToast } from "@/lib/providers";
 import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markInjected, QueuedChip, toMs, type Activity } from "@/components/live-activity";
 import { CodeBlock, MessageActions, MessageEditor, MSG_GROUP, quoteMarkdown, quoteStart, SelectionQuote, USER_BUBBLE_SELECTION } from "@/components/message-actions";
+import { JumpToEnd, useStickToBottom } from "@/components/stick-to-bottom";
 import { useAutoGrow, useConfirm } from "./common";
 
 export type ChatMsg = { id?: number; role: string; content: string; tools?: any[]; pending?: boolean; reasoning?: string; activity?: Activity; metrics?: any;
@@ -85,7 +86,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
   }, [wid, follow, onEvent]);
   reload.current = () => { load().catch(() => {}); };
   useEffect(() => { load().catch((e) => push("error", e.message)); return () => abort.current?.abort(); }, [load, push]);
-  useEffect(() => { const el = list.current; if (el) el.scrollTop = el.scrollHeight; }, [msgs]);  // not scrollIntoView: it would scroll the page too
+  const { away, jump } = useStickToBottom(list, msgs, msgs.length);
   async function send() {
     const content = input.trim();
     if (!content || !cid) return;
@@ -187,6 +188,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
           );
         })}
       </div>
+      <JumpToEnd show={away} onClick={jump} />
       <SelectionQuote root={list} onQuote={quote} />
       {confirmElement}
       <form className="shrink-0 space-y-1.5 border-t border-border p-2" onSubmit={(e) => { e.preventDefault(); send(); }}>

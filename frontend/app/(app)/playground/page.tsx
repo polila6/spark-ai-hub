@@ -15,6 +15,7 @@ import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markI
 import { LoadConfirm } from "@/components/memory";
 import { CodeBlock, MSG_GROUP, MessageActions, MessageEditor, SelectionQuote, quoteMarkdown, quoteStart } from "@/components/message-actions";
 import { Badge, Button, Card, Confirm, ErrorBox, Field, Input, Notice, Select, Textarea, Tip, cx } from "@/components/ui";
+import { JumpToEnd, useStickToBottom } from "@/components/stick-to-bottom";
 import { useAutoGrow } from "@/components/workspace/common";
 import { api, streamGet, streamPost, upload } from "@/lib/api";
 import { bytes, num } from "@/lib/format";
@@ -165,7 +166,6 @@ function Chat() {
   const { data: found } = useSWR(q.trim().length > 1 ? `/api/v1/playground/search?q=${encodeURIComponent(q)}` : null);
   const [drag, setDrag] = useState(false);
   const abort = useRef<AbortController | null>(null);
-  const bottom = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const sel = chatModels.find((m: any) => m.alias === model);
@@ -181,7 +181,6 @@ function Chat() {
       ?? chatModels.find((m: any) => m.runtime) ?? chatModels.find((m: any) => m.tools_enabled) ?? chatModels[0];
     setModel(best.alias);
   }, [chatModels, model, proj, pub, generalModel]);
-  useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs]);
   const { data: active, mutate: mutActive } = useSWR("/api/v1/playground/active", { refreshInterval: 5000 });
   const activeIds = useMemo(() => new Set((active ?? []).map((a: any) => a.conversation_id)), [active]);
   const viewing = useRef<string | null>(null);  // conversation currently on screen (events of others are ignored)
@@ -417,6 +416,7 @@ function Chat() {
     requestAnimationFrame(() => { const el = textRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } });
   }
   const listRef = useRef<HTMLDivElement>(null);
+  const { away, jump } = useStickToBottom(listRef, msgs, msgs.length);
 
   async function stop() {
     if (cid) await api(`/api/v1/playground/conversations/${cid}/cancel`, { method: "POST" }).catch(() => {});
@@ -533,9 +533,9 @@ function Chat() {
             );
           })}
           {err && <ErrorBox error={err} />}
-          <div ref={bottom} />
           </div>
         </div>
+        <JumpToEnd show={away} onClick={jump} />
         <form className="px-3 pb-3 pt-1 sm:px-6" onSubmit={(e) => { e.preventDefault(); send(); }}>
           <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-surface shadow-sm transition-colors focus-within:border-accent/60">
           {atts.length > 0 && <div className="flex flex-wrap gap-1.5 px-3 pt-3">{atts.map((a) => <AttachmentChip key={a.file_id} a={a} onRemove={() => setAtts((x) => x.filter((y) => y.file_id !== a.file_id))} />)}</div>}

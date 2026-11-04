@@ -17,11 +17,13 @@ import { useL } from "@/lib/i18n";
 export type PlanItem = { content: string; status: string };
 export type ActivityNote = { kind: "compacted" | "warning" | "user"; text: string; at: number };  // at = number of tools before it
 export type Activity = { plan?: PlanItem[]; step?: number; status?: string; phase?: "thinking" | "writing" | "tool"; ctx?: { used: number; limit?: number };
-  notes?: ActivityNote[]; t0?: number; t1?: number };
+  notes?: ActivityNote[]; t0?: number; t1?: number; preparing?: { label: string; chars: number } };
 type LiveMsg = { tools?: any[]; reasoning?: string; activity?: Activity };
 
 // `started` may come as epoch seconds, epoch ms or an ISO date.
 export const toMs = (v: any): number | undefined => typeof v === "number" ? (v > 1e12 ? v : v > 1e9 ? v * 1000 : undefined) : typeof v === "string" ? Date.parse(v) || undefined : undefined;
+
+const kChars = (n: number) => (n < 1000 ? `${n} caracteres` : `${(n / 1000).toFixed(1)} k caracteres`);
 
 export function reduceTools(tools: any[] | undefined, ev: any): any[] | undefined {
   const list = tools ?? [];
@@ -40,9 +42,10 @@ export function reduceActivity(a: Activity | undefined, ev: any, toolCount: numb
     case "plan": return Array.isArray(ev.items) ? { ...x, plan: ev.items } : a;
     case "step": return typeof ev.n === "number" && ev.n !== x.step ? { ...x, step: ev.n } : a;
     case "status": return ev.status === x.status ? a : { ...x, status: ev.status };
-    case "reasoning": return x.phase === "thinking" ? a : { ...x, phase: "thinking" };
-    case "delta": return x.phase === "writing" ? a : { ...x, phase: "writing" };
-    case "tool_start": return x.phase === "tool" ? a : { ...x, phase: "tool" };
+    case "reasoning": return x.phase === "thinking" && !x.preparing ? a : { ...x, phase: "thinking", preparing: undefined };
+    case "delta": return x.phase === "writing" && !x.preparing ? a : { ...x, phase: "writing", preparing: undefined };
+    case "tool_start": return x.phase === "tool" && !x.preparing ? a : { ...x, phase: "tool", preparing: undefined };
+    case "tool_writing": return { ...x, phase: "tool", preparing: { label: ev.label || ev.name || "", chars: ev.chars ?? 0 } };
     case "context": return typeof ev.used === "number" ? { ...x, ctx: { used: ev.used, limit: ev.limit ?? x.ctx?.limit } } : a;
     case "context_compacted": return note("compacted", `${kTok(ev.before)} → ${kTok(ev.after)}`);
     case "warning": return ev.message ? note("warning", ev.message) : a;
@@ -264,6 +267,7 @@ function LiveActivityInner({ tools: toolsIn, reasoning, activity: a, running, se
   const cur = runningTools[runningTools.length - 1];
   const statusText = cur ? `${cur.label || cur.name}${cur.t0 ? ` · ${dur((now - cur.t0) / 1000)}` : ""}${runningTools.length > 1 ? L(` (+${runningTools.length - 1} en paralelo)`, ` (+${runningTools.length - 1} in parallel)`) : ""}`
     : a?.status === "loading" ? L("Cargando el modelo…", "Loading the model…") : a?.status === "compacting" ? L("Comprimiendo el contexto…", "Compacting the context…")
+    : a?.preparing ? L(`Preparando: ${a.preparing.label} · ${kChars(a.preparing.chars)}`, `Preparing: ${a.preparing.label} · ${kChars(a.preparing.chars)}`)
     : a?.phase === "thinking" ? L("Pensando…", "Thinking…") : a?.phase === "writing" ? L("Generando respuesta…", "Writing the answer…")
     : a?.phase === "tool" ? L("Pensando el siguiente paso…", "Working out the next step…") : L("Empezando…", "Starting…");
   const ctxPct = a?.ctx?.limit ? Math.min(100, (a.ctx.used / a.ctx.limit) * 100) : null;

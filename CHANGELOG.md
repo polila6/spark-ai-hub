@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.1 — 2026-11-04
+Long tasks no longer seem stuck, and you can read while the assistant works.
+
+* **Scrolling**: every token pulled the view back to the end, so you could not scroll up while the model worked (chat,
+  projects and Workspace). It now follows only while you are at the end; moving up stops it and "Go to the end" resumes it.
+* **`run_code` keeps its files in a conversation**: each run started with an empty `/work`, so in chats and projects the
+  model wrote a long document, lost it in the next step and wrote it again, for minutes each time. `/work` now
+  carries over between runs of the same conversation (2 GB at most; removed with the conversation or after 30 days
+  without use; symbolic links are never followed).
+* **Progress while a tool call is being written**: a long file sent as a tool argument takes minutes and nothing was
+  shown. The live panel now says "Preparing: Running code · 12.4 k characters".
+
 ## 0.11.0 — 2026-11-03
 A calmer chat, a smooth spinner, Codex and an easier Claude Code.
 

@@ -7,7 +7,9 @@ engine-manager runs the container with that folder mounted as /work, and every n
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -24,6 +26,7 @@ OUT_FOLDER = "Resultados de código"
 MAX_OUTPUT_FILES = 20
 MAX_OUTPUT_BYTES = 100 * 1024 * 1024
 MAX_INPUT_BYTES = 300 * 1024 * 1024
+MAX_KEPT_BYTES = 2 * 1024 * 1024 * 1024  # working files a conversation keeps between runs
 SKIP_PARTS = {"in", "skills", "__pycache__", ".cache", ".config", ".npm", ".local", "node_modules"}
 
 
@@ -76,9 +79,79 @@ def _snapshot(root: Path) -> dict[str, tuple[int, int]]:
     return {str(p.relative_to(root)): (p.stat().st_size, p.stat().st_mtime_ns) for p in root.rglob("*") if p.is_file()}
 
 
+def _conv_dir(conversation_id) -> Path:
+    return get_settings().data_root / "sandbox-conv" / uuid.UUID(str(conversation_id)).hex
+
+
+def _kept_files(root: Path) -> dict[str, Path]:
+    """Regular files a conversation keeps between runs. Symbolic links are never followed: a program could point one at
+    any file of this machine. Inputs, skills and the program itself are written again on every run."""
+    out: dict[str, Path] = {}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        rel_dir = Path(dirpath).relative_to(root)
+        if rel_dir == Path("."):
+            dirnames[:] = [d for d in dirnames if d not in ("in", "skills")]
+        dirnames[:] = [d for d in dirnames if not (Path(dirpath) / d).is_symlink()]
+        for name in filenames:
+            p = Path(dirpath) / name
+            if not p.is_symlink() and p.is_file() and not (rel_dir == Path(".") and name.startswith(".main.")):
+                out[str(rel_dir / name)] = p
+    return out
+
+
+def restore_conversation_files(conversation_id, work: Path) -> set[str]:
+    """Copy what earlier runs of this conversation left into a new run's /work. Returns the restored paths."""
+    store = _conv_dir(conversation_id)
+    if not store.is_dir():
+        return set()
+    files = _kept_files(store)
+    for rel, src in files.items():
+        dst = work / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst, follow_symlinks=False)
+    return set(files)
+
+
+def keep_conversation_files(conversation_id, work: Path, restored: set[str], limit_bytes: int = MAX_KEPT_BYTES) -> bool:
+    """Merge a finished run back into the conversation's folder: changed files are copied and only what this run deleted
+    is removed, so agents running at once keep each other's files. False if it exceeds the limit (nothing is kept)."""
+    store = _conv_dir(conversation_id)
+    files = _kept_files(work)
+    if sum(p.stat().st_size for p in files.values()) > limit_bytes:
+        return False
+    for rel, src in files.items():
+        dst = store / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if not dst.exists() or dst.stat().st_mtime != src.stat().st_mtime or dst.stat().st_size != src.stat().st_size:
+            shutil.copy2(src, dst, follow_symlinks=False)
+    for rel in restored - set(files):
+        (store / rel).unlink(missing_ok=True)
+    store.mkdir(parents=True, exist_ok=True)
+    os.utime(store)  # last use, for purge_old_conversation_files
+    return True
+
+
+def forget_conversation_files(conversation_id) -> None:
+    shutil.rmtree(_conv_dir(conversation_id), ignore_errors=True)
+
+
+def purge_old_conversation_files(days: int = 30) -> int:
+    """Conversations not used for a month lose their working files (the files given to the user stay in My files)."""
+    root = get_settings().data_root / "sandbox-conv"
+    limit, removed = time.time() - days * 86400, 0
+    if root.is_dir():
+        for d in root.iterdir():
+            if d.is_dir() and d.stat().st_mtime < limit:
+                shutil.rmtree(d, ignore_errors=True)
+                removed += 1
+    return removed
+
+
 def run(db: Session, user: User, *, code: str, language: str = "python", inputs: list[UserFile] | None = None,
-        skills: list[Skill] | None = None, project_id: uuid.UUID | None = None, timeout_s: int | None = None) -> dict:
-    """Run code and return {exit_code, stdout, stderr, timed_out, seconds, files: [public UserFile dicts]}."""
+        skills: list[Skill] | None = None, project_id: uuid.UUID | None = None, timeout_s: int | None = None,
+        conversation_id=None) -> dict:
+    """Run code and return {exit_code, stdout, stderr, timed_out, seconds, files: [public UserFile dicts]}.
+    With `conversation_id`, /work keeps the files of the earlier runs of that conversation."""
     if not enabled(db):
         raise SandboxError("La ejecución de código está desactivada.", "Un administrador puede activarla en Ajustes → Sistema.")
     language = language if language in ("python", "bash", "node") else "python"
@@ -103,6 +176,7 @@ def run(db: Session, user: User, *, code: str, language: str = "python", inputs:
                     continue
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 dst.write_text(text)
+        restored = restore_conversation_files(conversation_id, work) if conversation_id else set()
         (work / {"python": ".main.py", "bash": ".main.sh", "node": ".main.js"}[language]).write_text(code)
         before = _snapshot(work)
         limit = int(timeout_s or get_setting(db, "code_exec_timeout_s") or 120)
@@ -115,7 +189,8 @@ def run(db: Session, user: User, *, code: str, language: str = "python", inputs:
                 raise SandboxError("Falta la imagen del entorno de ejecución.",
                                    "En el servidor: scripts/sah.sh build-engines (o ./install.sh) y vuelve a intentarlo.")
             raise SandboxError(f"No se pudo ejecutar el código: {e}")
-        return {**res, "files": _collect(db, user, work, before, project_id)}
+        kept = keep_conversation_files(conversation_id, work, restored) if conversation_id else None
+        return {**res, "files": _collect(db, user, work, before, project_id), "kept": kept}
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

@@ -619,7 +619,8 @@ CODE_TOOLS = [
                        "data analysis, charts, and to create or convert files (Word, Excel, PowerPoint, PDF, CSV, PNG). "
                        "The working folder is /work: input files are in /work/in/, skill files in /work/skills/<name>/. "
                        "Save every result file in /work (e.g. /work/grafico.png): new files are given to the user "
-                       "automatically. Print the key results to stdout.",
+                       "automatically. Files in /work stay there for your next run_code in this conversation, so fix or "
+                       "extend them instead of writing them again. Print the key results to stdout.",
         "parameters": {"type": "object", "properties": {
             "language": {"type": "string", "enum": ["python", "bash", "node"]},
             "code": {"type": "string", "description": "Complete program"},
@@ -1685,7 +1686,7 @@ class Runner:
             self.emit({"type": "tool_progress", "id": call_id, "message": "Ejecutando en el entorno aislado…"})
             try:
                 res = sandbox.run(db, user, code=code[:200_000], language=lang, inputs=inputs, skills=skills,
-                                  project_id=self.project_id)
+                                  project_id=self.project_id, conversation_id=self.t.conversation_id)
             except sandbox.SandboxError as e:
                 raise AgentError(e.message, e.remediation)
         ok = res["exit_code"] == 0 and not res["timed_out"]
@@ -1698,6 +1699,8 @@ class Runner:
                    f"--- stdout ---\n{res['stdout'][-8000:]}\n--- stderr ---\n{res['stderr'][-4000:]}\n"
                    + (f"--- files given to the user (shown with download links; do not write links) ---\n{listing}"
                       if files else "--- no new files in /work ---"))
+        if res.get("kept") is False:
+            content += "\n--- /work is over 2 GB: its files were NOT kept for the next run; download or shrink them ---"
         return {"ok": ok, "summary": summary,
                 "code": {"language": lang, "code": code[:20000], "stdout": res["stdout"][-6000:],
                          "stderr": res["stderr"][-3000:], "exit_code": res["exit_code"], "timed_out": res["timed_out"],
@@ -2081,6 +2084,7 @@ class Runner:
         calls: dict[int, dict] = {}
         out: list[str] = []
         finish = None
+        told = 0.0  # a long file written as a tool argument takes minutes: say how it goes (at most once per second)
         for chunk in llm.stream_json(self.model, payload, cancel_check=self.stop):
             if chunk.get("usage") and usage is not None:
                 for k in ("prompt_tokens", "completion_tokens"):
@@ -2103,6 +2107,10 @@ class Runner:
                     fn = tc.get("function") or {}
                     c["name"] += fn.get("name") or ""
                     c["args"] += fn.get("arguments") or ""
+                    if time.monotonic() - told >= 1.0 and c["name"]:
+                        told = time.monotonic()
+                        self.emit({"type": "tool_writing", "name": c["name"], "label": TOOL_LABELS.get(c["name"], c["name"]),
+                                   "chars": len(c["args"])})
                 if ch.get("finish_reason"):
                     finish = ch["finish_reason"]
         return "".join(out), calls, finish

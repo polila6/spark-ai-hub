@@ -84,12 +84,23 @@ def _heartbeat() -> None:
             log.warning("worker.heartbeat_failed", error=str(e))
 
 
+_last_purge = [0.0]
+
+
 def _maintenance() -> None:
     while not _stop.wait(30):
         try:
             reconcile_jobs()
         except Exception as e:  # noqa: BLE001
             log.warning("worker.reconcile_failed", error=str(e))
+        try:
+            if time.time() - _last_purge[0] > 3600:
+                from ..services import sandbox as sandbox_svc
+
+                _last_purge[0] = time.time()
+                sandbox_svc.purge_old_conversation_files()
+        except Exception as e:  # noqa: BLE001
+            log.warning("worker.sandbox_purge_failed", error=str(e))
         try:
             from ..services import notify
 

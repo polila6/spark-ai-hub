@@ -18,7 +18,7 @@ from ..db import SessionLocal, get_db
 from ..deps import Principal, current_principal, not_found, require_researcher, visible_filter
 from ..engines import LLM_ENGINES, EngineError
 from ..models import Conversation, Message, RegisteredModel, SavedPrompt, SharedResource, Visibility
-from ..services import llm, scheduler, turns
+from ..services import llm, sandbox, scheduler, turns
 from .openai_gateway import _record
 
 router = APIRouter(prefix="/api/v1/playground", tags=["playground"])
@@ -176,6 +176,7 @@ def delete_conversation(cid: uuid.UUID, p: Principal = Depends(current_principal
     turns.forget(c.id, p.id)
     db.delete(c)
     db.commit()
+    sandbox.forget_conversation_files(cid)
     return {"ok": True}
 
 
