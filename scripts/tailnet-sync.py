@@ -6,7 +6,7 @@ Runs every minute from a systemd user timer (`scripts/sah.sh tailnet-install`). 
     MCP links and sign-in callbacks follow it, and managers are notified;
   * updates SAH_PUBLIC_BASE_URL in .env (used on the next start and by the Android build);
   * re-creates Tailscale Serve (HTTPS on the tailnet only, never Funnel), which is lost when the account changes;
-  * moves Sunshine's bind_address to the new Tailscale IP, if Sunshine is bound to one;
+  * moves Sunshine's bind_address and the panel origin it trusts to the new Tailscale IP, if Sunshine is bound to one;
   * rebuilds the Android app with the new default address, when the build tools are installed.
 
 A custom SAH_PUBLIC_BASE_URL (not *.ts.net, not localhost) is respected: the address is then left alone. Nothing is
@@ -101,17 +101,29 @@ def serve_problem(output: str) -> tuple[str, str | None]:
 
 
 def sunshine_rebind(conf: str, ip: str | None) -> str | None:
-    """New sunshine.conf when it is bound to an outdated Tailscale address; None if there is nothing to do.
-    A missing bind_address or one outside Tailscale's range is a deliberate choice and is never touched."""
+    """New sunshine.conf when it is bound to an outdated Tailscale address or its panel origin is not allowed; None if
+    there is nothing to do. A missing bind_address or one outside Tailscale's range is a deliberate choice and is never
+    touched. Sunshine's CSRF check only trusts localhost by default, and a panel bound to the Tailscale IP is not on
+    localhost: without this origin every PIN sent from the panel is rejected."""
     m = re.search(r"^(\s*bind_address\s*=\s*)(\S+)\s*$", conf, re.M)
-    if not m or not ip or m.group(2) == ip:
+    if not m or not ip:
         return None
     try:
         if ipaddress.ip_address(m.group(2)) not in ipaddress.ip_network("100.64.0.0/10"):
             return None
     except ValueError:
         return None
-    return conf[:m.start()] + m.group(1) + ip + conf[m.end():]
+    new = conf[:m.start()] + m.group(1) + ip + conf[m.end():]
+    port = re.search(r"^[ \t]*port[ \t]*=[ \t]*(\d+)", conf, re.M)
+    origin = f"https://{ip}:{int(port.group(1)) + 1 if port else 47990}"
+    c = re.search(r"^([ \t]*csrf_allowed_origins[ \t]*=[ \t]*)(.*?)[ \t]*$", new, re.M)
+    if c:
+        kept = [o.strip() for o in c.group(2).split(",") if o.strip() and o.strip() != f"https://{m.group(2)}:{origin.rsplit(':', 1)[1]}"]
+        value = ",".join(kept if origin in kept else [*kept, origin])
+        new = new[:c.start()] + c.group(1) + value + new[c.end():]
+    else:
+        new = new.rstrip("\n") + f"\ncsrf_allowed_origins = {origin}\n"
+    return None if new == conf else new
 
 
 # ------------------------------------------------------------------ actions

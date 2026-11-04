@@ -55,12 +55,24 @@ def test_serve_problems_are_told_apart():
 
 
 def test_sunshine_only_moves_between_tailscale_addresses():
-    conf = "# c\nbind_address = 100.64.1.2\nupnp = disabled\n"
-    assert sync.sunshine_rebind(conf, "100.66.0.5") == "# c\nbind_address = 100.66.0.5\nupnp = disabled\n"
+    conf = "# c\nbind_address = 100.64.1.2\nupnp = disabled\ncsrf_allowed_origins = https://100.64.1.2:47990\n"
+    assert sync.sunshine_rebind(conf, "100.66.0.5") == ("# c\nbind_address = 100.66.0.5\nupnp = disabled\n"
+                                                         "csrf_allowed_origins = https://100.66.0.5:47990\n")
     assert sync.sunshine_rebind(conf, "100.64.1.2") is None  # already right
     assert sync.sunshine_rebind(conf, None) is None  # never left without a value
     assert sync.sunshine_rebind("upnp = disabled\n", "100.66.0.5") is None  # no bind_address: a deliberate choice
     assert sync.sunshine_rebind("bind_address = 192.168.1.5\n", "100.66.0.5") is None  # not a Tailscale address
+
+
+def test_sunshine_panel_origin_is_trusted_so_a_pin_can_be_sent():
+    allowed = "bind_address = 100.64.1.2\ncsrf_allowed_origins = https://100.64.1.2:47990\n"
+    assert sync.sunshine_rebind("bind_address = 100.64.1.2\n", "100.64.1.2") == allowed  # added when missing
+    assert sync.sunshine_rebind("bind_address = 100.64.1.2\nport = 50000\n", "100.64.1.2").endswith(
+        "csrf_allowed_origins = https://100.64.1.2:50001\n")  # the panel is on port + 1
+    custom = "bind_address = 100.64.1.2\ncsrf_allowed_origins = https://a.example,https://100.64.1.2:47990\n"
+    assert sync.sunshine_rebind(custom, "100.64.1.2") is None  # the admin's own origins stay
+    assert sync.sunshine_rebind(custom, "100.66.0.5") == (
+        "bind_address = 100.66.0.5\ncsrf_allowed_origins = https://a.example,https://100.66.0.5:47990\n")
 
 
 def test_public_url_follows_tailscale_but_a_custom_one_wins(tmp_path, monkeypatch):
