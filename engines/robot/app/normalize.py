@@ -185,6 +185,17 @@ def expand_23_to_29(qpos):
     return out
 
 
+def encoder_mode(official: bool, provisional: bool) -> str | None:
+    """Kimodo was trained on Llama 3, so it is always preferred the moment it is complete; Llama 3.1 only stands in for it."""
+    return "official" if official else "provisional" if provisional else None
+
+
+def weights_complete(index: dict | None, present: set[str]) -> bool:
+    """A model counts as installed when every shard its index names is there, not when the first of them lands."""
+    shards = set((index or {}).get("weight_map", {}).values())
+    return bool(shards) and shards <= present
+
+
 def cache_key(prompt: str) -> str:
     return hashlib.sha256(prompt.encode()).hexdigest()
 

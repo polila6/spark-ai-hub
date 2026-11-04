@@ -29,15 +29,18 @@ function LlamaCard({ data, manager, act }: { data: any; manager: boolean; act: (
   const repos: string[] = data.encoder_repos ?? [];
   const running = repos.some((r) => server?.downloads?.[r]?.state === "running");
   const failed = repos.map((r) => server?.downloads?.[r]).find((d: any) => d?.state === "failed");
+  const provisional = server?.provisional_installed;
+  const provisionalJob = server?.downloads?.[data.provisional_repo];
   return (
     <Card className="mt-4">
-      <CardHeader title={L("Falta un paso: instalar Llama 3", "One step left: install Llama 3")}
-        subtitle={L("Kimodo convierte el texto en vectores con este modelo concreto, y los vectores de otro modelo (como el principal del hub) no le sirven. Ocupa unos 16 GB de disco y, cargado, unos 17 GB de memoria.",
-          "Kimodo turns text into vectors with this exact model, and vectors from another model (such as the hub's main one) do not work. It takes about 16 GB of disk and, once loaded, about 17 GB of memory.")} />
+      <CardHeader title={provisional ? L("Pendiente: instalar Llama 3 oficial", "Pending: install the official Llama 3") : L("Falta un paso: instalar Llama 3", "One step left: install Llama 3")}
+        subtitle={L("Kimodo se entrenó con este modelo concreto. Ocupa unos 16 GB de disco y, cargado, unos 17 GB de memoria.", "Kimodo was trained on this exact model. It takes about 16 GB of disk and, once loaded, about 17 GB of memory.")} />
       <CardBody className="space-y-3 text-sm">
+        {provisional && <Notice tone="info">{L("Mientras tanto funciona con Llama 3.1, que no es el modelo con el que se entrenó Kimodo: los movimientos pueden ser distintos. Cuando instales el oficial, el servidor cambia solo.", "Meanwhile it runs on Llama 3.1, which is not the model Kimodo was trained on: motions may differ. Once you install the official one, the server switches by itself.")}</Notice>}
         <ol className="list-decimal space-y-2 pl-5">
-          <li>{L("Entra en Hugging Face con tu cuenta y pide acceso. Meta lo revisa, y suele tardar poco:", "Sign in to Hugging Face with your account and request access. Meta reviews it, usually quickly:")}{" "}
-            <a className="text-accent underline" href="https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct" target="_blank" rel="noreferrer">Meta-Llama-3-8B-Instruct <ExternalLink className="inline h-3 w-3" /></a></li>
+          <li>{L("Entra en Hugging Face con tu cuenta y pide acceso. Meta lo revisa:", "Sign in to Hugging Face with your account and request access. Meta reviews it:")}{" "}
+            <a className="text-accent underline" href="https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct" target="_blank" rel="noreferrer">Meta-Llama-3-8B-Instruct <ExternalLink className="inline h-3 w-3" /></a>.{" "}
+            <a className="text-accent underline" href="https://huggingface.co/settings/gated-repositories" target="_blank" rel="noreferrer">{L("Ver cómo va tu solicitud", "See how your request is doing")} <ExternalLink className="inline h-3 w-3" /></a></li>
           <li>{L("Crea un token de lectura en", "Create a read token at")}{" "}
             <a className="text-accent underline" href="https://huggingface.co/settings/tokens/new?tokenType=read" target="_blank" rel="noreferrer">huggingface.co/settings/tokens <ExternalLink className="inline h-3 w-3" /></a>{" "}
             {L("y pégalo en", "and paste it in")} <a className="text-accent underline" href="/settings">{L("Ajustes → Hugging Face", "Settings → Hugging Face")}</a>.</li>
@@ -47,9 +50,14 @@ function LlamaCard({ data, manager, act }: { data: any; manager: boolean; act: (
         {access === "denied" && <Notice tone="warn">{L("El token del hub aún no tiene acceso a Llama 3: falta que Meta lo apruebe o el token es de otra cuenta.", "The hub's token has no access to Llama 3 yet: Meta has not approved it, or the token belongs to another account.")}</Notice>}
         {access === "granted" && <Notice tone="info">{L("El token del hub ya tiene acceso. Puedes instalarlo.", "The hub's token has access. You can install it.")}</Notice>}
         {failed && <Notice tone="warn">{L("La descarga falló:", "The download failed:")} {String(failed.error ?? "").slice(-200)}</Notice>}
-        {manager && <Button disabled={access !== "granted" || running || !server} onClick={async () => { for (const repo of repos) await act("/install", { repo_id: repo }); }}>
-          {running ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />} {running ? L("Descargando…", "Downloading…") : L("Instalar Llama 3", "Install Llama 3")}
-        </Button>}
+        {manager && <div className="flex flex-wrap gap-2">
+          <Button disabled={access !== "granted" || running || !server} onClick={async () => { for (const repo of repos) await act("/install", { repo_id: repo }); }}>
+            {running ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />} {running ? L("Descargando…", "Downloading…") : L("Instalar Llama 3", "Install Llama 3")}
+          </Button>
+          {!provisional && <Button variant="ghost" disabled={!server || provisionalJob?.state === "running"} onClick={async () => { for (const repo of [data.provisional_repo, ...repos.slice(1)]) await act("/install", { repo_id: repo }); }}>
+            <Download className="h-4 w-4" /> {provisionalJob?.state === "running" ? L("Descargando Llama 3.1…", "Downloading Llama 3.1…") : L("Usar Llama 3.1 mientras tanto", "Use Llama 3.1 meanwhile")}
+          </Button>}
+        </div>}
       </CardBody>
     </Card>
   );
@@ -69,7 +77,7 @@ function TestCard({ data }: { data: any }) {
     try {
       setResult(await api("/api/v1/robot/test", { method: "POST", json: { prompt, duration, diffusion_steps: steps } }));
     } catch (e: any) {
-      push("error", e?.code === "text_encoder_missing" ? L("Falta instalar Llama 3: sigue los pasos de esta página.", "Llama 3 is not installed yet: follow the steps on this page.") : e?.message ?? String(e));
+      push("error", e?.code === "text_encoder_missing" ? L("Falta instalar el modelo de texto: sigue los pasos de esta página.", "The text model is not installed yet: follow the steps on this page.") : e?.message ?? String(e));
     } finally {
       setBusy(false);
     }
@@ -96,7 +104,7 @@ function TestCard({ data }: { data: any }) {
         </div>
         {result && (
           <div className="flex flex-wrap items-center gap-3">
-            <span>{L(`Hecho en ${result.elapsed_s} s: ${result.num_frames} fotogramas a ${result.fps} fps.`, `Done in ${result.elapsed_s} s: ${result.num_frames} frames at ${result.fps} fps.`)}</span>
+            <span>{L(`Hecho en ${result.elapsed_s} s: ${result.num_frames} fotogramas a ${result.fps} fps.`, `Done in ${result.elapsed_s} s: ${result.num_frames} frames at ${result.fps} fps.`)}{result.text_encoder === "provisional" && ` ${L("Texto con Llama 3.1 (provisional).", "Text with Llama 3.1 (provisional).")}`}</span>
             {result.csv && <Button size="sm" variant="ghost" onClick={save}><Download className="h-4 w-4" /> CSV</Button>}
           </div>
         )}
@@ -217,13 +225,14 @@ export default function RobotPage() {
             {data.error && running && <p className="text-subtle">{L("Arrancando…", "Starting…")}</p>}
             {server && <>
               <p>{L("Modelos en memoria:", "Models in memory:")} <b>{server.loaded?.map((m: any) => m.display).join(", ") || L("ninguno", "none")}</b>{server.loading?.length > 0 && ` · ${L("cargando", "loading")} ${server.loading.join(", ")}`}</p>
-              <p>{L("Texto (Llama 3):", "Text (Llama 3):")} <b>{server.encoder_loaded ? L("en memoria", "in memory") : server.llama_installed ? L("instalado, se carga al usarlo", "installed, loads when used") : L("sin instalar", "not installed")}</b>
+              <p>{L("Texto:", "Text:")} <b>{!server.encoder_mode ? L("sin instalar", "not installed") : server.encoder_mode === "official" ? "Llama 3" : L("Llama 3.1 (provisional)", "Llama 3.1 (provisional)")}</b>
+                {server.encoder_mode && ` · ${server.encoder_loaded ? L("en memoria", "in memory") : L("se carga al usarlo", "loads when used")}`}
                 {" · "}{L(`${server.cached_prompts} textos ya guardados`, `${server.cached_prompts} prompts saved`)}</p>
-              <p>{L("Memoria libre en el Spark:", "Free memory on the Spark:")} <b>{free} GB</b>{!server.encoder_loaded && free < server.encoder_gb + server.margin_gb && ` · ${L(`Llama 3 necesita ${server.encoder_gb + server.margin_gb} GB para cargarse`, `Llama 3 needs ${server.encoder_gb + server.margin_gb} GB to load`)}`}</p>
+              <p>{L("Memoria libre en el Spark:", "Free memory on the Spark:")} <b>{free} GB</b>{!server.encoder_loaded && server.encoder_mode && free < server.encoder_gb + server.margin_gb && ` · ${L(`el texto necesita ${server.encoder_gb + server.margin_gb} GB para cargarse`, `text needs ${server.encoder_gb + server.margin_gb} GB to load`)}`}</p>
               <p>{L("Física:", "Physics:")} <b>MuJoCo</b> · {L(`${server.generated} movimientos generados desde el último arranque`, `${server.generated} motions generated since the last start`)}</p>
               {server.last_error && <Notice tone="warn">{server.last_error}</Notice>}
             </>}
-            {manager && running && server?.encoder_loaded && <Button size="sm" variant="ghost" onClick={() => act("/unload", { model: "text_encoder" })}>{L("Liberar Llama 3", "Release Llama 3")}</Button>}
+            {manager && running && server?.encoder_loaded && <Button size="sm" variant="ghost" onClick={() => act("/unload", { model: "text_encoder" })}>{L("Liberar el modelo de texto", "Release the text model")}</Button>}
           </CardBody>
         </Card>
       </div>

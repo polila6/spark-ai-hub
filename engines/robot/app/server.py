@@ -3,8 +3,12 @@
 Public, on the Tailscale address: /generate, /physics, /models, /health.
 Hub only, with the admin token: /_admin/*.
 
-Models stay in memory while they fit. Llama 3 (the text encoder, about 17 GB) loads only if the memory is free, is the first
-to leave when the machine runs short, and embeddings are cached on disk so a repeated prompt does not need it at all."""
+Models stay in memory while they fit. The text encoder (about 17 GB) loads only if the memory is free, is the first to leave
+when the machine runs short, and embeddings are cached on disk so a repeated prompt does not need it at all.
+
+The encoder Kimodo was trained on is Llama 3 8B, which needs access approved by Meta. Until it is installed Llama 3.1 8B stands
+in for it, which is close but not the same: answers say so, its vectors are cached apart so none survive the change, and the
+server moves to Llama 3 by itself once the download is complete."""
 from __future__ import annotations
 
 import collections
@@ -12,6 +16,7 @@ import hmac
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -37,7 +42,9 @@ MARGIN_GB = float(os.environ.get("SAH_ROBOT_MARGIN_GB", "2"))
 ENCODER_GB = 17.0  # Llama 3 8B in bf16 with its adapters (Kimodo's documented ~17 GB)
 MOTION_MODEL_GB = 2.0
 LLAMA = "meta-llama/Meta-Llama-3-8B-Instruct"
+PROVISIONAL = "RedHatAI/Llama-3.1-8B-Instruct"
 ENCODER_REPOS = ("McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp", "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised")
+PROVISIONAL_NOTE = "Text encoded with Llama 3.1 while Llama 3 is not installed: motions may differ from the official encoder's."
 
 app = FastAPI(title="Spark AI Hub robot server", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], allow_private_network=True)
@@ -46,6 +53,7 @@ gpu = threading.RLock()  # one generation at a time
 state_lock = threading.Lock()
 models: dict[str, dict] = {}
 encoder: Any = None
+encoder_loaded_mode: str | None = None
 busy: dict | None = None
 history: collections.deque = collections.deque(maxlen=60)
 downloads: dict[str, dict] = {}
@@ -70,9 +78,27 @@ def is_downloaded(repo_id: str) -> bool:
     return any(repo_dir(repo_id).glob("snapshots/*/*"))
 
 
+def _weights_complete(repo_id: str) -> bool:
+    for snapshot in repo_dir(repo_id).glob("snapshots/*"):
+        try:
+            index = json.loads((snapshot / "model.safetensors.index.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if n.weights_complete(index, {f.name for f in snapshot.iterdir() if f.exists()}):
+            return True
+    return False
+
+
 def llama_ready() -> bool:
-    # consolidated.*.pth may be missing on purpose: only the safetensors are needed
-    return any(repo_dir(LLAMA).glob("snapshots/*/model*.safetensors")) and all(is_downloaded(r) for r in ENCODER_REPOS)
+    return _weights_complete(LLAMA) and all(is_downloaded(r) for r in ENCODER_REPOS)
+
+
+def provisional_ready() -> bool:
+    return _weights_complete(PROVISIONAL) and all(is_downloaded(r) for r in ENCODER_REPOS)
+
+
+def encoder_mode() -> str | None:
+    return n.encoder_mode(llama_ready(), provisional_ready())
 
 
 class Unavailable(Exception):
@@ -80,13 +106,33 @@ class Unavailable(Exception):
         self.code, self.message, self.status = code, message, status
 
 
+def provisional_base() -> str:
+    """LLM2Vec reads the base model's name from the adapter, so Llama 3.1 is named in a private copy of the adapter's folder."""
+    source = next(repo_dir(ENCODER_REPOS[0]).glob("snapshots/*"))
+    target = next(repo_dir(PROVISIONAL).glob("snapshots/*"))
+    folder = Path("/tmp/provisional-base")
+    shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir(parents=True)
+    for f in source.iterdir():
+        if f.name != "adapter_config.json" and f.suffix != ".py":
+            (folder / f.name).symlink_to(f.resolve())
+    conf = json.loads((source / "adapter_config.json").read_text())
+    conf["base_model_name_or_path"] = str(target)
+    (folder / "adapter_config.json").write_text(json.dumps(conf))
+    return str(folder)
+
+
 def get_encoder():
-    global encoder
+    global encoder, encoder_loaded_mode
+    mode = encoder_mode()
     with state_lock:
-        if encoder is not None:
+        if encoder is not None and encoder_loaded_mode == mode:
             return encoder
-    if not llama_ready():
-        raise Unavailable("text_encoder_missing", "Llama 3 8B is not installed on this Spark: open the Robot page of the hub to install it.")
+    if mode is None:
+        raise Unavailable("text_encoder_missing", "No text encoder is installed on this Spark: open the Robot page of the hub to install it.")
+    if encoder is not None:  # Llama 3 has just been installed: Llama 3.1 gives up its place first
+        log.info(json.dumps({"event": "text_encoder.switching", "to": mode}))
+        unload("text_encoder")
     free = available_gb()
     if not n.fits(free, ENCODER_GB, MARGIN_GB):
         raise Unavailable("not_enough_memory", f"The text encoder needs about {ENCODER_GB:.0f} GB and only {free:.1f} GB are free. "
@@ -95,11 +141,11 @@ def get_encoder():
     loading["text_encoder"] = "loading"
     try:
         t0 = time.time()
-        enc = LLM2VecEncoder(base_model_name_or_path=ENCODER_REPOS[0], peft_model_name_or_path=ENCODER_REPOS[1],
-                             dtype="bfloat16", llm_dim=4096, device="auto")
-        log.info(json.dumps({"event": "text_encoder.loaded", "s": round(time.time() - t0, 1)}))
+        enc = LLM2VecEncoder(base_model_name_or_path=ENCODER_REPOS[0] if mode == "official" else provisional_base(),
+                             peft_model_name_or_path=ENCODER_REPOS[1], dtype="bfloat16", llm_dim=4096, device="auto")
+        log.info(json.dumps({"event": "text_encoder.loaded", "mode": mode, "s": round(time.time() - t0, 1)}))
         with state_lock:
-            encoder = enc
+            encoder, encoder_loaded_mode = enc, mode
         return enc
     finally:
         loading.pop("text_encoder", None)
@@ -115,16 +161,20 @@ class CachedEncoder:
         import torch
         single = isinstance(texts, str)
         items = [texts] if single else list(texts)
+        mode = encoder_mode()
+        if mode is None:
+            raise Unavailable("text_encoder_missing", "No text encoder is installed on this Spark: open the Robot page of the hub to install it.")
+        folder = CACHE_DIR / mode  # vectors of different encoders must never mix
         out = []
         for text in items:
-            path = CACHE_DIR / f"{n.cache_key(text)}.npy"
+            path = folder / f"{n.cache_key(text)}.npy"
             if path.exists():
                 out.append(np.load(path))
                 continue
             log.info(json.dumps({"event": "text_encoder.needed", "chars": len(text), "text": text[:80]}))
             value, _ = get_encoder()(text)
             array = value.detach().float().cpu().numpy()
-            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            folder.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp.npy")
             np.save(tmp, array)
             tmp.replace(path)
@@ -181,13 +231,13 @@ def get_model(name: str) -> dict:
 
 
 def unload(target: str) -> bool:
-    global encoder
+    global encoder, encoder_loaded_mode
     import gc
     import torch
     with gpu:
         hit = False
         if target in ("text_encoder", "all") and encoder is not None:
-            encoder, hit = None, True
+            encoder, encoder_loaded_mode, hit = None, None, True
         for key in list(models):
             if target in ("all", key, models[key]["display"]):
                 del models[key]
@@ -214,11 +264,18 @@ def memory_guard() -> None:
 
 
 def autoload() -> None:
+    """What fits stays ready: the first prompt of the day should not wait a minute and a half for the encoder."""
     for name in AUTOLOAD:
         try:
             get_model(name)
         except Exception as e:
             log.info(json.dumps({"event": "autoload.failed", "model": name, "error": str(getattr(e, "message", e))}))
+    try:
+        if encoder_mode():
+            with gpu:
+                get_encoder()
+    except Exception as e:
+        log.info(json.dumps({"event": "autoload.failed", "model": "text_encoder", "error": str(getattr(e, "message", e))}))
 
 
 @app.on_event("startup")
@@ -319,7 +376,9 @@ def generate(req: n.Request) -> dict:
             result: dict[str, Any] = {"status": "ok", "ok": True, "success": True, "model": entry["display"], "fps": entry["fps"],
                                       "elapsed_s": round(elapsed, 2), "prompt": req.prompts if multi else req.prompts[0],
                                       "seed": req.seed, "skeleton": entry["skeleton"], "num_frames": sum(req.frames),
-                                      "duration": sum(req.frames) / entry["fps"]}
+                                      "duration": sum(req.frames) / entry["fps"], "text_encoder": encoder_mode()}
+            if encoder_mode() == "provisional":
+                result["warnings"] = [PROVISIONAL_NOTE]
             if "g1" in entry["key"]:
                 qpos = np.asarray(MujocoQposConverter(entry["model"].skeleton).dict_to_qpos(output, entry["device"]))
                 if qpos.ndim == 2:
@@ -376,7 +435,7 @@ async def physics_route(request: HttpRequest):
         qpos = n.expand_23_to_29(np.asarray(rows, dtype=np.float64))
         from . import physics
         from starlette.concurrency import run_in_threadpool
-        result = await run_in_threadpool(physics.check, qpos, fps, bool(body.get("rollout", True)))
+        result = await run_in_threadpool(physics.check, qpos, fps, bool(body.get("rollout", False)))
         return {"status": "ok", "success": True, **result}
     except n.BadRequest as e:
         return error("bad_request", str(e), 400)
@@ -393,7 +452,7 @@ for _path in ("/physics", "/physics/check", "/check_physics", "/simulate", "/muj
 
 def public_status() -> dict:
     return {"status": "ok", "ok": True, "service": "spark-robot", "models": [m["display"] for m in models.values()], "default_model": n.DEFAULT_MODEL,
-            "text_encoder": "loaded" if encoder is not None else ("available" if llama_ready() else "missing"), "busy": busy is not None,
+            "text_encoder": encoder_mode() or "missing", "text_encoder_loaded": encoder is not None, "busy": busy is not None,
             "physics": True, "mujoco": True, "dof": [23, 29], "fps": n.FPS, "poses": True}
 
 
@@ -436,9 +495,9 @@ def admin_status():
             job.update(state="done" if job["proc"].returncode == 0 else "failed", finished=time.time(), proc=None)
             job["error"] = None if job["state"] == "done" else _tail(job)
     return {**public_status(), "available_gb": round(available_gb(), 1), "margin_gb": MARGIN_GB, "encoder_gb": ENCODER_GB,
-            "encoder_loaded": encoder is not None, "llama_installed": llama_ready(), "loaded": [{k: m[k] for k in ("key", "display", "repo", "device", "skeleton", "fps", "used")} for m in models.values()],
+            "encoder_loaded": encoder is not None, "llama_installed": llama_ready(), "provisional_installed": provisional_ready(), "encoder_mode": encoder_mode(), "encoder_loaded_mode": encoder_loaded_mode, "loaded": [{k: m[k] for k in ("key", "display", "repo", "device", "skeleton", "fps", "used")} for m in models.values()],
             "loading": list(loading), "installed": installed, "busy_info": busy, "last_error": last_error, "generated": generated,
-            "cached_prompts": len(list(CACHE_DIR.glob("*.npy"))) if CACHE_DIR.exists() else 0,
+            "cached_prompts": len(list((CACHE_DIR / (encoder_mode() or "none")).glob("*.npy"))),
             "downloads": {r: {k: v for k, v in j.items() if k != "proc"} | {"bytes": _size(r)} for r, j in downloads.items()}}
 
 

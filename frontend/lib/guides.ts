@@ -14,13 +14,13 @@ export const GUIDES: Record<string, GuideDef> = {
     steps: [
       b("Copia la dirección de «Conecta tu programa» y pégala en tu programa, en la URL del servidor Kimodo. El ordenador donde lo usas debe estar conectado a Tailscale.", "Copy the address from “Connect your program” and paste it into your program, as the Kimodo server URL. The computer running it must be connected to Tailscale."),
       b("Si el servicio está parado, pulsa «Iniciar». Después arranca solo cuando se enciende el Spark.", "If the service is stopped, press “Start”. It then starts by itself whenever the Spark boots."),
-      b("Instala Llama 3 una vez (abajo te indica los pasos). Kimodo lo necesita para entender el texto; el modelo principal del hub no puede sustituirlo.", "Install Llama 3 once (the steps are below). Kimodo needs it to understand text; the hub's main model cannot replace it."),
+      b("Instala Llama 3 una vez (abajo te indica los pasos). Kimodo se entrenó con él para entender el texto; el modelo principal del hub no puede sustituirlo. Mientras Meta aprueba tu acceso puedes usar Llama 3.1 como provisional: el servidor cambia solo cuando esté el oficial.", "Install Llama 3 once (the steps are below). Kimodo was trained on it to understand text; the hub's main model cannot replace it. While Meta approves your access you can use Llama 3.1 as a stand-in: the server switches by itself once the official one is there."),
       b("Pulsa «Probar» para generar un movimiento desde aquí y comprobar que todo funciona antes de abrir tu programa.", "Press “Try it” to generate a motion from here and check everything works before opening your program."),
       b("En la Biblioteca instalas y cargas otros modelos compatibles con tu robot.", "In the Library you install and load other models compatible with your robot."),
       b("Si tu programa da error, abre «Últimas peticiones»: muestra lo que ha enviado y lo que ha contestado el servidor.", "If your program reports an error, open “Latest requests”: it shows what it sent and what the server answered."),
     ],
     tips: [
-      b("Los modelos se quedan en memoria mientras quepan. Si falta memoria, Llama 3 es el primero en salir, para no afectar al modelo principal. Los textos ya usados siguen funcionando sin él.", "Models stay in memory while they fit. If memory runs short, Llama 3 leaves first so the main model is not affected. Prompts already used keep working without it."),
+      b("Los modelos se quedan en memoria mientras quepan. Si falta memoria, el modelo de texto es el primero en salir, para no afectar al modelo principal. Los textos ya usados siguen funcionando sin él.", "Models stay in memory while they fit. If memory runs short, the text model leaves first so the main model is not affected. Prompts already used keep working without it."),
       b("Escribe las instrucciones en inglés: es el idioma con el que se entrenó Kimodo.", "Write prompts in English: it is the language Kimodo was trained on."),
     ],
     links: [{ href: "/connect", label: b("Conectar herramientas", "Connect tools") }],

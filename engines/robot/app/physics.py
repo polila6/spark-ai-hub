@@ -1,9 +1,9 @@
 """MuJoCo checks on a G1 motion: what the kinematic preview cannot see.
 
-Reported per motion: self-collisions, floor penetration, joint limits, centre of mass over the feet, torque the motion would
-need (inverse dynamics) and a simple tracking rollout. Two of these are estimates and read as such: torque comes from
-differentiating poses (information only, it never fails a motion), and the rollout uses generic PD gains, not the robot's
-controller, so a fall there is a warning to look closer and not a prediction of what the real robot does."""
+Reported per motion: self-collisions with their depth, floor penetration, joint limits and centre of mass over the feet. Two
+extras are estimates and never decide the verdict. Torque comes from differentiating poses. The tracking rollout (only on
+request) uses generic PD gains with no balance controller, so even a robot told to stand still falls within about a second:
+it can compare motions but says nothing about whether the real robot would stay up."""
 from __future__ import annotations
 
 import threading
@@ -38,7 +38,7 @@ def _names(m, kind, ids):
     return [mujoco.mj_id2name(m, kind, int(i)) or str(int(i)) for i in ids]
 
 
-def check(qpos: np.ndarray, fps: float, rollout: bool = True) -> dict:
+def check(qpos: np.ndarray, fps: float, rollout: bool = False) -> dict:
     with _lock:
         return _check(_load(), np.asarray(qpos, dtype=np.float64), fps, rollout)
 
@@ -60,6 +60,7 @@ def _check(m, qpos: np.ndarray, fps: float, rollout: bool) -> dict:
     dt = 1.0 / fps
     T = len(qpos)
     collisions: dict[tuple[str, str], int] = {}
+    depth: dict[tuple[str, str], float] = {}
     penetration, airborne, com = 0.0, 0, []
     limits = m.jnt_range[1:]  # the first joint is the floating base
     angles = qpos[:, 7:]
@@ -90,7 +91,9 @@ def _check(m, qpos: np.ndarray, fps: float, rollout: bool) -> dict:
                 touching = True
                 penetration = max(penetration, -float(c.dist))
             elif c.dist < 0 and m.geom_bodyid[c.geom1] != m.geom_bodyid[c.geom2]:
-                pairs.add(tuple(sorted(_names(m, mujoco.mjtObj.mjOBJ_BODY, [m.geom_bodyid[c.geom1], m.geom_bodyid[c.geom2]]))))
+                pair = tuple(sorted(_names(m, mujoco.mjtObj.mjOBJ_BODY, [m.geom_bodyid[c.geom1], m.geom_bodyid[c.geom2]])))
+                pairs.add(pair)
+                depth[pair] = max(depth.get(pair, 0.0), -float(c.dist))
         for pair in pairs:
             collisions[pair] = collisions.get(pair, 0) + 1
         airborne += 0 if touching else 1
@@ -104,7 +107,7 @@ def _check(m, qpos: np.ndarray, fps: float, rollout: bool) -> dict:
                    for j in range(len(dof)) if frc[j, 1] > 0 and torque_peak[dof[j]] > frc[j, 1]]
     result = {
         "frames": T, "fps": fps, "duration_s": round(T / fps, 3),
-        "self_collisions": [{"bodies": list(k), "frames": v} for k, v in sorted(collisions.items(), key=lambda kv: -kv[1])][:30],
+        "self_collisions": [{"bodies": list(k), "frames": v, "max_depth_mm": round(depth[k] * 1000, 1)} for k, v in sorted(collisions.items(), key=lambda kv: -depth[kv[0]])][:30],
         "floor_penetration_m": round(penetration, 4), "frames_without_floor_contact": airborne,
         "joint_limit_violations": limit_hits, "torque_estimate_over_limit": torque_estimate,
         "com_to_contacts_max_m": round(max(com), 3) if com else None,
@@ -118,8 +121,6 @@ def _check(m, qpos: np.ndarray, fps: float, rollout: bool) -> dict:
         warnings.append("floor_penetration")
     if limit_hits:
         warnings.append("joint_limits")
-    if rollout and result["tracking"]["fell"]:
-        warnings.append("falls_in_simulation")
     return {**result, "ok": not warnings, "passed": not warnings, "warnings": warnings}
 
 
@@ -150,4 +151,4 @@ def _rollout(m, qpos: np.ndarray, fps: float) -> dict:
             fell_at = t
             break
     return {"fell": fell_at is not None, "fell_at_s": round(fell_at / fps, 2) if fell_at is not None else None,
-            "max_root_drift_m": round(error, 3), "controller": "generic_pd"}
+            "max_root_drift_m": round(error, 3), "controller": "generic_pd", "note": "no balance controller: not a prediction for the real robot"}

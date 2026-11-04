@@ -17,7 +17,8 @@ PORT = 5000
 BASE = f"http://sah-robot:{PORT}"
 LLAMA = "meta-llama/Meta-Llama-3-8B-Instruct"
 ENCODER_REPOS = (LLAMA, "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp", "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised")
-INSTALLABLE_EXTRA = set(ENCODER_REPOS)
+PROVISIONAL = "RedHatAI/Llama-3.1-8B-Instruct"  # stands in for Llama 3 while Meta has not approved the account
+INSTALLABLE_EXTRA = {*ENCODER_REPOS, PROVISIONAL}
 
 # What the deployed Kimodo release can load. "compatible" means the output is a G1 motion in MuJoCo order (root, quaternion,
 # 29 joints), the only thing a G1 suite can play; the human skeletons are listed so nobody has to wonder why they are absent.
@@ -129,5 +130,5 @@ def newer_on_hub(token: str | None) -> list[dict]:
 
 
 def summarize_test(result: dict) -> dict:
-    keep = ("status", "model", "fps", "elapsed_s", "num_frames", "duration", "dof", "seed", "csv")
+    keep = ("status", "model", "fps", "elapsed_s", "num_frames", "duration", "dof", "seed", "csv", "text_encoder")
     return {k: result.get(k) for k in keep}

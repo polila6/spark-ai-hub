@@ -49,7 +49,7 @@ def status(p: Principal = Depends(current_principal), db: Session = Depends(get_
     token = get_setting(db, "hf_token")
     return {"urls": robot.urls(), "container": box, "server": server, "error": error,
             "library": robot.library(server), "news": robot.newer_on_hub(token), "llama_access": robot.llama_access(token),
-            "encoder_repos": list(robot.ENCODER_REPOS)}
+            "encoder_repos": list(robot.ENCODER_REPOS), "provisional_repo": robot.PROVISIONAL}
 
 
 @router.post("/start")

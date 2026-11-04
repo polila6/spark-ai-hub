@@ -77,6 +77,20 @@ def test_memory_fit_keeps_a_margin():
     assert n.fits(23, 18, 4) and not n.fits(21.9, 18, 4)
 
 
+def test_official_encoder_wins_as_soon_as_it_is_complete():
+    assert n.encoder_mode(False, False) is None
+    assert n.encoder_mode(False, True) == "provisional"
+    assert n.encoder_mode(True, True) == "official"
+    assert n.encoder_mode(True, False) == "official"
+
+
+def test_a_model_is_installed_only_when_every_shard_is_there():
+    index = {"weight_map": {"a": "model-1.safetensors", "b": "model-2.safetensors", "c": "model-2.safetensors"}}
+    assert not n.weights_complete(index, {"model-1.safetensors"})
+    assert n.weights_complete(index, {"model-1.safetensors", "model-2.safetensors", "config.json"})
+    assert not n.weights_complete(None, {"model-1.safetensors"}) and not n.weights_complete({"weight_map": {}}, set())
+
+
 def test_request_log_shortens_what_it_keeps():
     out = n.summarize({"prompt": "x" * 500, "qpos": [[0.0] * 36] * 150, "steps": 5})
     assert len(out["prompt"]) == 160 and out["qpos"] == "[list of 150]" and out["steps"] == 5

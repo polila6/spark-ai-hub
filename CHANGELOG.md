@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13.1 — 2026-11-04
+Robot motions from text while waiting for Llama 3.
+
+* **Provisional text encoder**: while Meta has not approved access to Llama 3, the motion server can run on Llama 3.1 8B. It
+  is marked as provisional on the Robot page and in every answer, its vectors are stored apart, and the server moves to Llama 3
+  by itself once all its files are there.
+* The text encoder now loads when the server starts, if it fits, so the first prompt does not wait for it.
+* A model only counts as installed when all its files are there, not when the first of them lands.
+* **Physics check**: the simulated tracking is now only on request and never fails a motion: with generic gains and no balance
+  controller even a robot standing still fell, so it said nothing. Self-collisions now report their depth.
+
 ## 0.13.0 — 2026-11-04
 The Spark as the brain of a robot control program.
 
