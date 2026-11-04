@@ -43,7 +43,7 @@ function LlamaCard({ data, manager, act }: { data: any; manager: boolean; act: (
             <a className="text-accent underline" href="https://huggingface.co/settings/gated-repositories" target="_blank" rel="noreferrer">{L("Ver cómo va tu solicitud", "See how your request is doing")} <ExternalLink className="inline h-3 w-3" /></a></li>
           <li>{L("Crea un token de lectura en", "Create a read token at")}{" "}
             <a className="text-accent underline" href="https://huggingface.co/settings/tokens/new?tokenType=read" target="_blank" rel="noreferrer">huggingface.co/settings/tokens <ExternalLink className="inline h-3 w-3" /></a>{" "}
-            {L("y pégalo en", "and paste it in")} <a className="text-accent underline" href="/settings">{L("Ajustes → Hugging Face", "Settings → Hugging Face")}</a>.</li>
+            {L("y pégalo en", "and paste it in")} <a className="text-accent underline" href="/settings">{L("Ajustes → Sistema → Hugging Face", "Settings → System → Hugging Face")}</a> {L("(solo se ve con una cuenta de administrador)", "(only visible to an administrator account)")}.</li>
           <li>{L("Vuelve aquí y pulsa «Instalar Llama 3».", "Come back and press “Install Llama 3”.")}</li>
         </ol>
         {access === "no_token" && <Notice tone="warn">{L("El hub aún no tiene ningún token de Hugging Face.", "The hub has no Hugging Face token yet.")}</Notice>}

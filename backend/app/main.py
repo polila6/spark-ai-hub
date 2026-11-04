@@ -36,6 +36,7 @@ from .routers import (
     users,
     workspaces,
     robot,
+    people,
 )
 from .security import hash_password
 from .services.storage import ensure_layout
@@ -99,7 +100,7 @@ async def unhandled(request: Request, exc: Exception):
 
 
 for r in (auth, users, system, models, huggingface, jobs, evaluation, playground, media, science, api_keys, admin,
-          account, files, projects, assistant, oidc, workspaces, robot):
+          account, files, projects, assistant, oidc, workspaces, robot, people):
     app.include_router(r.router)
 app.include_router(openai_gateway.router)
 app.include_router(anthropic_gateway.router)

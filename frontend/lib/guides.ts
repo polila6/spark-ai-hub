@@ -347,7 +347,7 @@ export const GUIDES: Record<string, GuideDef> = {
   monitoring: {
     title: b("Monitorización", "Monitoring"),
     intro: b("Uso real de CPU, memoria unificada, GPU, temperaturas, disco y red, y alertas.", "Real CPU, unified memory, GPU, temperature, disk and network usage, and alerts."),
-    steps: [b("La memoria de GPU no se muestra por separado: en el GB10 es la misma memoria unificada.", "GPU memory is not shown separately: on the GB10 it is the same unified memory."), b("Las alertas (disco, temperatura, colas) se pueden reconocer.", "Alerts (disk, temperature, queues) can be acknowledged.")],
+    steps: [b("Si eres administrador, en «Usuarios» ves quién está conectado, activo o inactivo, y con «Ver» sus trabajos en marcha y sus últimas peticiones. Son solo datos de uso: el contenido de chats y archivos no se muestra.", "If you are an administrator, “Users” shows who is online, active or inactive, and “View” shows their running jobs and latest requests. Usage data only: the content of chats and files is not shown."), b("La memoria de GPU no se muestra por separado: en el GB10 es la misma memoria unificada.", "GPU memory is not shown separately: on the GB10 it is the same unified memory."), b("Las alertas (disco, temperatura, colas) se pueden reconocer.", "Alerts (disk, temperature, queues) can be acknowledged.")],
   },
   settings: {
     title: b("Ajustes", "Settings"),

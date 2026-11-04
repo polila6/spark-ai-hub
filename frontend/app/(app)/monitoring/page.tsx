@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { TimeChart } from "@/components/charts";
 import { Guide } from "@/components/guide";
 import { MemoryPanel } from "@/components/memory";
+import { PeoplePanel } from "@/components/people-panel";
 import { Badge, Button, Card, CardBody, CardHeader, Empty, Modal, PageHeader, Select, Skeleton, StatusBadge, Table, Td } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ago, bytes, dt, num } from "@/lib/format";
@@ -49,6 +50,7 @@ export default function MonitoringPage() {
           </>
         )}
       </div>
+      {me?.role === "admin" && <PeoplePanel />}
       {me?.role === "admin" && (
         <Card className="mt-4">
           <CardHeader title={t("mon.containers")} />

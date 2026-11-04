@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0 — 2026-11-04
+See who is using the hub.
+
+* **Users panel in Monitoring** (administrators): who is online, active or inactive, what they have running, and their latest
+  requests, with tokens and times. Usage metadata only: no chat or job titles, file names or prompts, as the terms promise.
+
 ## 0.13.2 — 2026-11-04
 Fixes found by connecting a real robot suite.
 
