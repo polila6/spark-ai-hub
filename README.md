@@ -86,6 +86,7 @@ without sending a single prompt to an external AI service.
 ### Create and research
 - **Image, Video and Audio studios** (ComfyUI and an ML worker, started on demand).
 - **Scientific lab**: datasets, trusted adapters, reproducible experiments.
+- **Robot brain**: connect a robot control program to the Spark. Text to Unitree G1 motion with NVIDIA Kimodo and physics checks with MuJoCo, with a copyable address and a model library ([docs](docs/robot-server.md)).
 
 ### Run it like a service
 - Accounts with sign-up approval, e-mail invitations, **sign in with Google, Microsoft or any OpenID Connect provider**, roles (admin, manager, researcher, viewer), quotas and rate limits.

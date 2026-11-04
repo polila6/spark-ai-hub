@@ -17,6 +17,7 @@ import hmac
 import json
 import logging
 import os
+import hashlib
 import re
 import sys
 import threading
@@ -51,8 +52,9 @@ IMAGES = {
     "comfyui": os.environ.get("SAH_COMFYUI_IMAGE", "spark-ai-hub/comfyui:0.42.5"),
     "mlworker": os.environ.get("SAH_MLWORKER_IMAGE", "spark-ai-hub/mlworker:0.1.0"),
     "sandbox": os.environ.get("SAH_SANDBOX_IMAGE", "spark-ai-hub/sandbox:0.1.0"),
+    "robot": os.environ.get("SAH_ROBOT_IMAGE", "spark-ai-hub/robot:0.1.0"),
 }
-CONTAINER_NAMES = {"vllm": "sah-vllm", "comfyui": "sah-comfyui", "mlworker": "sah-mlworker"}
+CONTAINER_NAMES = {"vllm": "sah-vllm", "comfyui": "sah-comfyui", "mlworker": "sah-mlworker", "robot": "sah-robot"}
 VLLM_PREFIX = "sah-vllm-"  # one container per served model: sah-vllm-<slug(alias)>, reachable by name on the engines network
 
 
@@ -260,6 +262,29 @@ def mlworker_spec() -> dict:
             f"{HOST_DATA}/cache/mlworker": {"bind": "/cache", "mode": "rw"},
         },
         shm_size="4g",
+    )
+    return spec
+
+
+def robot_spec() -> dict:
+    """Motion server for robot suites. Published on the host's loopback only: `tailscale serve` is what reaches it from the
+    tailnet, so it follows the Tailscale address and is never on the public interface. It starts on the egress network
+    because the engines network is internal (no published ports, no downloads) and joins engines afterwards for the hub."""
+    spec = _common("robot")
+    spec.update(
+        image=IMAGES["robot"],
+        user="1000:1000",
+        cap_drop=["ALL"],
+        network=os.environ.get("SAH_EGRESS_NETWORK", f"{PROJECT}_egress"),
+        ports={"5000/tcp": ("127.0.0.1", 5000)},
+        restart_policy={"Name": "unless-stopped"},  # back after a reboot, not after someone stops it in the hub
+        mem_limit=os.environ.get("SAH_ROBOT_MEMORY", "28g"),
+        environment={"SAH_ROBOT_ADMIN_TOKEN": hashlib.sha256(f"robot-admin:{TOKEN}".encode()).hexdigest()},
+        volumes={
+            f"{HOST_DATA}/models/robot": {"bind": "/models/robot", "mode": "rw"},
+            f"{HOST_DATA}/cache/robot-embeddings": {"bind": "/cache/embeddings", "mode": "rw"},
+        },
+        shm_size="2g",
     )
     return spec
 
@@ -519,16 +544,23 @@ def stop_vllm(model: str | None = None):
 
 
 @app.post("/engines/{engine}/start", dependencies=[Depends(auth)])
-def start_engine(engine: Literal["comfyui", "mlworker"]):
+def start_engine(engine: Literal["comfyui", "mlworker", "robot"]):
     c = _get(CONTAINER_NAMES[engine])
     if c is not None and c.status == "running":
         return _describe(c)
+    if engine == "robot":
+        out = _start(engine, robot_spec())
+        try:
+            client.networks.get(ENGINE_NETWORK).connect(CONTAINER_NAMES["robot"])
+        except APIError as e:
+            jlog(event="engine.network_failed", engine=engine, error=str(e))
+        return out
     spec = comfyui_spec() if engine == "comfyui" else mlworker_spec()
     return _start(engine, spec)
 
 
 @app.post("/engines/{engine}/stop", dependencies=[Depends(auth)])
-def stop_engine(engine: Literal["vllm", "comfyui", "mlworker"]):
+def stop_engine(engine: Literal["vllm", "comfyui", "mlworker", "robot"]):
     if engine == "vllm":
         return stop_vllm(None)
     _remove_if_exists(CONTAINER_NAMES[engine])
@@ -537,7 +569,7 @@ def stop_engine(engine: Literal["vllm", "comfyui", "mlworker"]):
 
 
 @app.get("/engines/{engine}/logs", dependencies=[Depends(auth)])
-def engine_logs(engine: Literal["vllm", "comfyui", "mlworker"], tail: int = 200, model: str | None = None):
+def engine_logs(engine: Literal["vllm", "comfyui", "mlworker", "robot"], tail: int = 200, model: str | None = None):
     if engine == "vllm":
         cs = [c for c in _vllm_containers() if model is None or c.labels.get("sah.vllm.model") == model]
         c = cs[0] if cs else None

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.13.0 — 2026-11-04
+The Spark as the brain of a robot control program.
+
+* **Robot page**: the address a robot suite connects to (copy it with one click; it follows Tailscale changes), the state of
+  the motion server, a test box, and the latest requests received, to diagnose a program that does not connect.
+* **Motion server** (`engines/robot`): text to Unitree G1 motion with NVIDIA Kimodo and physics checks with MuJoCo, on port
+  5000 of the Tailscale address only. See `docs/robot-server.md`. It starts with the machine once started from the page.
+* **Library**: install and load the Kimodo models a G1 can play; the human skeleton models are listed as not compatible.
+* **Memory**: models stay loaded while they fit. Llama 3, which Kimodo needs for text (about 17 GB), loads only if the memory
+  is free and leaves first when it runs short. Embeddings are cached on disk, so a repeated prompt does not need it.
+* Kimodo cannot use the hub's main model for text: it is trained on the vectors of Llama 3 8B, which needs access approved
+  by Meta on Hugging Face. The page guides you through it.
+
 ## 0.12.0 — 2026-11-04
 A document viewer everywhere: open files instead of having to download them.
 

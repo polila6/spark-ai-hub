@@ -7,7 +7,8 @@ Runs every minute from a systemd user timer (`scripts/sah.sh tailnet-install`). 
   * updates SAH_PUBLIC_BASE_URL in .env (used on the next start and by the Android build);
   * re-creates Tailscale Serve (HTTPS on the tailnet only, never Funnel), which is lost when the account changes;
   * moves Sunshine's bind_address and the panel origin it trusts to the new Tailscale IP, if Sunshine is bound to one;
-  * rebuilds the Android app with the new default address, when the build tools are installed.
+  * rebuilds the Android app with the new default address, when the build tools are installed;
+  * keeps the robot server reachable on the tailnet (port 5000), while it runs; Tailscale Serve forgets it with the account.
 
 A custom SAH_PUBLIC_BASE_URL (not *.ts.net, not localhost) is respected: the address is then left alone. Nothing is
 done while Tailscale is logged out, so a temporary disconnection does not change anything.
@@ -30,6 +31,8 @@ REPO = Path(__file__).resolve().parent.parent
 TARGET = "http://127.0.0.1:8080"
 SERVE_RETRY_S = 120  # a failing `tailscale serve` is retried every 2 min, not on every pass
 SUNSHINE_UNIT = "app-dev.lizardbyte.app.Sunshine.service"
+ROBOT_PORT = 5000
+ROBOT_TARGET = f"127.0.0.1:{ROBOT_PORT}"
 
 
 def run(*cmd: str, timeout: float = 20) -> tuple[int, str]:
@@ -87,6 +90,14 @@ def serve_ok(raw: str, dns: str) -> bool:
         return False
     handlers = (web.get(f"{dns}:443") or {}).get("Handlers") or {}
     return (handlers.get("/") or {}).get("Proxy") == TARGET
+
+
+def robot_port_ok(raw: str) -> bool:
+    try:
+        entry = (json.loads(raw).get("TCP") or {}).get(str(ROBOT_PORT)) or {}
+    except ValueError:
+        return False
+    return entry.get("TCPForward") == ROBOT_TARGET
 
 
 def serve_problem(output: str) -> tuple[str, str | None]:
@@ -150,6 +161,18 @@ def ensure_serve(dns: str, prev: dict) -> dict:
     return {"serve": problem, "serve_url": url, "serve_tried_at": now}
 
 
+def ensure_robot_port() -> None:
+    """Only when the robot server is up: it listens on loopback and this forwards the tailnet to it (never Funnel, never public)."""
+    code, out = run("docker", "ps", "-q", "--filter", "name=^sah-robot$", "--filter", "status=running")
+    if code != 0 or not out.strip():
+        return
+    code, raw = run("tailscale", "serve", "status", "--json")
+    if code == 0 and robot_port_ok(raw):
+        return
+    code, out = run("tailscale", "serve", "--bg", f"--tcp={ROBOT_PORT}", f"tcp://{ROBOT_TARGET}")
+    print(f"Robot server on the tailnet: {'ok' if code == 0 else out.strip()[:200]}")
+
+
 def update_sunshine(ip: str | None) -> bool:
     path = Path.home() / ".config/sunshine/sunshine.conf"
     try:
@@ -198,6 +221,7 @@ def main() -> int:
     url = f"https://{me['dns']}"
     state = {**me, "url": url, "updated_at": prev.get("updated_at"), **ensure_serve(me["dns"], prev)}
     update_sunshine(me["ipv4"])
+    ensure_robot_port()
     if current != url:
         env_path.write_text(with_env_url(env_text, url))
         print(f"SAH_PUBLIC_BASE_URL -> {url}")

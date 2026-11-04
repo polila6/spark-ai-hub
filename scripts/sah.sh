@@ -20,6 +20,8 @@ case "${1:-status}" in
             systemctl --user daemon-reload && systemctl --user enable --now sah-tailnet-sync.timer
             loginctl enable-linger "$USER" 2>/dev/null || echo "Run once: sudo loginctl enable-linger $USER (so it also runs before anyone logs in)"
             python3 scripts/tailnet-sync.py; python3 scripts/tailnet-sync.py --status ;;
+  robot-build)  # the motion server for robot suites (Kimodo + MuJoCo); needs the NVIDIA PyTorch image
+            docker build -t spark-ai-hub/robot:0.1.0 engines/robot ;;
   logs)     shift; $DC logs -f --tail 200 "$@" ;;
   build)    $DC build && $DC -f compose.yaml -f compose.optional.yaml --profile sandbox build sandbox ;;
   build-engines) $DC -f compose.yaml -f compose.optional.yaml --profile engines --profile sandbox build comfyui mlworker sandbox ;;

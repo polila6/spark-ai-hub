@@ -75,6 +75,13 @@ def test_sunshine_panel_origin_is_trusted_so_a_pin_can_be_sent():
         "bind_address = 100.66.0.5\ncsrf_allowed_origins = https://a.example,https://100.66.0.5:47990\n")
 
 
+def test_robot_port_is_recognised_on_the_tailnet():
+    assert sync.robot_port_ok(json.dumps({"TCP": {"443": {"HTTPS": True}, "5000": {"TCPForward": "127.0.0.1:5000"}}}))
+    assert not sync.robot_port_ok(json.dumps({"TCP": {"443": {"HTTPS": True}}}))
+    assert not sync.robot_port_ok(json.dumps({"TCP": {"5000": {"TCPForward": "10.0.0.1:5000"}}}))
+    assert not sync.robot_port_ok("not json")
+
+
 def test_public_url_follows_tailscale_but_a_custom_one_wins(tmp_path, monkeypatch):
     (tmp_path / "run").mkdir()
     (tmp_path / "run" / "tailnet.json").write_text(json.dumps({"url": "https://b.new.ts.net"}))

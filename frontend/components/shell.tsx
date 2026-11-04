@@ -46,6 +46,7 @@ const GROUPS: { key: string; label?: [string, string]; items: Item[] }[] = [
   { key: "nav.group.research", items: [
     { href: "/science", key: "nav.science", icon: FlaskConical },
     { href: "/jobs", key: "nav.jobs", icon: ListChecks },
+    { href: "/robot", key: "nav.robot", label: ["Robot", "Robot"], icon: Bot },
     { href: "/connect", key: "nav.connect", label: ["Conectar herramientas", "Connect tools"], icon: Plug },
     { href: "/api-center", key: "nav.api", icon: Code2 },
   ] },
