@@ -85,6 +85,12 @@ redaction processor (`hf_…`, `sah-…`, bearer tokens, passwords) — unit-tes
 ## Privacy
 
 Prompts/responses are **not** stored in shared logs; API usage records only metadata (model, tokens, latency, status).
+
+Administrators can consult a person's chats, files and workspaces, under these conditions: only people who accepted the terms
+that say so (`users.content_access_accepted_at`; earlier acceptances do not count, and custom terms only count if
+`terms_cover_content_access` is set), interactive administrator session only, a written reason each time, and the access is
+logged before anything is returned. Each person sees their own log in Settings → Privacy. Check this against your data
+protection rules before relying on it.
 Content logging exists as an admin setting, **off by default**. Playground conversations are private per user.
 
 ## Resource exhaustion

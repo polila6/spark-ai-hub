@@ -40,6 +40,8 @@ DEFAULTS: dict[str, Any] = {
     "signup_allowed_domains": [],  # empty = any e-mail domain
     "terms_version": 1,
     "terms_text": None,  # markdown shown at first login; None = built-in default text
+    # Custom terms only count as consent to administrators reading content if the administrator says they cover it.
+    "terms_cover_content_access": False,
     "last_public_url": None,  # last address announced to the managers (see notify.announce_address_change)
     "tailscale_share_url": None,  # optional multi-use device-share link pasted from the Tailscale console
     "tailscale_device_id": None,  # node id used with the optional Tailscale API key to create per-user invites

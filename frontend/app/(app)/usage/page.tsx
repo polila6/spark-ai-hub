@@ -46,7 +46,7 @@ export default function UsagePage() {
             <Card><CardHeader title={L("Trabajos de GPU y procesos", "GPU jobs and processing")} /><Table head={[L("Tipo", "Type"), L("Trabajos", "Jobs"), L("Minutos", "Minutes")]}>
               {u.jobs.map((j: any) => <tr key={j.group}><Td>{j.group}</Td><Td>{j.count}</Td><Td className="tabular-nums">{num(j.minutes, 1)}</Td></tr>)}</Table></Card>
           </div>
-          {u.users && <Card><CardHeader title={L("Por persona", "By person")} subtitle={L("Solo metadatos de uso: nadie ve el contenido de los chats.", "Usage metadata only: nobody sees chat content.")} />
+          {u.users && <Card><CardHeader title={L("Por persona", "By person")} subtitle={L("Solo metadatos de uso: aquí no aparece el contenido de los chats.", "Usage metadata only: the content of chats does not appear here.")} />
             <Table head={[L("Usuario", "User"), L("Peticiones", "Requests"), "Tokens"]}>
               {u.users.map((x: any) => <tr key={x.user_id ?? "none"}><Td>{x.display_name} <span className="text-xs text-muted">@{x.username}</span></Td><Td>{x.requests}</Td><Td className="tabular-nums">{kfmt(x.tokens)}</Td></tr>)}</Table></Card>}
         </div>

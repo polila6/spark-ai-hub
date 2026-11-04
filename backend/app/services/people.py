@@ -1,7 +1,8 @@
-"""Who is using the hub and what is running, for administrators: usage metadata only.
+"""Who is using the hub and what is running, for administrators.
 
-The terms every user accepted say administrators see usage metadata (tokens, times, space) and never content. So nothing here
-carries a chat or job title, a file name or a prompt: job titles can hold file names, and turn titles are the user's words."""
+The list and the summary are usage metadata (tokens, times, space): no chat or job title, file name or prompt, because job titles
+can hold file names and turn titles are the user's words. Content is a separate step: only for people who accepted the terms
+that allow it, with a reason each time, and every consultation is logged and shown to the person (see routers/people.py)."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -23,6 +24,21 @@ def presence(last_seen: datetime | None, enabled: bool, now: datetime) -> str:
 def latest(*moments: datetime | None) -> datetime | None:
     known = [m for m in moments if m is not None]
     return max(known) if known else None
+
+
+CONTENT_ACTION = "admin.content_access"
+CONTENT_TARGET = "user_content"
+
+
+def consented(user) -> bool:
+    """Accepting the earlier terms does not count: they said administrators do not read content."""
+    return user.content_access_accepted_at is not None
+
+
+def access_public(event) -> dict:
+    """One line of what a person sees about consultations of their content."""
+    d = event.details or {}
+    return {"ts": event.ts, "by": event.actor_name, "kind": d.get("kind"), "what": d.get("what"), "reason": d.get("reason")}
 
 
 def job_public(job) -> dict:

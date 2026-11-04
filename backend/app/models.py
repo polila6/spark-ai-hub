@@ -118,6 +118,8 @@ class User(Base):
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     terms_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     terms_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # When this person accepted terms that say an administrator may read their content (with a reason, logged, visible to them).
+    content_access_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     invited_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
 

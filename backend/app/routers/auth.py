@@ -63,21 +63,23 @@ DEFAULT_TERMS = {
     "es": """**Normas de uso de Spark AI Hub{org_paren}**
 
 1. La plataforma es para actividades de investigación, docencia y trabajo{org_de}. No la uses para fines ajenos.
-2. Tus chats, archivos, documentos y memoria son **privados**: solo tú (y quien tú compartas) puede verlos. Los administradores no leen contenido; solo ven metadatos de uso (tokens, tiempos, tamaño ocupado).
+2. Tus chats, archivos, documentos y memoria son **privados** frente a los demás usuarios: solo los ve quien tú compartas. **Un administrador puede consultarlos**, incluido lo que ya tengas guardado, indicando un motivo. Cada consulta queda registrada y la ves en Ajustes → Privacidad: quién, cuándo, qué y por qué. Fuera de eso, los administradores solo ven metadatos de uso (tokens, tiempos, tamaño ocupado).
 3. Los modelos se ejecutan en este DGX Spark: nada se envía a servicios de IA externos. Si la búsqueda en internet está activada, solo salen las consultas de búsqueda, sin datos personales.
 4. No subas datos personales de terceros ni información confidencial sin autorización. Eres responsable del contenido que subes y generas.
 5. Respeta las licencias de los modelos (se muestran al instalarlos) y no generes contenido ilegal o que dañe a otras personas.
 6. Los recursos (memoria, GPU, disco) son compartidos: libera lo que no uses y respeta las cuotas.
-7. Puedes descargar todos tus datos o eliminar tu cuenta en Ajustes → Privacidad.""",
+7. Puedes descargar todos tus datos o eliminar tu cuenta en Ajustes → Privacidad.
+8. Si no aceptas estas normas, pulsa «Salir»: no podrás usar la plataforma, pero ningún administrador podrá consultar tu contenido. Para recuperar tus datos o darte de baja, habla con un administrador.""",
     "en": """**Spark AI Hub terms of use{org_paren}**
 
 1. The platform is for research, teaching and work{org_of}. Do not use it for unrelated purposes.
-2. Your chats, files, documents and memory are **private**: only you (and whoever you share with) can see them. Administrators do not read content; they only see usage metadata (tokens, timings, storage used).
+2. Your chats, files, documents and memory are **private** from other users: only whoever you share with sees them. **An administrator can consult them**, including what you already have stored, by stating a reason. Each consultation is logged and you see it in Settings → Privacy: who, when, what and why. Apart from that, administrators only see usage metadata (tokens, times, space used).
 3. Models run on this DGX Spark: nothing is sent to external AI services. If web search is enabled, only the search queries leave the machine, without personal data.
 4. Do not upload third parties' personal data or confidential information without authorisation. You are responsible for what you upload and generate.
 5. Respect model licences (shown at install time) and do not generate illegal or harmful content.
 6. Resources (memory, GPU, disk) are shared: free what you do not use and respect quotas.
-7. You can download all your data or delete your account in Settings → Privacy.""",
+7. You can download all your data or delete your account in Settings → Privacy.
+8. If you do not accept these terms, press “Sign out”: you will not be able to use the platform, but no administrator can consult your content. To get your data back or close your account, talk to an administrator.""",
 }
 
 
@@ -92,6 +94,10 @@ def terms_info(db: Session) -> dict:
     custom = get_setting(db, "terms_text")
     return {"version": int(get_setting(db, "terms_version") or 1),
             "text": {"es": custom, "en": custom} if custom else _default_terms()}
+
+
+def terms_cover_content(db: Session) -> bool:
+    return not get_setting(db, "terms_text") or bool(get_setting(db, "terms_cover_content_access"))
 
 
 def _issue_session(db: Session, user: User, request: Request, response: Response) -> UserSession:
@@ -169,7 +175,8 @@ def logout(request: Request, response: Response, p: Principal = Depends(session_
 def me(p: Principal = Depends(session_principal), db: Session = Depends(get_db)):
     terms = terms_info(db)
     return {"user": user_public(p.user), "csrf_token": p.session.csrf_token if p.session else None,
-            "needs_terms": (p.user.terms_version or 0) < terms["version"]}
+            "needs_terms": (p.user.terms_version or 0) < terms["version"]
+            or (terms_cover_content(db) and p.user.content_access_accepted_at is None)}
 
 
 @router.get("/terms")
@@ -181,8 +188,11 @@ def get_terms(db: Session = Depends(get_db)):
 def accept_terms(request: Request, p: Principal = Depends(session_principal), db: Session = Depends(get_db)):
     p.user.terms_version = terms_info(db)["version"]
     p.user.terms_accepted_at = datetime.now(timezone.utc)
+    covers = terms_cover_content(db)
+    if covers:
+        p.user.content_access_accepted_at = p.user.terms_accepted_at
     db.commit()
-    audit(db, "auth.terms_accepted", actor=p.user, request=request, details={"version": p.user.terms_version})
+    audit(db, "auth.terms_accepted", actor=p.user, request=request, details={"version": p.user.terms_version, "content_access": covers})
     return {"ok": True}
 
 
@@ -326,6 +336,7 @@ def signup(body: SignupIn, request: Request, db: Session = Depends(get_db)):
                 password_hash=hash_password(body.password), role=Role.researcher, is_active=not pending,
                 signup_status="pending" if pending else None, signup_reason=body.reason.strip() or None,
                 terms_version=terms_info(db)["version"], terms_accepted_at=datetime.now(timezone.utc),
+                content_access_accepted_at=datetime.now(timezone.utc) if terms_cover_content(db) else None,
                 preferences={"language": body.language})
     db.add(user)
     db.flush()

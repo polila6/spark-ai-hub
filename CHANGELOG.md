@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.15.0 — 2026-11-04
+Administrators can consult a person's content, openly.
+
+* **New terms**: they say an administrator can consult chats, files and workspaces. Everyone is asked to accept them again;
+  until they do, nobody can consult their content, because earlier acceptances were of terms that said the opposite.
+* **Content in the Users panel**: only with that acceptance, with a written reason each time. Files are always downloaded, never
+  opened in the browser.
+* **Settings → Privacy** shows each person who consulted their content, when, what and why. The access is logged before
+  anything is returned. What is sent through the API is not stored, so it cannot be consulted.
+
 ## 0.14.0 — 2026-11-04
 See who is using the hub.
 

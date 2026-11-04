@@ -14,10 +14,10 @@ from ..audit import audit
 from ..config import get_settings
 from ..db import get_db
 from ..deps import Principal, session_principal
-from ..models import (ApiKey, Artifact, Conversation, Dataset, Experiment, KbCollection, Memory, Notification, Project,
+from ..models import (ApiKey, Artifact, AuditEvent, Conversation, Dataset, Experiment, KbCollection, Memory, Notification, Project,
                       SavedPrompt, SchedClass, SharedResource, User, UserFile, UserSession)
 from ..security import verify_password
-from ..services import storage
+from ..services import people, storage
 from ..services.jobs import JobError, create_job
 
 router = APIRouter(prefix="/api/v1", tags=["account"])
@@ -48,6 +48,14 @@ def read_all(p: Principal = Depends(session_principal), db: Session = Depends(ge
                .values(read_at=datetime.now(timezone.utc)))
     db.commit()
     return {"ok": True}
+
+
+@router.get("/account/content-accesses")
+def content_accesses(p: Principal = Depends(session_principal), db: Session = Depends(get_db)):
+    """Each time an administrator consulted this person's content: who, when, what and why."""
+    rows = db.scalars(select(AuditEvent).where(AuditEvent.action == people.CONTENT_ACTION, AuditEvent.target_type == people.CONTENT_TARGET,
+                                               AuditEvent.target_id == str(p.id)).order_by(AuditEvent.ts.desc()).limit(500)).all()
+    return {"accesses": [people.access_public(e) for e in rows], "accepted_at": p.user.content_access_accepted_at}
 
 
 @router.get("/account/summary")

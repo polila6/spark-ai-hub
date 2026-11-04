@@ -43,6 +43,7 @@ function Privacy() {
   const L = useL();
   const { push } = useToast();
   const { data } = useSWR("/api/v1/account/summary");
+  const { data: accesses } = useSWR("/api/v1/account/content-accesses");
   const [del, setDel] = useState(false);
   const [f, setF] = useState({ password: "", confirm: "" });
   const [err, setErr] = useState<any>(null);
@@ -54,6 +55,12 @@ function Privacy() {
           {[["conversations", L("Chats", "Chats")], ["files", L("Archivos", "Files")], ["memories", L("Memorias", "Memories")], ["projects", L("Proyectos", "Projects")], ["collections", L("Colecciones", "Collections")], ["datasets", "Datasets"], ["artifacts", L("Resultados generados", "Generated results")], ["api_keys", L("Claves API", "API keys")]].map(([k, l]) => <div key={k} className="rounded-xl bg-elevated/60 p-3"><p className="text-xs text-muted">{l}</p><p className="text-lg font-semibold">{data[k]}</p></div>)}
           <div className="rounded-xl bg-elevated/60 p-3 sm:col-span-4"><p className="text-xs text-muted">{L("Espacio usado", "Space used")}</p><p className="font-semibold">{bytes(data.used_bytes)} / {data.quota_gb} GB</p></div>
         </div>}
+      </CardBody></Card>
+      <Card><CardHeader title={L("Consultas de un administrador a tu contenido", "Administrator consultations of your content")} subtitle={L("Un administrador puede consultar tus chats y archivos indicando un motivo. Cada vez queda aquí.", "An administrator can consult your chats and files by stating a reason. Each time is listed here.")} /><CardBody>
+        {!accesses?.accesses?.length ? <p className="text-sm text-muted">{L("Nadie ha consultado tu contenido.", "Nobody has consulted your content.")}</p> : (
+          <ul className="space-y-2 text-sm">{accesses.accesses.map((a: any, i: number) => <li key={i} className="rounded-lg bg-elevated/60 p-3">
+            <b>{a.by}</b> · {new Date(a.ts).toLocaleString()}<div className="text-xs text-muted">{a.what}</div><div className="mt-1">{L("Motivo:", "Reason:")} {a.reason}</div></li>)}</ul>
+        )}
       </CardBody></Card>
       <Card><CardHeader title={L("Exportar mis datos", "Export my data")} subtitle={L("ZIP con chats (JSON + Markdown), memoria, proyectos, archivos y resultados", "ZIP with chats (JSON + Markdown), memory, projects, files and results")} icon={<Download className="h-4 w-4" />}
         actions={<Button variant="primary" onClick={async () => { await api("/api/v1/account/export", { method: "POST" }); push("ok", L("Preparando la exportación: te avisaremos (🔔) cuando esté lista.", "Preparing the export: we will notify you (🔔) when ready.")); }}>{L("Exportar", "Export")}</Button>} /></Card>
