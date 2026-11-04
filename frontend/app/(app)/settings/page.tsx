@@ -59,7 +59,7 @@ function Privacy() {
       <Card><CardHeader title={L("Consultas de un administrador a tu contenido", "Administrator consultations of your content")} subtitle={L("Un administrador puede consultar tus chats y archivos indicando un motivo. Cada vez queda aquí.", "An administrator can consult your chats and files by stating a reason. Each time is listed here.")} /><CardBody>
         {!accesses?.accesses?.length ? <p className="text-sm text-muted">{L("Nadie ha consultado tu contenido.", "Nobody has consulted your content.")}</p> : (
           <ul className="space-y-2 text-sm">{accesses.accesses.map((a: any, i: number) => <li key={i} className="rounded-lg bg-elevated/60 p-3">
-            <b>{a.by}</b> · {new Date(a.ts).toLocaleString()}<div className="text-xs text-muted">{a.what}</div><div className="mt-1">{L("Motivo:", "Reason:")} {a.reason}</div></li>)}</ul>
+            <b>{a.by}</b> · {new Date(a.ts).toLocaleString()}<div className="text-xs text-muted">{a.kind === "list" ? L("La lista de tus chats, archivos y workspaces", "The list of your chats, files and workspaces") : a.what}</div><div className="mt-1">{L("Motivo:", "Reason:")} {a.reason}</div></li>)}</ul>
         )}
       </CardBody></Card>
       <Card><CardHeader title={L("Exportar mis datos", "Export my data")} subtitle={L("ZIP con chats (JSON + Markdown), memoria, proyectos, archivos y resultados", "ZIP with chats (JSON + Markdown), memory, projects, files and results")} icon={<Download className="h-4 w-4" />}
