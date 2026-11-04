@@ -15,6 +15,7 @@ import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markI
 import { LoadConfirm } from "@/components/memory";
 import { CodeBlock, MSG_GROUP, MessageActions, MessageEditor, SelectionQuote, quoteMarkdown, quoteStart } from "@/components/message-actions";
 import { Badge, Button, Card, Confirm, ErrorBox, Field, Input, Notice, Select, Textarea, Tip, cx } from "@/components/ui";
+import { hubFile, useFileViewer } from "@/components/file-viewer";
 import { JumpToEnd, useStickToBottom } from "@/components/stick-to-bottom";
 import { useAutoGrow } from "@/components/workspace/common";
 import { api, streamGet, streamPost, upload } from "@/lib/api";
@@ -69,6 +70,7 @@ const hasOutput = (t: ToolRun) => !!(t.done && (t.image || t.table || t.canvas |
 
 function ToolCard({ t, onEdit, onCanvas }: { t: ToolRun; onEdit: (ref: string) => void; onCanvas: (id: string, v?: number) => void }) {
   const L = useL();
+  const viewer = useFileViewer();
   const Extra = TOOL_ICONS[t.name];
   const icon = Extra ? <Extra className="h-3.5 w-3.5" /> : t.name?.includes("image") ? <ImageIcon className="h-3.5 w-3.5" /> : t.name?.includes("data") ? <Table2 className="h-3.5 w-3.5" /> : t.name === "save_memory" ? <Brain className="h-3.5 w-3.5" /> : t.name?.includes("knowledge") || t.name === "read_document" ? <FileText className="h-3.5 w-3.5" /> : <Wrench className="h-3.5 w-3.5" />;
   const webSources = (t.sources ?? []).filter((s: any) => s.url);
@@ -92,7 +94,7 @@ function ToolCard({ t, onEdit, onCanvas }: { t: ToolRun; onEdit: (ref: string) =
       {!t.done && t.progress != null && t.progress > 0 && <div className="mx-3 mb-2 h-1 overflow-hidden rounded bg-elevated"><div className="h-full bg-info transition-all" style={{ width: `${Math.round(t.progress * 100)}%` }} /></div>}
       {t.image && (
         <div className="px-3 pb-3">
-          <a href={t.image.url} target="_blank" rel="noreferrer"><img src={t.image.url} alt={t.image.prompt} className="max-h-[420px] rounded-lg border border-border" /></a>
+          <button type="button" onClick={() => viewer.open({ name: `${t.image.ref || "imagen"}.png`, url: t.image.url, download: `${t.image.url}?download=true` })}><img src={t.image.url} alt={t.image.prompt} className="max-h-[420px] rounded-lg border border-border" /></button>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <Badge tone="accent">{t.image.ref}</Badge>
             {t.image.seconds && <span className="text-subtle">{num(t.image.seconds, 1)} s · {t.image.workflow}</span>}
@@ -125,6 +127,7 @@ function AttachmentChip({ a, onRemove }: { a: Att & { uploading?: boolean }; onR
 }
 
 function Chat() {
+  const viewer = useFileViewer();
   const { t, lang } = useI18n();
   const L = useL();
   const { push } = useToast();
@@ -509,7 +512,7 @@ function Chat() {
               <div className={cx("text-[14.5px]", m.role === "user" ? "max-w-[85%] rounded-2xl rounded-br-md border border-accent/20 bg-accent/10 px-4 py-2.5 leading-relaxed" : "w-full")}>
                 {m.role === "user" ? (
                   <>
-                    {m.attachments && m.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-1.5">{m.attachments.map((a) => a.kind === "image" ? <a key={a.file_id} href={a.url} target="_blank" rel="noreferrer"><img src={a.url} alt={a.name} className="max-h-40 rounded-lg" /></a> : <span key={a.file_id} className="inline-flex items-center gap-1 rounded-md bg-bg/70 px-2 py-0.5 text-xs"><FileText className="h-3 w-3" />{a.name}</span>)}</div>}
+                    {m.attachments && m.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-1.5">{m.attachments.map((a) => a.kind === "image" ? <button key={a.file_id} type="button" onClick={() => viewer.open(hubFile(a), m.attachments!.map(hubFile))}><img src={a.url} alt={a.name} className="max-h-40 rounded-lg" /></button> : <button key={a.file_id} type="button" title={L("Ver", "View")} className="inline-flex items-center gap-1 rounded-md bg-bg/70 px-2 py-0.5 text-xs hover:bg-bg" onClick={() => viewer.open(hubFile(a), m.attachments!.map(hubFile))}><FileText className="h-3 w-3" />{a.name}</button>)}</div>}
                     <p className="whitespace-pre-wrap break-words">{m.content}</p>
                   </>
                 ) : (

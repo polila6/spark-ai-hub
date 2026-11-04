@@ -282,33 +282,15 @@ def export_file(db: Session, ws: Workspace, user: User, path: str) -> dict:
     return saved
 
 
-def table_preview(ws: Workspace, path: str, rows: int = 200) -> dict:
+def table_preview(ws: Workspace, path: str, rows: int = 500) -> dict:
     """First rows of a CSV/TSV/Excel file for the browser preview."""
+    from . import preview
+
     p, _ = raw(ws, path)
-    ext = p.suffix.lower()
-    if ext in (".csv", ".tsv"):
-        import csv
-
-        with open(p, newline="", encoding="utf-8", errors="replace") as fh:
-            sample = fh.read(65536)
-            fh.seek(0)
-            try:
-                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-            except csv.Error:
-                dialect = csv.excel_tab if ext == ".tsv" else csv.excel
-            data = [r for _, r in zip(range(rows + 1), csv.reader(fh, dialect))]
-        return {"sheets": [{"name": p.name, "rows": data}]}
-    if ext in (".xlsx", ".xlsm"):
-        from openpyxl import load_workbook
-
-        wb = load_workbook(p, read_only=True, data_only=True)
-        sheets = []
-        for wsh in wb.worksheets[:10]:
-            data = [["" if v is None else str(v) for v in r] for _, r in zip(range(rows + 1), wsh.iter_rows(values_only=True))]
-            sheets.append({"name": wsh.title, "rows": data})
-        wb.close()
-        return {"sheets": sheets}
-    raise WorkspaceError("Vista de tabla solo para CSV y Excel")
+    try:
+        return preview.table(p, p.name, rows)
+    except preview.PreviewError as e:
+        raise WorkspaceError(e.message)
 
 
 # ------------------------------------------------------------------ running commands

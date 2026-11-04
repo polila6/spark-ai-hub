@@ -3,6 +3,7 @@ import { Download, FileText, Folder, FolderOpen, Image as ImageIcon, MessageSqua
 import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 import useSWR from "swr";
+import { hubFile, useFileViewer } from "@/components/file-viewer";
 import { TextStatus, UploadDialog } from "@/components/files";
 import { Guide, StepsEmpty } from "@/components/guide";
 import { Badge, Button, Card, CardBody, ErrorBox, Input, Modal, PageHeader, Progress, Select, Table, Td, Tip, cx } from "@/components/ui";
@@ -22,7 +23,7 @@ export default function FilesPage() {
   const [kind, setKind] = useState("");
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  const [preview, setPreview] = useState<any>(null);
+  const viewer = useFileViewer();
   const params = new URLSearchParams();
   if (folder !== null) params.set("folder", folder);
   if (kind) params.set("kind", kind);
@@ -64,7 +65,7 @@ export default function FilesPage() {
                 const Icon = KIND_ICON[f.kind] ?? FileText;
                 return (
                   <tr key={f.id}>
-                    <Td><button className="flex items-center gap-2 text-left font-medium hover:text-accent" onClick={async () => setPreview(await api(`/api/v1/files/${f.id}`))}><Icon className="h-4 w-4 shrink-0 text-subtle" /><span className="max-w-[280px] truncate">{f.filename}</span></button></Td>
+                    <Td><button className="flex items-center gap-2 text-left font-medium hover:text-accent" onClick={() => viewer.open(hubFile(f), (data ?? []).map(hubFile))}><Icon className="h-4 w-4 shrink-0 text-subtle" /><span className="max-w-[280px] truncate">{f.filename}</span></button></Td>
                     <Td className="text-xs text-muted">{f.folder || "—"}</Td>
                     <Td className="text-xs">{bytes(f.size_bytes)}</Td>
                     <Td><TextStatus f={f} /></Td>
@@ -85,13 +86,6 @@ export default function FilesPage() {
         </Card>
       </div>
       <UploadDialog open={open} onOpenChange={setOpen} onDone={() => { mutate(); mutF(); }} folders={folderNames} />
-      <Modal wide open={!!preview} onOpenChange={() => setPreview(null)} title={preview?.filename ?? ""} description={preview ? `${bytes(preview.size_bytes)} · ${preview.mime}` : ""}>
-        {preview?.kind === "image" ? <img src={preview.url} alt={preview.filename} className="mx-auto max-h-[65vh] rounded-lg" />
-          : preview?.mime === "application/pdf" ? <iframe src={preview.url} title={preview.filename} className="h-[65vh] w-full rounded-lg border border-border" />
-          : preview?.preview ? <pre className="max-h-[65vh] overflow-auto whitespace-pre-wrap rounded-lg bg-elevated p-3 text-xs">{preview.preview}{preview.text_chars > 4000 ? "\n…" : ""}</pre>
-          : <p className="text-sm text-muted">{L("Sin vista previa.", "No preview.")}</p>}
-        {preview && <div className="mt-3 flex justify-end gap-2"><a href={`${preview.url}?download=true`}><Button><Download className="h-4 w-4" />{L("Descargar", "Download")}</Button></a><Button variant="primary" onClick={() => router.push(`/playground?attach=${preview.id}`)}><MessageSquare className="h-4 w-4" />{L("Preguntar en el chat", "Ask in chat")}</Button></div>}
-      </Modal>
     </div>
   );
 }

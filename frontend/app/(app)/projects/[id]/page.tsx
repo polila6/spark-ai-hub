@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
 import useSWR from "swr";
+import { hubFile, useFileViewer } from "@/components/file-viewer";
 import { TextStatus, UploadDialog } from "@/components/files";
 import { Guide } from "@/components/guide";
 import { Badge, Button, Card, CardBody, CardHeader, Empty, ErrorBox, Field, Input, Modal, PageHeader, Select, Table, Td, Textarea } from "@/components/ui";
@@ -15,6 +16,7 @@ import { useToast } from "@/lib/providers";
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const L = useL();
+  const viewer = useFileViewer();
   const { lang } = useI18n();
   const router = useRouter();
   const { push } = useToast();
@@ -46,7 +48,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               actions={canWrite && <Button size="sm" variant="primary" onClick={() => setUp(true)}><Upload className="h-3.5 w-3.5" />{L("Subir", "Upload")}</Button>} />
             {files && !files.length ? <Empty title={L("Sin documentos", "No documents")} hint={L("Sube PDF, Word, Markdown, código o datos.", "Upload PDF, Word, Markdown, code or data.")} /> : (
               <Table head={[L("Archivo", "File"), L("Tamaño", "Size"), L("Texto", "Text"), L("Índice", "Index"), ""]}>
-                {files?.map((x: any) => <tr key={x.id}><Td className="max-w-[280px] truncate font-medium">{x.filename}</Td><Td className="text-xs">{bytes(x.size_bytes)}</Td><Td><TextStatus f={x} /></Td>
+                {files?.map((x: any) => <tr key={x.id}><Td className="max-w-[280px] truncate font-medium"><button type="button" className="max-w-full truncate text-left hover:text-accent" title={L("Ver", "View")} onClick={() => viewer.open(hubFile(x), files.map(hubFile))}>{x.filename}</button></Td><Td className="text-xs">{bytes(x.size_bytes)}</Td><Td><TextStatus f={x} /></Td>
                   <Td>{x.knowledge?.map((k: any, i: number) => <Badge key={i} tone={k.status === "ready" ? "ok" : k.status === "failed" ? "warn" : "info"}>{k.status === "ready" ? `${k.chunks}` : k.status}</Badge>)}</Td>
                   <Td>{p.is_owner && <Button size="icon" variant="ghost" aria-label={L("Quitar del proyecto", "Remove from project")} onClick={async () => { await api(`/api/v1/files/${x.id}`, { method: "DELETE" }); mutF(); }}><Trash2 className="h-4 w-4" /></Button>}</Td></tr>)}
               </Table>

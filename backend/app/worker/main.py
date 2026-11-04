@@ -99,6 +99,9 @@ def _maintenance() -> None:
 
                 _last_purge[0] = time.time()
                 sandbox_svc.purge_old_conversation_files()
+                from ..services import preview as preview_svc
+
+                preview_svc.purge_cache()
         except Exception as e:  # noqa: BLE001
             log.warning("worker.sandbox_purge_failed", error=str(e))
         try:

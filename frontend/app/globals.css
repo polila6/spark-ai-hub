@@ -53,6 +53,10 @@ body { font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiase
 .prose-chat th, .prose-chat td { border: 1px solid rgb(var(--border)); padding: 0.25rem 0.5rem; }
 .prose-chat h1, .prose-chat h2, .prose-chat h3 { font-weight: 600; margin: 1.2em 0 0.45em; }
 .prose-chat a { color: rgb(var(--info)); text-decoration: underline; }
+/* A grid or flex item must not grow with what it holds (a wide table, a long line of code): that widened whole pages on
+   phones. Wide content scrolls inside its own overflow-x-auto box. */
+.grid > *, main { min-width: 0; }
+
 /* Loading spinners: turn as one smooth layer around their exact centre (a small SVG otherwise wobbles while the page repaints). */
 .animate-spin { transform-origin: center; transform-box: fill-box; will-change: transform; backface-visibility: hidden; }
 /* Reduced motion: end one-off animations at once. Infinite ones must not inherit the tiny duration: a spinner turned

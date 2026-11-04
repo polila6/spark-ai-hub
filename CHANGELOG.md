@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.12.0 — 2026-11-04
+A document viewer everywhere: open files instead of having to download them.
+
+* **Document viewer** in the chat, projects, My files and the Workspace: images (with zoom), video and audio (seeking
+  works), PDF, Word, PowerPoint and OpenDocument, Excel and CSV (all sheets), Markdown, HTML and code, with previous/next,
+  download and open in another tab. PDFs are drawn with pdf.js, so they also work on phones.
+* **Office files** are converted to PDF inside the code sandbox (no network, no privileges), never on the server itself;
+  the result is cached by document content for 30 days. New API: `GET /api/v1/files/{id}/preview.pdf`, `/table`, `/plain`
+  and `GET /api/v1/workspaces/{id}/preview.pdf`. HTML runs in an iframe that cannot reach the hub or your session.
+* **Phones**: My files, Connect tools and the dashboard were wider than the screen (up to 1023 px), which shrank the whole
+  page; wide content now scrolls inside its own box.
+
 ## 0.11.1 — 2026-11-04
 Long tasks no longer seem stuck, and you can read while the assistant works.
 

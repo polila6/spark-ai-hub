@@ -15,6 +15,7 @@ from ..db import get_db
 from ..deps import Principal, current_principal, not_found, require_researcher
 from ..models import KbDocument, Project, SchedClass, SharedResource, UserFile
 from ..services import files as files_svc
+from ..services import preview as preview_svc
 from ..services import kb, storage
 from ..services.jobs import JobError, create_job
 from ..services.uploads import UploadError, safe_name, save_stream
@@ -191,12 +192,53 @@ def file_content(fid: uuid.UUID, p: Principal = Depends(current_principal), db: 
     path = files_svc.abs_path(f)
     if not path.exists():
         raise HTTPException(410, detail={"code": "file_missing", "message": "File no longer exists"})
-    inline_ok = f.kind in ("image", "audio") or f.mime == "application/pdf"
+    video = preview_svc.VIDEO_MIME.get(Path(f.filename).suffix.lower())
+    inline_ok = f.kind in ("image", "audio") or f.mime == "application/pdf" or bool(video)
     headers = {"X-Content-Type-Options": "nosniff"}
     if f.mime != "application/pdf":  # the browser PDF viewer refuses to run inside a CSP sandbox
         headers["Content-Security-Policy"] = "sandbox"
-    return FileResponse(path, media_type=f.mime if inline_ok else "application/octet-stream",
+    return FileResponse(path, media_type=(video or f.mime) if inline_ok else "application/octet-stream",
                         filename=f.filename if (download or not inline_ok) else None, headers=headers)
+
+
+def _viewer_error(e: preview_svc.PreviewError) -> HTTPException:
+    return HTTPException(e.status, detail={"code": "preview", "message": e.message})
+
+
+@router.get("/{fid}/preview.pdf")
+def file_preview_pdf(fid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """A Word/PowerPoint/OpenDocument file rendered as PDF for the document viewer."""
+    f = readable_file(db, p, fid)
+    path = files_svc.abs_path(f)
+    if not path.exists():
+        raise HTTPException(410, detail={"code": "file_missing", "message": "File no longer exists"})
+    try:
+        pdf = preview_svc.office_pdf(db, p.user, path, f.filename, f.sha256)
+    except preview_svc.PreviewError as e:
+        raise _viewer_error(e)
+    return FileResponse(pdf, media_type="application/pdf", headers={"X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/{fid}/table")
+def file_table(fid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    f = readable_file(db, p, fid)
+    try:
+        return preview_svc.table(files_svc.abs_path(f), f.filename)
+    except preview_svc.PreviewError as e:
+        raise _viewer_error(e)
+    except Exception as e:  # noqa: BLE001  (corrupt spreadsheets)
+        raise HTTPException(422, detail={"code": "unreadable", "message": f"No se pudo leer la tabla: {type(e).__name__}"})
+
+
+@router.get("/{fid}/plain")
+def file_plain(fid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The file's own text (code, Markdown, logs), never interpreted by the browser."""
+    f = readable_file(db, p, fid)
+    try:
+        return PlainTextResponse(preview_svc.plain_text(files_svc.abs_path(f)), headers={
+            "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"})
+    except preview_svc.PreviewError as e:
+        raise _viewer_error(e)
 
 
 @router.get("/{fid}/text")

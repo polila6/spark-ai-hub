@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import useSWR from "swr";
+import { PdfView } from "@/components/pdf-view";
 import { Button, Notice, cx } from "@/components/ui";
 import { api } from "@/lib/api";
 import { bytes } from "@/lib/format";
@@ -28,12 +29,15 @@ export function Viewer({ wid, wsName, path, version, draft, onDraft, onSaved, on
   const isSheet = ["xlsx", "xlsm"].includes(e);
   const isTable = TABLE.includes(e);
   const isPdf = e === "pdf";
+  const isOffice = OFFICE.includes(e);
+  const isVideo = VIDEO.includes(e);
+  const isAudio = AUDIO.includes(e);
   const isImg = IMG.includes(e) && e !== "svg";
   const isHtml = e === "html" || e === "htm";
   const hasPreview = isTable || isHtml || e === "md" || e === "svg";
   const q = `path=${encodeURIComponent(path)}&v=${version}`;
   // keepPreviousData: a refresh (new version) does not blank the editor while it reloads
-  const { data: f, error, mutate } = useSWR(!isPdf && !isImg && !isSheet ? `/api/v1/workspaces/${wid}/file?${q}` : null, { keepPreviousData: true });
+  const { data: f, error, mutate } = useSWR(!isPdf && !isImg && !isSheet && !isOffice && !isVideo && !isAudio ? `/api/v1/workspaces/${wid}/file?${q}` : null, { keepPreviousData: true });
   const { data: tbl, error: tblErr } = useSWR(isTable ? `/api/v1/workspaces/${wid}/table?${q}` : null, { keepPreviousData: true });
   const [mode, setMode] = useState<Mode>(hasPreview && !draft ? "view" : "edit");
   const [sheet, setSheet] = useState(0);
@@ -108,7 +112,10 @@ export function Viewer({ wid, wsName, path, version, draft, onDraft, onSaved, on
             <Button size="sm" variant="outline" onClick={onClose}><X className="h-3.5 w-3.5" />{L("Cerrar pestaña", "Close tab")}</Button>
           </div></div>
         ) : isImg ? <div className="grid h-full place-items-center overflow-auto bg-[repeating-conic-gradient(rgb(var(--elevated))_0%_25%,transparent_0%_50%)] bg-[length:16px_16px] p-4"><img src={`${raw}&v=${version}`} alt={path} className="max-h-full max-w-full rounded-lg border border-border bg-white object-contain" /></div>
-          : isPdf ? <iframe title={path} src={`${raw}&v=${version}`} className="h-full w-full" />
+          : isPdf ? <PdfView url={`${raw}&v=${version}`} />
+          : isOffice ? <PdfView url={`/api/v1/workspaces/${wid}/preview.pdf?${q}`} waiting={L("Preparando el documento… La primera vez puede tardar unos segundos.", "Preparing the document… The first time can take a few seconds.")} />
+          : isVideo ? <div className="grid h-full place-items-center bg-black"><video key={`${path}${version}`} src={`${raw}&v=${version}`} controls className="max-h-full max-w-full" /></div>
+          : isAudio ? <div className="grid h-full place-items-center p-6"><audio key={`${path}${version}`} src={`${raw}&v=${version}`} controls className="w-full max-w-xl" /></div>
           : isHtml && mode === "view" ? <iframe title={path} sandbox="allow-scripts" src={`${raw}&v=${version}${dirty ? "" : `&t=${f?.mtime ?? ""}`}`} className="h-full w-full bg-white" />
           : e === "svg" && mode === "view" ? <div className="grid h-full place-items-center overflow-auto p-4"><img src={`${raw}&v=${version}&t=${f?.mtime ?? ""}`} alt={path} className="max-h-full max-w-full rounded-lg border border-border bg-white" /></div>
           : isTable && mode === "view" ? <TableView tbl={tbl} error={tblErr} sheet={sheet} setSheet={setSheet} />
@@ -153,7 +160,11 @@ function FileMenu({ wid, path, dirty, onReload }: { wid: string; path: string; d
   );
 }
 
-function TableView({ tbl, error, sheet, setSheet }: { tbl: any; error: any; sheet: number; setSheet: (i: number) => void }) {
+const OFFICE = ["doc", "docx", "odt", "rtf", "ppt", "pptx", "odp", "xls", "ods"];
+const VIDEO = ["mp4", "webm", "ogv", "mov", "m4v", "mkv"];
+const AUDIO = ["mp3", "wav", "flac", "ogg", "m4a", "opus", "aac"];
+
+export function TableView({ tbl, error, sheet, setSheet }: { tbl: any; error: any; sheet: number; setSheet: (i: number) => void }) {
   const L = useL();
   if (error) return <div className="p-4"><Notice tone="danger">{error.message}</Notice></div>;
   if (!tbl) return <Loader2 className="m-4 h-4 w-4 animate-spin text-muted" />;
@@ -167,6 +178,7 @@ function TableView({ tbl, error, sheet, setSheet }: { tbl: any; error: any; shee
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-auto">
+        {tbl.sheets[sheet]?.truncated && <p className="border-b border-border bg-warn/10 px-3 py-1 text-[11px] text-warn">{L(`Se muestran las primeras ${body.length} filas. Descarga el archivo para verlo entero.`, `Showing the first ${body.length} rows. Download the file to see all of it.`)}</p>}
         <table className="min-w-full border-separate border-spacing-0 text-xs">
           {head && <thead><tr>
             <th className="sticky left-0 top-0 z-20 border-b border-r border-border bg-elevated px-2 py-1.5 text-right font-normal text-subtle">#</th>

@@ -3,6 +3,7 @@
 import { Bot, Code2, Download, ExternalLink, FileText, Gauge, Globe, Loader2, Mic, Puzzle, Shrink, Square, Volume2 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { hubFile, useFileViewer } from "@/components/file-viewer";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import useSWR from "swr";
@@ -125,6 +126,8 @@ export function SkillNote({ skill, installed }: { skill: any; installed?: boolea
 
 export function CodeRun({ run }: { run: any }) {
   const L = useL();
+  const viewer = useFileViewer();
+  const all = (run.files ?? []).map(hubFile);
   const imgs = (run.files ?? []).filter((f: any) => f.kind === "image");
   const others = (run.files ?? []).filter((f: any) => f.kind !== "image");
   return (
@@ -133,9 +136,12 @@ export function CodeRun({ run }: { run: any }) {
         <pre className="mt-1 max-h-72 overflow-auto rounded-lg bg-elevated p-2 font-mono text-[11px]">{run.code}</pre></details>
       {(run.stdout || run.stderr) && <details open={!run.files?.length}><summary className="cursor-pointer text-muted">{L("Salida", "Output")}</summary>
         <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg bg-elevated p-2 font-mono text-[11px]">{run.stdout}{run.stderr ? `\n${run.stderr}` : ""}</pre></details>}
-      {imgs.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{imgs.map((f: any) => <a key={f.id} href={f.url} target="_blank" rel="noreferrer"><img src={f.url} alt={f.filename} className="max-h-[380px] rounded-lg border border-border bg-white" /></a>)}</div>}
+      {imgs.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{imgs.map((f: any) => <button key={f.id} type="button" onClick={() => viewer.open(hubFile(f), all)}><img src={f.url} alt={f.filename} className="max-h-[380px] rounded-lg border border-border bg-white" /></button>)}</div>}
       {(run.files ?? []).length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{[...others, ...imgs].map((f: any) => (
-        <a key={f.id} href={`${f.url}?download=true`} className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 hover:bg-elevated"><FileText className="h-3 w-3" />{f.filename}<Download className="h-3 w-3 text-muted" /></a>))}
+        <span key={f.id} className="inline-flex items-center overflow-hidden rounded-lg border border-border">
+          <button type="button" title={L("Ver", "View")} className="inline-flex items-center gap-1 px-2 py-1 hover:bg-elevated" onClick={() => viewer.open(hubFile(f), all)}><FileText className="h-3 w-3" />{f.filename}</button>
+          <a href={`${f.url}?download=true`} title={L("Descargar", "Download")} aria-label={`${L("Descargar", "Download")} ${f.filename}`} className="border-l border-border px-1.5 py-1 hover:bg-elevated"><Download className="h-3 w-3 text-muted" /></a>
+        </span>))}
         <Link href="/files" className="self-center text-accent">{L("En Mis archivos → Resultados de código", "In My files → Code results")}</Link></div>}
     </div>
   );

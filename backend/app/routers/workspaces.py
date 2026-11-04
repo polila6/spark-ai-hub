@@ -15,6 +15,7 @@ from ..deps import Principal, current_principal, not_found, require_researcher
 from ..models import Conversation, Workspace
 from ..services import sandbox as sandbox_svc
 from ..services import workspace as ws_svc
+from ..services import preview as preview_svc
 from ..settings_store import get_setting
 
 router = APIRouter(prefix="/api/v1/workspaces", tags=["workspaces"])
@@ -147,9 +148,23 @@ def raw_file(wid: uuid.UUID, path: str, download: bool = False, p: Principal = D
     headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"}
     if mime != "application/pdf":
         headers["Content-Security-Policy"] = "sandbox allow-scripts; default-src 'self' data: blob: 'unsafe-inline'"
+    mime = preview_svc.VIDEO_MIME.get(fp.suffix.lower(), mime)
     inline = not download and (mime.startswith(("image/", "text/", "audio/", "video/")) or mime in ("application/pdf", "application/json"))
     return FileResponse(fp, media_type=mime if inline else "application/octet-stream", headers=headers,
                         filename=None if inline else fp.name)
+
+
+@router.get("/{wid}/preview.pdf")
+def preview_pdf(wid: uuid.UUID, path: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """A Word/PowerPoint/OpenDocument file of the workspace rendered as PDF for the viewer."""
+    try:
+        fp, _ = ws_svc.raw(_ws(db, p, wid), path)
+        pdf = preview_svc.office_pdf(db, p.user, fp, fp.name)
+    except ws_svc.WorkspaceError as e:
+        raise _err(e)
+    except preview_svc.PreviewError as e:
+        raise HTTPException(e.status, detail={"code": "preview", "message": e.message})
+    return FileResponse(pdf, media_type="application/pdf", headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
 
 
 @router.get("/{wid}/table")
