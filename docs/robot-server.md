@@ -31,13 +31,13 @@ JSON body. The usual spellings of each field are accepted.
 | `diffusion_steps` | `steps`, `num_steps` | 100 |
 | `model` | `model_name` | `Kimodo-G1-RP-v1` |
 | `cfg_weight`, `cfg_type` | `cfg_scale`, `guidance` | Kimodo's |
-| `apply_root_motion` | `root_motion` | true |
+| `applyRootMotion` | `apply_root_motion`, `root_motion` | true |
 | `dof` (23 or 29) | `dofs` | 29 |
 | `seed`, `num_samples` | | |
 | `poses`: `[{"time": s, "qpos": [...]}]` | `target_poses`, `keyframes` | |
 | `constraints` (Kimodo's constraint format) | | |
 
-Poses are targets, not guarantees: they are quantised to the nearest frame. With `"format": "csv"` or `Accept: text/csv` the
+`rootMarkers` (floor markers) are not followed yet: if any are sent, the answer says so in `warnings`. Poses are targets, not guarantees: they are quantised to the nearest frame. With `"format": "csv"` or `Accept: text/csv` the
 answer is the CSV alone. Otherwise JSON, with the motion as `qpos` (rows of root xyz, quaternion wxyz, joint angles in
 radians, in the order of `joint_names`), `csv`, `root_positions`, `root_quaternions` and `joint_angles`, plus `fps`,
 `num_frames`, `duration`, `model` and `elapsed_s`.
@@ -65,7 +65,7 @@ things to know:
 
 ## Other routes
 
-`GET /health` (also `/`, `/status`, `/capabilities`) and `GET /models`.
+`GET /physics-capabilities` says what the check does (kinematic, no balance simulation). `GET /health` (also `/`, `/status`, `/capabilities`) and `GET /models`.
 
 ## Memory
 

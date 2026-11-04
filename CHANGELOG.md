@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.2 — 2026-11-04
+Fixes found by connecting a real robot suite.
+
+* `applyRootMotion` was ignored, so turning root motion off had no effect.
+* `GET /physics-capabilities`, which suites ask before checking physics, no longer answers 404.
+* `rootMarkers` are not followed yet: the answer now says so instead of ignoring them silently.
+
 ## 0.13.1 — 2026-11-04
 Robot motions from text while waiting for Llama 3.
 

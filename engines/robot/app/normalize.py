@@ -24,19 +24,20 @@ JOINTS_29 = [
 NOT_IN_23 = {"waist_roll", "waist_pitch", "left_wrist_pitch", "left_wrist_yaw", "right_wrist_pitch", "right_wrist_yaw"}
 ALIASES = {
     "prompt": ("prompt", "text", "instruction", "description", "caption", "query", "texts", "prompts"),
-    "duration": ("duration", "duration_s", "seconds", "length", "motion_length", "time"),
-    "frames": ("num_frames", "frames", "n_frames"),
-    "steps": ("diffusion_steps", "num_denoising_steps", "steps", "num_steps", "denoising_steps", "n_steps"),
-    "model": ("model", "model_name", "modelname", "checkpoint"),
-    "cfg_weight": ("cfg_weight", "cfg_scale", "cfg", "guidance", "guidance_scale"),
-    "cfg_type": ("cfg_type",),
-    "root": ("apply_root_motion", "root_motion", "apply_root", "use_root_motion"),
+    "duration": ("duration", "duration_s", "durationS", "seconds", "length", "motion_length", "time"),
+    "frames": ("num_frames", "numFrames", "frames", "n_frames"),
+    "steps": ("diffusion_steps", "diffusionSteps", "num_denoising_steps", "steps", "num_steps", "numSteps", "denoising_steps", "n_steps"),
+    "model": ("model", "model_name", "modelName", "modelname", "checkpoint"),
+    "cfg_weight": ("cfg_weight", "cfgWeight", "cfg_scale", "cfgScale", "cfg", "guidance", "guidance_scale", "guidanceScale"),
+    "cfg_type": ("cfg_type", "cfgType"),
+    "root": ("applyRootMotion", "apply_root_motion", "root_motion", "rootMotion", "apply_root", "use_root_motion"),
     "seed": ("seed",),
-    "samples": ("num_samples", "samples", "n_samples"),
+    "samples": ("num_samples", "numSamples", "samples", "n_samples"),
     "dof": ("dof", "dofs", "num_dof", "robot_dof"),
-    "poses": ("poses", "target_poses", "pose_targets", "keyframes"),
+    "poses": ("poses", "target_poses", "targetPoses", "pose_targets", "poseTargets", "keyframes"),
     "constraints": ("constraints", "constraint_lst"),
-    "transitions": ("num_transition_frames", "transition_frames"),
+    "transitions": ("num_transition_frames", "numTransitionFrames", "transition_frames"),
+    "markers": ("rootMarkers", "root_markers"),
 }
 
 
@@ -83,6 +84,7 @@ class Request:
     poses: list[dict] = field(default_factory=list)
     constraints: list[dict] = field(default_factory=list)
     transitions: int = 5
+    ignored: list[str] = field(default_factory=list)
 
 
 def parse_generate(body: dict) -> Request:
@@ -124,7 +126,8 @@ def parse_generate(body: dict) -> Request:
     poses, constraints = pick(body, "poses") or [], pick(body, "constraints") or []
     if not isinstance(poses, list) or not isinstance(constraints, list):
         raise BadRequest("poses and constraints must be lists")
-    return Request(prompts=prompts, frames=frames, model=str(pick(body, "model") or DEFAULT_MODEL).strip(), steps=steps,
+    ignored = ["rootMarkers"] if pick(body, "markers") else []  # floor markers cannot be followed yet: never drop them silently
+    return Request(ignored=ignored, prompts=prompts, frames=frames, model=str(pick(body, "model") or DEFAULT_MODEL).strip(), steps=steps,
                    cfg_weight=weight, cfg_type=pick(body, "cfg_type"), root_motion=_flag(pick(body, "root"), True),
                    seed=_number(pick(body, "seed"), "seed", int), samples=samples, dof=dof, poses=poses, constraints=constraints,
                    transitions=5 if pick(body, "transitions") is None else _number(pick(body, "transitions"), "num_transition_frames", int))

@@ -42,6 +42,16 @@ def test_bad_requests_say_why(body):
         n.parse_generate(body)
 
 
+def test_the_request_storyteller_really_sends():
+    r = n.parse_generate({"prompt": "a person trying to be seen by a rescue airplane", "duration": 5, "model": "Kimodo-G1-RP-v1",
+                          "diffusion_steps": 100, "applyRootMotion": False, "rootYawMode": "last", "rootMarkers": []})
+    assert r.root_motion is False and r.frames == [150] and r.ignored == []
+
+
+def test_floor_markers_are_reported_when_they_cannot_be_followed():
+    assert n.parse_generate({"prompt": "x", "rootMarkers": [{"x": 1, "y": 2}]}).ignored == ["rootMarkers"]
+
+
 def test_root_motion_flag_understands_text():
     assert n.parse_generate({"prompt": "x", "root_motion": "false"}).root_motion is False
     assert n.parse_generate({"prompt": "x"}).root_motion is True

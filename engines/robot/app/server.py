@@ -377,8 +377,10 @@ def generate(req: n.Request) -> dict:
                                       "elapsed_s": round(elapsed, 2), "prompt": req.prompts if multi else req.prompts[0],
                                       "seed": req.seed, "skeleton": entry["skeleton"], "num_frames": sum(req.frames),
                                       "duration": sum(req.frames) / entry["fps"], "text_encoder": encoder_mode()}
-            if encoder_mode() == "provisional":
-                result["warnings"] = [PROVISIONAL_NOTE]
+            notes = [PROVISIONAL_NOTE] if encoder_mode() == "provisional" else []
+            notes += [f"{name} is not supported by this server and was ignored." for name in req.ignored]
+            if notes:
+                result["warnings"] = notes
             if "g1" in entry["key"]:
                 qpos = np.asarray(MujocoQposConverter(entry["model"].skeleton).dict_to_qpos(output, entry["device"]))
                 if qpos.ndim == 2:
@@ -446,8 +448,20 @@ async def physics_route(request: HttpRequest):
         return error("physics_failed", f"{type(e).__name__}: {e}", 500)
 
 
-for _path in ("/physics", "/physics/check", "/check_physics", "/simulate", "/mujoco/check", "/mujoco/simulate", "/validate"):
+for _path in ("/physics", "/physics/check", "/physics-check", "/physics-validate", "/physics-simulate", "/physics-analyze",
+              "/check_physics", "/simulate", "/mujoco/check", "/mujoco/simulate", "/validate"):
     app.add_api_route(_path, physics_route, methods=["POST"])
+
+
+@app.get("/physics-capabilities")
+@app.get("/physics/capabilities")
+def physics_capabilities():
+    """What the physics check does. It states the check is kinematic, so a client does not take it for a balance simulation."""
+    import mujoco
+    return {"status": "ok", "ok": True, "success": True, "available": True, "enabled": True, "supported": True, "physics": True,
+            "engine": "mujoco", "mujoco": True, "mujoco_version": mujoco.__version__, "version": 1, "robot": "unitree_g1",
+            "model": "g1", "dof": [23, 29], "dofs": [23, 29], "fps": n.FPS, "mode": "kinematic", "dynamic_balance": False,
+            "checks": ["self_collision", "floor_penetration", "joint_limits", "center_of_mass"], "endpoint": "/physics"}
 
 
 def public_status() -> dict:
