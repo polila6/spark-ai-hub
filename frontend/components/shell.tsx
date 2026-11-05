@@ -14,6 +14,7 @@ import { api } from "@/lib/api";
 import { useI18n, useL } from "@/lib/i18n";
 import { isManager, useMe, useTheme, useToast } from "@/lib/providers";
 import { MemoryPill } from "./memory";
+import { SetupGate } from "./setup-wizard";
 import { Badge, Button, cx, Modal, Skeleton } from "./ui";
 
 type Item = { href: string; key: string; icon: any; admin?: boolean; label?: [string, string] };
@@ -286,6 +287,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!loading && !me) window.location.href = `/login?next=${encodeURIComponent(path)}`;
   }, [loading, me, path]);
+  // a person's own language (saved with their account) follows them to any browser
+  const { setLang } = useI18n();
+  const myLang = me?.preferences?.language;
+  useEffect(() => { if (myLang === "es" || myLang === "en") setLang(myLang); }, [myLang, setLang]);
   if (!me) {
     return <div className="grid min-h-screen place-items-center"><Skeleton className="h-10 w-48" /></div>;
   }
@@ -315,6 +320,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main id="main" className="mx-auto w-full max-w-[1500px] flex-1 px-3 pb-24 pt-4 sm:px-6 sm:py-6 lg:pb-6">{children}</main>
         <MobileTabs onMore={() => setOpen(true)} />
         <TermsGate />
+        <SetupGate />
       </div>
     </div>
   );

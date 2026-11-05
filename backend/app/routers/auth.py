@@ -16,7 +16,7 @@ from ..models import Invitation, Role, User, UserSession
 from ..redis_client import rate_limit
 from ..security import hash_password, new_token, password_problems, token_digest, verify_password
 from ..services import mailer, notify, people
-from ..settings_store import get_setting
+from ..settings_store import branding, get_setting
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -113,7 +113,7 @@ CLAUSES = {
 
 
 def _default_terms(mode: str = "consent") -> dict:
-    org = get_settings().org_name.strip()
+    org = branding()["org_name"]
     c = CLAUSES.get(mode, CLAUSES["consent"])
     fill = {"org_paren": f" ({org})" if org else ""}
     return {"es": DEFAULT_TERMS["es"].format(**fill, org_de=f" de {org}" if org else "", clause2=c["es"], clause8_es=c["8_es"], clause8_en=""),

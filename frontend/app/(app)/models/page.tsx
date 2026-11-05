@@ -9,7 +9,7 @@ import { MemoryPanel, useMemory } from "@/components/memory";
 import { Badge, Button, Card, Empty, ErrorBox, Notice, PageHeader, Progress, Select, Skeleton, StatusBadge, Table, Tabs, Td } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ago, bytes, num, params, rate } from "@/lib/format";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, tr } from "@/lib/i18n";
 import { useMe, useToast } from "@/lib/providers";
 
 function ModelsTab() {
@@ -44,7 +44,7 @@ function ModelsTab() {
       </div>
       {error && <ErrorBox error={error} />}
       {isLoading && <Skeleton className="h-40" />}
-      {data && data.length === 0 && <Card><Empty hint="Instala modelos desde «Descubrir modelos»" action={<Link href="/discover"><Button variant="primary" size="sm">{t("nav.discover")}</Button></Link>} /></Card>}
+      {data && data.length === 0 && <Card><Empty hint={tr("Instala modelos desde «Descubrir modelos»", "Install models from “Discover models”")} action={<Link href="/discover"><Button variant="primary" size="sm">{t("nav.discover")}</Button></Link>} /></Card>}
       {data && data.length > 0 && (
         <Card>
           <Table head={["", t("common.model"), t("common.status"), t("models.backend"), t("models.memory"), t("common.size"), t("common.visibility"), t("common.actions")]}>
@@ -128,7 +128,7 @@ function ImportTab() {
   if (!data) return <Skeleton className="h-32" />;
   return (
     <div className="space-y-4">
-      <Notice tone="info">Modelos presentes en Ollama o en cachés de Hugging Face que aún no están registrados. Los modelos de la caché del usuario se muestran solo como referencia (montaje de solo lectura).</Notice>
+      <Notice tone="info">{tr("Modelos presentes en Ollama o en cachés de Hugging Face que aún no están registrados. Los modelos de la caché del usuario se muestran solo como referencia (montaje de solo lectura).", "Models found in Ollama or Hugging Face caches that are not registered yet. Models in the user's cache are shown for reference only (read-only mount).")}</Notice>
       <Card>
         <Table head={["Ollama", t("common.size"), ""]}>
           {data.ollama.length === 0 && <tr><Td className="text-muted">—</Td></tr>}
@@ -142,7 +142,7 @@ function ImportTab() {
         <Table head={["Hugging Face cache", "revision", t("common.size"), "cache"]}>
           {data.hf_cache.length === 0 && <tr><Td className="text-muted">—</Td></tr>}
           {data.hf_cache.map((m: any) => (
-            <tr key={m.repo_id + m.revision}><Td><Link className="hover:text-accent" href={`/discover/${m.repo_id}`}>{m.repo_id}</Link></Td><Td className="font-mono text-xs">{m.revision.slice(0, 10)}</Td><Td>{bytes(m.size)}</Td><Td className="text-xs text-muted">{m.needs_copy ? "usuario (ro)" : "hub"}</Td></tr>
+            <tr key={m.repo_id + m.revision}><Td><Link className="hover:text-accent" href={`/discover/${m.repo_id}`}>{m.repo_id}</Link></Td><Td className="font-mono text-xs">{m.revision.slice(0, 10)}</Td><Td>{bytes(m.size)}</Td><Td className="text-xs text-muted">{m.needs_copy ? tr("usuario (ro)", "user (ro)") : "hub"}</Td></tr>
           ))}
         </Table>
       </Card>

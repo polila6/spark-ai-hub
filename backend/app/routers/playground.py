@@ -19,6 +19,7 @@ from ..deps import Principal, current_principal, not_found, require_researcher, 
 from ..engines import LLM_ENGINES, EngineError
 from ..models import Conversation, Message, RegisteredModel, SavedPrompt, SharedResource, Visibility
 from ..services import llm, sandbox, scheduler, turns
+from ..settings_store import branding
 from .openai_gateway import _record
 
 router = APIRouter(prefix="/api/v1/playground", tags=["playground"])
@@ -58,6 +59,9 @@ class SendIn(BaseModel):
     auto_compact: bool = True
     web: bool = True
     research: bool = False
+    effort: int = Field(default=2, ge=0, le=4)  # 0 instant … 4 maximum
+    director: bool = True  # decide before answering which of the allowed capabilities this message needs
+    allow: dict[str, str] | None = None  # think/web/research/skills/agents/code → auto | on | off
     workspace_id: uuid.UUID | None = None
 
 
@@ -233,12 +237,14 @@ def _launch(c: Conversation, p: Principal, body: SendIn, model: RegisteredModel,
                                 "stop": body.stop, "seed": body.seed}.items() if v is not None}
     if body.mode == "image":
         params["aspect"] = body.aspect
-    lang = (p.user.preferences or {}).get("language") or "es"
+    lang = (p.user.preferences or {}).get("language") or branding()["default_language"]
     turn = agent.Turn(user_id=p.id, conversation_id=c.id, model_id=model.id, content=content,
                       attachments=attachments, system_prompt=body.system_prompt, params=params,
                       use_tools=body.tools, thinking=body.thinking, mode=body.mode, lang=lang,
                       context_limit=body.context_limit, auto_compact=body.auto_compact, web=body.web,
-                      research=body.research, workspace_id=body.workspace_id, user_message_id=user_mid)
+                      research=body.research, effort=body.effort, director=body.director,
+                      allow={k: v for k, v in (body.allow or {}).items() if v in ("auto", "on", "off")},
+                      workspace_id=body.workspace_id, user_message_id=user_mid)
     turns.emit(c.id, {"type": "user_message", "message_id": user_mid})  # the UI needs it to edit/rewind this message
     threading.Thread(target=_run_turn, args=(turn, p, body.model_alias, c.title), daemon=True).start()
     return StreamingResponse(_tail(c.id, request, 0), media_type="text/event-stream",

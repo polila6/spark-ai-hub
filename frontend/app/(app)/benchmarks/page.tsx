@@ -7,7 +7,7 @@ import { Guide } from "@/components/guide";
 import { Badge, Button, Card, CardBody, CardHeader, Empty, ErrorBox, Field, Input, Modal, Notice, PageHeader, Select, Skeleton, StatusBadge, Table, Td } from "@/components/ui";
 import { api } from "@/lib/api";
 import { dt, num } from "@/lib/format";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, tr } from "@/lib/i18n";
 import { useToast } from "@/lib/providers";
 
 function RunDetail({ id, onClose }: { id: string; onClose: () => void }) {
@@ -72,13 +72,13 @@ export default function BenchmarksPage() {
               <Field label={t("play.temperature")}><Input type="number" step={0.1} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
               <Field label={t("common.seed")}><Input type="number" value={f.seed} onChange={(e) => setF({ ...f, seed: Number(e.target.value) })} /></Field>
             </div>
-            <Notice tone="muted">Puntuaciones deterministas (coincidencia exacta / JSON válido). No hay juez LLM en estas suites.</Notice>
+            <Notice tone="muted">{tr("Puntuaciones deterministas (coincidencia exacta / JSON válido). No hay juez LLM en estas suites.", "Deterministic scores (exact match / valid JSON). There is no LLM judge in these suites.")}</Notice>
             <Button variant="primary" className="w-full" disabled={!llms.length} onClick={create}>{t("common.run")}</Button>
           </CardBody>
         </Card>
         <div className="space-y-4">
           <Card>
-            <CardHeader title="Comparativa (última ejecución por modelo)" actions={<Select className="w-48" value={suiteFilter} onChange={(e) => setSuiteFilter(e.target.value)}>{suites?.map((s: any) => <option key={s.id}>{s.id}</option>)}</Select>} />
+            <CardHeader title={tr("Comparativa (última ejecución por modelo)", "Comparison (latest run per model)")} actions={<Select className="w-48" value={suiteFilter} onChange={(e) => setSuiteFilter(e.target.value)}>{suites?.map((s: any) => <option key={s.id}>{s.id}</option>)}</Select>} />
             <CardBody>{chart.length === 0 ? <Empty /> : isPerf
               ? <Bars data={chart} xKey="name" bars={[{ key: "tps", name: "tok/s (c=1)" }, { key: "thr", name: "throughput tok/s (c=4)" }, { key: "ttft", name: "TTFT p50 ms" }]} />
               : <Bars data={chart} xKey="name" unit="%" bars={[{ key: "score", name: t("bench.score") }]} />}</CardBody>

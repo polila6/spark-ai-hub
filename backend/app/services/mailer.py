@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings, public_base_url
 from ..logging_setup import log
 from ..models import EmailOutbox
-from ..settings_store import get_setting
+from ..settings_store import branding, get_setting
 
 BACKOFF_MIN = [1, 5, 15, 60, 240]
 
@@ -176,7 +176,7 @@ class _Safe(dict):
 def render(kind: str, lang: str, ctx: dict) -> tuple[str, str, str]:
     lang = lang if lang in _T else "es"
     subject, intro, lines = _T[lang][kind]
-    org = get_settings().org_name.strip()
+    org = branding()["org_name"]
     c = _Safe({"base": public_base_url(), "org_de": f" de {org}" if org else "",
                "org_of": f" of {org}" if org else "", **ctx})
     c.setdefault("share", "")

@@ -188,6 +188,11 @@ function WorkspaceIDE({ ws, limits, layout, setLayout, onDirty, onSizes }: {
     setOpen((o) => ({ tabs: o.tabs.includes(p) ? o.tabs : [...o.tabs, p], active: p }));
     setSel(p); expandTo(p); setPane("editor");
   }, [setOpen]);
+  // a link to a file from a chat answer elsewhere (/workspace#open=path) opens it here
+  useEffect(() => {
+    const m = window.location.hash.match(/^#open=(.+)$/);
+    if (m) { openFile(decodeURIComponent(m[1])); window.history.replaceState(null, "", window.location.pathname); }
+  }, [openFile]);
   const reveal = (dir: string) => {
     setSel(dir || null); if (dir) expandTo(dir, true);
     if (desktop) setLayout((l) => ({ ...l, showFiles: true })); else setPane("files");

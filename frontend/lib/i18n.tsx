@@ -365,15 +365,27 @@ const DICTS: Record<Lang, Dict> = { es, en };
 type Ctx = { lang: Lang; setLang: (l: Lang) => void; t: (k: TKey | string) => string };
 const I18nCtx = createContext<Ctx>({ lang: "es", setLang: () => {}, t: (k) => String(k) });
 
+// The language of the page being drawn, for text that lives outside a component or in a file that only needs one phrase:
+// tr("Guardar", "Save"). Pages that call useI18n() re-render on a language change, so it always matches what they show.
+let CURRENT: Lang = "es";
+export const tr = (es: string, en: string) => (CURRENT === "en" ? en : es);
+
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLangState] = useState<Lang>("es");
+  CURRENT = lang;
   useEffect(() => {
+    let saved: Lang | null = null;
     try {
-      const saved = localStorage.getItem("sah-lang") as Lang | null;
-      if (saved === "es" || saved === "en") setLangState(saved);
+      const v = localStorage.getItem("sah-lang");
+      if (v === "es" || v === "en") saved = v;
     } catch {
       /* storage unavailable */
     }
+    if (saved) { setLangState(saved); return; }
+    // nobody has chosen on this browser yet: use the hub's default language (set in the first-run setup)
+    fetch("/api/v1/branding").then((r) => (r.ok ? r.json() : null)).then((b) => {
+      if (b?.default_language === "es" || b?.default_language === "en") setLangState(b.default_language);
+    }).catch(() => {});
   }, []);
   useEffect(() => {
     document.documentElement.lang = lang;

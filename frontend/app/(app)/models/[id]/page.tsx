@@ -7,14 +7,14 @@ import useSWR from "swr";
 import { Badge, Button, Card, CardBody, CardHeader, Confirm, ErrorBox, Field, Input, Notice, PageHeader, Select, Skeleton, StatusBadge, Switch, Td, Table } from "@/components/ui";
 import { api } from "@/lib/api";
 import { bytes, dt, num } from "@/lib/format";
-import { useI18n, useL } from "@/lib/i18n";
+import { useI18n, useL, tr } from "@/lib/i18n";
 import { useMe, useToast } from "@/lib/providers";
 import { kTok } from "@/components/assistant";
 import { ModelLoadButtons, useMain } from "@/components/main-model";
 
 const VLLM_FIELDS: [string, string, string][] = [
-  ["max_model_len", "number", "Longitud máxima de contexto (tokens)"],
-  ["gpu_memory_utilization", "number", "Fracción de la memoria unificada total que vLLM preasigna (0.05–0.9)"],
+  ["max_model_len", "number", tr("Longitud máxima de contexto (tokens)", "Maximum context length (tokens)")],
+  ["gpu_memory_utilization", "number", tr("Fracción de la memoria unificada total que vLLM preasigna (0.05–0.9)", "Share of the total unified memory that vLLM pre-allocates (0.05–0.9)")],
   ["max_num_seqs", "number", "Secuencias concurrentes"],
   ["kv_cache_dtype", "text", "auto | fp8"],
   ["tool_call_parser", "text", "hermes | llama3_json | mistral | openai | qwen3_coder | pythonic"],
@@ -119,9 +119,9 @@ export default function ModelPage({ params }: { params: Promise<{ id: string }> 
         <Card className="lg:col-span-2">
           <CardHeader title={t("common.details")} />
           <CardBody className="grid gap-3 text-sm sm:grid-cols-2">
-            {[["models.backend", m.backend], ["Arquitectura", m.architecture], ["Cuantización", m.quantization], ["Formato", m.format], ["Parámetros", m.parameters_b ? `${num(m.parameters_b, 2)}B` : null],
+            {[["models.backend", m.backend], [tr("Arquitectura", "Architecture"), m.architecture], [tr("Cuantización", "Quantization"), m.quantization], [tr("Formato", "Format"), m.format], [tr("Parámetros", "Parameters"), m.parameters_b ? `${num(m.parameters_b, 2)}B` : null],
               ["Contexto", m.context_length], ["Licencia", m.license], [t("common.size"), bytes(m.size_bytes)], ["Memoria medida", m.measured_memory_gb ? `${num(m.measured_memory_gb)} GB` : null],
-              ["Memoria estimada", m.estimated_memory_gb ? `${num(m.estimated_memory_gb)} GB` : null], ["Último uso", dt(m.last_used_at, lang)], ["Código remoto", m.custom_code ? (m.trust_remote_code_approved ? "aprobado" : "NO aprobado") : "no"]]
+              [tr("Memoria estimada", "Estimated memory"), m.estimated_memory_gb ? `${num(m.estimated_memory_gb)} GB` : null], [tr("Último uso", "Last used"), dt(m.last_used_at, lang)], [tr("Código remoto", "Remote code"), m.custom_code ? (m.trust_remote_code_approved ? tr("aprobado", "approved") : tr("NO aprobado", "NOT approved")) : "no"]]
               .map(([k, v]: any) => <div key={k} className="flex justify-between gap-3 border-b border-border/50 pb-2"><span className="text-muted">{k.startsWith("models.") ? t(k) : k}</span><span className="text-right font-medium">{v ?? "—"}</span></div>)}
             <div className="sm:col-span-2 flex flex-wrap gap-1">{m.capabilities.map((c: string) => <Badge key={c} tone="info">{c}</Badge>)}</div>
             {m.smoke_test && <div className="sm:col-span-2"><Notice tone={m.smoke_test.ok ? "ok" : "danger"} icon={<ShieldCheck className="h-4 w-4" />}>
@@ -149,14 +149,14 @@ export default function ModelPage({ params }: { params: Promise<{ id: string }> 
             {me?.role === "admin" && <Switch checked={m.pinned} onChange={(v) => patch({ pinned: v })} label={t("models.pin")} />}
             {canManage && <Switch checked={m.status === "disabled"} onChange={(v) => patch({ disabled: v })} label={t("state.disabled")} />}
             {me?.role === "admin" && m.custom_code && <Button size="sm" variant={m.trust_remote_code_approved ? "outline" : "danger"} onClick={async () => { await api(`/api/v1/models/${id}/approve-remote-code?approve=${!m.trust_remote_code_approved}`, { method: "POST" }); mutate(); }}>
-              {m.trust_remote_code_approved ? "Revocar código remoto" : "Aprobar código remoto (aislado)"}</Button>}
+              {m.trust_remote_code_approved ? tr("Revocar código remoto", "Revoke remote code") : tr("Aprobar código remoto (aislado)", "Approve remote code (isolated)")}</Button>}
           </CardBody>
         </Card>
       </div>
       {m.backend === "vllm" && <ContextCard id={id} onChanged={mutate} />}
       {canManage && ["vllm", "ollama"].includes(m.backend) && (
         <Card className="mt-4">
-          <CardHeader title={t("models.runtime_params")} subtitle={m.backend === "vllm" ? "Se aplica en la próxima carga del modelo." : "keep_alive de Ollama (el planificador descarga modelos inactivos antes)."} />
+          <CardHeader title={t("models.runtime_params")} subtitle={m.backend === "vllm" ? tr("Se aplica en la próxima carga del modelo.", "Applied the next time the model is loaded.") : tr("keep_alive de Ollama (el planificador descarga modelos inactivos antes).", "Ollama keep_alive (the scheduler unloads idle models earlier).")} />
           <CardBody>
             <div className="grid gap-3 sm:grid-cols-3">
               {(m.backend === "vllm" ? VLLM_FIELDS : [["keep_alive", "text", "p. ej. 60m"]] as any).map(([k, type, tip]: any) => (
@@ -170,7 +170,7 @@ export default function ModelPage({ params }: { params: Promise<{ id: string }> 
       )}
       <Card className="mt-4">
         <CardHeader title={t("models.history")} />
-        <Table head={["", "evento", "de → a", "detalles"]}>
+        <Table head={["", "evento", "de → a", tr("detalles", "details")]}>
           {m.history.map((h: any, i: number) => <tr key={i}><Td className="whitespace-nowrap text-xs text-muted">{dt(h.ts, lang)}</Td><Td className="text-xs font-medium">{h.event}</Td><Td className="text-xs">{h.from ?? ""} → {h.to ?? ""}</Td><Td className="max-w-md truncate font-mono text-[10px] text-muted" >{JSON.stringify(h.details)}</Td></tr>)}
         </Table>
       </Card>

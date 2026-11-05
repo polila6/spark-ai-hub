@@ -6,7 +6,7 @@ import { Guide } from "@/components/guide";
 import { Badge, Button, Card, CardBody, CardHeader, Code, ErrorBox, Field, Input, Modal, Notice, PageHeader, Select, StatusBadge, Switch, Table, Tabs, Td, Textarea } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ago, bytes, dt } from "@/lib/format";
-import { useI18n, useL } from "@/lib/i18n";
+import { useI18n, useL, tr } from "@/lib/i18n";
 import { useMe, useTheme, useToast } from "@/lib/providers";
 
 function Preferences() {
@@ -32,7 +32,7 @@ function Preferences() {
         {err && <ErrorBox error={err} />}
         <Button variant="primary" onClick={async () => { setErr(null); try { await api("/api/v1/auth/me/password", { method: "POST", json: pw }); push("ok", t("common.save")); setPw({ current_password: "", new_password: "" }); } catch (e) { setErr(e); } }}>{t("common.save")}</Button>
       </CardBody></Card>
-      <Card className="xl:col-span-2"><CardHeader title="Sesiones activas" /><Table head={["creada", "última actividad", "IP", "navegador", ""]}>
+      <Card className="xl:col-span-2"><CardHeader title={tr("Sesiones activas", "Active sessions")} /><Table head={[tr("creada", "created"), tr("última actividad", "last activity"), "IP", tr("navegador", "browser"), ""]}>
         {sessions?.map((s: any) => <tr key={s.id}><Td className="text-xs">{dt(s.created_at, lang)}</Td><Td className="text-xs">{ago(s.last_seen_at, lang)}</Td><Td className="text-xs">{s.ip}</Td><Td className="max-w-xs truncate text-xs text-muted">{s.user_agent}</Td><Td>{s.current && <Badge tone="ok">actual</Badge>}</Td></tr>)}
       </Table></Card>
     </div>
@@ -237,15 +237,19 @@ function System() {
   const num = (k: string, label: string, tip?: string) => <Field label={label} tip={tip}><Input type="number" value={s[k] ?? ""} onChange={(e) => set(k, e.target.value === "" ? null : Number(e.target.value))} /></Field>;
   return (
     <div className="space-y-4">
-      <Card><CardHeader title={t("settings.scheduler")} subtitle="Modo híbrido por defecto: el modelo preferido permanece residente; el resto se descarga tras el tiempo de inactividad." /><CardBody className="grid gap-3 sm:grid-cols-3">
-        <Field label="Modo" tip="persistente: nunca descarga · bajo demanda: descarga rápido · híbrido: fija el preferido, descarga el resto"><Select value={s.scheduler_mode} onChange={(e) => set("scheduler_mode", e.target.value)}><option value="hybrid">hybrid</option><option value="on_demand">on_demand</option><option value="persistent">persistent</option></Select></Field>
-        {num("model_idle_timeout_min", "Inactividad (min) · híbrido")}
+      <Card><CardHeader title={L("Idioma y organización", "Language and organisation")} subtitle={L("Lo que ve quien entra por primera vez. Cada persona puede elegir su idioma en Preferencias.", "What a first-time visitor sees. Everyone can choose their own language under Preferences.")} /><CardBody className="grid gap-3 sm:grid-cols-2">
+        <Field label={L("Idioma predeterminado", "Default language")}><Select value={s.default_language ?? "es"} onChange={(e) => set("default_language", e.target.value)}><option value="es">Español</option><option value="en">English</option></Select></Field>
+        <Field label={L("Nombre de la organización (opcional)", "Organisation name (optional)")} hint={L("Aparece en las normas, los correos y la presentación del asistente. Vacío = no se menciona ninguna.", "Appears in the terms, e-mails and the assistant's introduction. Empty = none is mentioned.")}><Input value={s.org_name ?? ""} maxLength={120} onChange={(e) => set("org_name", e.target.value)} /></Field>
+      </CardBody></Card>
+      <Card><CardHeader title={t("settings.scheduler")} subtitle={tr("Modo híbrido por defecto: el modelo preferido permanece residente; el resto se descarga tras el tiempo de inactividad.", "Hybrid mode by default: the preferred model stays resident; the rest are unloaded after the idle time.")} /><CardBody className="grid gap-3 sm:grid-cols-3">
+        <Field label={tr("Modo", "Mode")} tip={tr("persistente: nunca descarga · bajo demanda: descarga rápido · híbrido: fija el preferido, descarga el resto", "persistent: never unloads · on demand: unloads quickly · hybrid: pins the preferred one, unloads the rest")}><Select value={s.scheduler_mode} onChange={(e) => set("scheduler_mode", e.target.value)}><option value="hybrid">hybrid</option><option value="on_demand">on_demand</option><option value="persistent">persistent</option></Select></Field>
+        {num("model_idle_timeout_min", tr("Inactividad (min) · híbrido", "Idle time (min) · hybrid"))}
         {num("on_demand_idle_timeout_min", "Inactividad (min) · bajo demanda")}
-        <Field label="Modelo residente preferido"><Select value={s.preferred_resident_model ?? ""} onChange={(e) => set("preferred_resident_model", e.target.value || null)}><option value="">—</option>{models?.filter((m: any) => ["ollama", "vllm"].includes(m.backend)).map((m: any) => <option key={m.id}>{m.alias}</option>)}</Select></Field>
-        <Field label="Modelo por defecto"><Select value={s.default_model ?? ""} onChange={(e) => set("default_model", e.target.value || null)}><option value="">—</option>{models?.filter((m: any) => m.capabilities?.includes("chat")).map((m: any) => <option key={m.id}>{m.alias}</option>)}</Select></Field>
-        {num("system_reserve_gb", "Reserva del sistema (GB)", "Memoria unificada que el planificador nunca asigna (SO, plano de control, caché)")}
+        <Field label={tr("Modelo residente preferido", "Preferred resident model")}><Select value={s.preferred_resident_model ?? ""} onChange={(e) => set("preferred_resident_model", e.target.value || null)}><option value="">—</option>{models?.filter((m: any) => ["ollama", "vllm"].includes(m.backend)).map((m: any) => <option key={m.id}>{m.alias}</option>)}</Select></Field>
+        <Field label={tr("Modelo por defecto", "Default model")}><Select value={s.default_model ?? ""} onChange={(e) => set("default_model", e.target.value || null)}><option value="">—</option>{models?.filter((m: any) => m.capabilities?.includes("chat")).map((m: any) => <option key={m.id}>{m.alias}</option>)}</Select></Field>
+        {num("system_reserve_gb", tr("Reserva del sistema (GB)", "System reserve (GB)"), tr("Memoria unificada que el planificador nunca asigna (SO, plano de control, caché)", "Unified memory the scheduler never assigns (OS, control plane, cache)"))}
         {num("max_concurrent_gpu_jobs", "Trabajos GPU-heavy concurrentes")}
-        {num("max_concurrent_video_jobs", "Vídeos concurrentes")}
+        {num("max_concurrent_video_jobs", tr("Vídeos concurrentes", "Concurrent videos"))}
         {num("api_default_rpm", "API req/min por defecto")}
       </CardBody></Card>
       <Card><CardHeader title={L("Modelos por defecto (chat y herramientas externas)", "Default models (chat and external tools)")} subtitle={L("Claude Code envía nombres «claude-*»: se traducen a estos modelos. También son los preseleccionados en Conectar herramientas.", "Claude Code sends “claude-*” names: they are mapped to these models. They are also preselected in Connect tools.")} /><CardBody className="grid gap-3 sm:grid-cols-4">
@@ -293,22 +297,22 @@ function System() {
           <Textarea rows={3} value={(s.connector_private_hosts ?? []).join("\n")} onChange={(e) => set("connector_private_hosts", e.target.value.split("\n").map((x) => x.trim()).filter(Boolean))} /></Field>
       </CardBody></Card>
       <Card><CardHeader title="Almacenamiento, logs y alertas" /><CardBody className="grid gap-3 sm:grid-cols-3">
-        {num("storage_min_free_gb", "Espacio libre mínimo (GB)")}{num("storage_warn_percent", "Aviso de disco (%)")}{num("temperature_alert_c", "Alerta de temperatura (°C)")}
-        {num("queue_wait_alert_min", "Alerta de espera en cola (min)")}{num("log_retention_days", "Retención de uso API (días)")}{num("metrics_retention_days", "Retención de métricas (días)")}
-        {num("job_retention_days", "Retención de logs de trabajos (días)")}
+        {num("storage_min_free_gb", tr("Espacio libre mínimo (GB)", "Minimum free space (GB)"))}{num("storage_warn_percent", tr("Aviso de disco (%)", "Disk warning (%)"))}{num("temperature_alert_c", tr("Alerta de temperatura (°C)", "Temperature alert (°C)"))}
+        {num("queue_wait_alert_min", tr("Alerta de espera en cola (min)", "Queue wait alert (min)"))}{num("log_retention_days", tr("Retención de uso API (días)", "API usage retention (days)"))}{num("metrics_retention_days", tr("Retención de métricas (días)", "Metrics retention (days)"))}
+        {num("job_retention_days", tr("Retención de logs de trabajos (días)", "Job log retention (days)"))}
         <div className="flex items-end"><Switch checked={!!s.log_request_content} onChange={(v) => set("log_request_content", v)} label="Registrar contenido de prompts (desaconsejado)" /></div>
       </CardBody></Card>
       <Card><CardHeader title="Funciones opcionales" /><CardBody className="flex flex-wrap gap-6">
         {Object.keys(s.features).map((k) => <Switch key={k} checked={!!s.features[k]} onChange={(v) => set("features", { ...s.features, [k]: v })} label={k} />)}
       </CardBody></Card>
       <div className="flex justify-end"><Button variant="primary" onClick={save}>{t("common.save")}</Button></div>
-      <Card><CardHeader title={t("settings.hf")} subtitle="Token para repositorios gated. Se guarda cifrado; nunca se muestra ni se registra." /><CardBody className="space-y-3">
-        <p className="text-sm">{hf?.configured ? <>Configurado · {hf.valid ? <Badge tone="ok">válido · {hf.user}</Badge> : <Badge tone="danger">inválido</Badge>}</> : <Badge>no configurado</Badge>}</p>
+      <Card><CardHeader title={t("settings.hf")} subtitle={tr("Token para repositorios gated. Se guarda cifrado; nunca se muestra ni se registra.", "Token for gated repositories. Stored encrypted; never shown or logged.")} /><CardBody className="space-y-3">
+        <p className="text-sm">{hf?.configured ? <>Configurado · {hf.valid ? <Badge tone="ok">válido · {hf.user}</Badge> : <Badge tone="danger">{tr("inválido", "invalid")}</Badge>}</> : <Badge>{tr("no configurado", "not configured")}</Badge>}</p>
         <div className="flex gap-2"><Input type="password" placeholder="hf_…" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} />
           <Button onClick={async () => { try { await api("/api/v1/admin/settings", { method: "PUT", json: { hf_token: token } }); setToken(""); mutHf(); push("ok", "token"); } catch (e: any) { push("error", e.message); } }} disabled={!token}>{t("common.save")}</Button>
           {hf?.configured && <Button variant="ghost" onClick={async () => { await api("/api/v1/admin/settings", { method: "PUT", json: { hf_token: null } }); mutHf(); }}>{t("common.delete")}</Button>}</div>
       </CardBody></Card>
-      <Card><CardHeader title={t("dash.engines")} subtitle="ComfyUI y ML worker arrancan bajo demanda; vLLM arranca al cargar un modelo." /><Table head={["motor", t("common.status"), "versión / imagen", ""]}>
+      <Card><CardHeader title={t("dash.engines")} subtitle={tr("ComfyUI y ML worker arrancan bajo demanda; vLLM arranca al cargar un modelo.", "ComfyUI and the ML worker start on demand; vLLM starts when a model is loaded.")} /><Table head={[tr("motor", "engine"), t("common.status"), tr("versión / imagen", "version / image"), ""]}>
         {engines && Object.entries(engines).map(([k, e]: any) => <tr key={k}><Td className="font-medium">{k}</Td><Td><StatusBadge state={e.status} /></Td><Td className="max-w-sm truncate text-xs text-muted">{e.version} {e.extra?.image}</Td>
           <Td><div className="flex gap-1">
             {["comfyui", "mlworker"].includes(k) && e.status === "stopped" && <Button size="sm" onClick={async () => { try { await api(`/api/v1/engines/${k}/start`, { method: "POST" }); mutEng(); } catch (x: any) { push("error", x.message); } }}>Iniciar</Button>}
@@ -330,17 +334,17 @@ function Backups() {
     <div className="space-y-4">
       {data?.warning && <Notice tone="warn">{data.warning} {data.external_mounted ? "Destino externo montado en /backups-external." : "No hay destino externo montado (ver docs/BACKUP_RECOVERY.md)."}</Notice>}
       <Card><CardHeader title={t("settings.backups")} icon={<Archive className="h-4 w-4" />} actions={<>
-        <Switch checked={userData} onChange={setUserData} label="incluir datos de usuario" />
-        <Button variant="primary" onClick={async () => { const r = await api("/api/v1/admin/backups", { method: "POST", json: { include_user_data: userData } }); push("ok", `job ${r.job_id.slice(0, 8)}`); }}>Crear copia ahora</Button></>} />
+        <Switch checked={userData} onChange={setUserData} label={tr("incluir datos de usuario", "include user data")} />
+        <Button variant="primary" onClick={async () => { const r = await api("/api/v1/admin/backups", { method: "POST", json: { include_user_data: userData } }); push("ok", `job ${r.job_id.slice(0, 8)}`); }}>{tr("Crear copia ahora", "Create backup now")}</Button></>} />
         {s && <CardBody className="grid gap-3 sm:grid-cols-4">
-          <Field label="Programación"><Select value={s.backup_schedule} onChange={async (e) => { await api("/api/v1/admin/settings", { method: "PUT", json: { backup_schedule: e.target.value } }); mutS(); }}><option value="off">off</option><option value="daily">daily</option><option value="weekly">weekly</option></Select></Field>
+          <Field label={tr("Programación", "Schedule")}><Select value={s.backup_schedule} onChange={async (e) => { await api("/api/v1/admin/settings", { method: "PUT", json: { backup_schedule: e.target.value } }); mutS(); }}><option value="off">off</option><option value="daily">daily</option><option value="weekly">weekly</option></Select></Field>
           <Field label="Hora (UTC)"><Input type="number" min={0} max={23} defaultValue={s.backup_hour} onBlur={async (e) => { await api("/api/v1/admin/settings", { method: "PUT", json: { backup_hour: Number(e.target.value) } }); mutS(); }} /></Field>
           <Field label="Conservar"><Input type="number" min={1} defaultValue={s.backup_keep} onBlur={async (e) => { await api("/api/v1/admin/settings", { method: "PUT", json: { backup_keep: Number(e.target.value) } }); mutS(); }} /></Field>
           <Field label="Subcarpeta externa"><Input defaultValue={s.backup_external_path ?? ""} placeholder="spark-ai-hub" onBlur={async (e) => { await api("/api/v1/admin/settings", { method: "PUT", json: { backup_external_path: e.target.value || null } }); mutS(); }} /></Field>
         </CardBody>}
-        <Table head={["copia", "fecha", t("common.size"), "datos usuario", "filas", ""]}>
+        <Table head={[tr("copia", "backup"), tr("fecha", "date"), t("common.size"), tr("datos usuario", "user data"), tr("filas", "rows"), ""]}>
           {data?.backups?.map((b: any) => <tr key={b.name}><Td className="font-mono text-xs">{b.name}</Td><Td className="text-xs">{b.created_at}</Td><Td>{bytes(b.size_bytes)}</Td><Td>{b.includes_user_data ? "sí" : "no"}</Td><Td className="max-w-xs truncate text-[10px] text-muted">{b.table_counts && Object.entries(b.table_counts).map(([k, v]) => `${k}:${v}`).join(" ")}</Td>
-            <Td><Button size="sm" variant="outline" onClick={async () => { const r = await api(`/api/v1/admin/backups/${b.name}/restore-test`, { method: "POST" }); push("ok", `restore test · job ${r.job_id.slice(0, 8)}`); }}>Probar restauración</Button></Td></tr>)}
+            <Td><Button size="sm" variant="outline" onClick={async () => { const r = await api(`/api/v1/admin/backups/${b.name}/restore-test`, { method: "POST" }); push("ok", `restore test · job ${r.job_id.slice(0, 8)}`); }}>{tr("Probar restauración", "Test restore")}</Button></Td></tr>)}
         </Table>
       </Card>
     </div>
@@ -350,7 +354,7 @@ function Backups() {
 function Diagnostics() {
   const { data } = useSWR("/api/v1/admin/diagnostics");
   return (
-    <Card><CardHeader title="Diagnóstico" icon={<Stethoscope className="h-4 w-4" />} actions={<a href="/api/v1/admin/diagnostics/bundle"><Button size="sm" variant="primary"><Download className="h-3.5 w-3.5" />Paquete de diagnóstico (secretos redactados)</Button></a>} />
+    <Card><CardHeader title={tr("Diagnóstico", "Diagnostics")} icon={<Stethoscope className="h-4 w-4" />} actions={<a href="/api/v1/admin/diagnostics/bundle"><Button size="sm" variant="primary"><Download className="h-3.5 w-3.5" />{tr("Paquete de diagnóstico (secretos redactados)", "Diagnostic bundle (secrets redacted)")}</Button></a>} />
       <CardBody><pre className="max-h-[60vh] overflow-auto rounded-xl bg-elevated p-3 font-mono text-[11px]">{data ? JSON.stringify(data, null, 2) : "…"}</pre></CardBody></Card>
   );
 }

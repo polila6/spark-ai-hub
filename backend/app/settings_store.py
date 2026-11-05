@@ -9,7 +9,9 @@ from .models import SystemSetting
 from .security import decrypt_str, encrypt_str
 
 DEFAULTS: dict[str, Any] = {
-    "default_language": "es",
+    "default_language": "es",  # chosen in the first-run setup; each person can pick their own in Settings
+    "org_name": "",  # shown in terms, e-mails and the assistant prompt; empty = SAH_ORG_NAME, else nothing is mentioned
+    "setup_completed": False,  # the first-run setup (language, organisation) was done or skipped
     "default_model": None,
     "scheduler_mode": "hybrid",  # persistent | on_demand | hybrid
     "model_idle_timeout_min": 15,
@@ -68,6 +70,7 @@ DEFAULTS: dict[str, Any] = {
     "web_search_enabled": True,  # web_search/fetch_url tools (queries leave the Spark through the private SearXNG)
     "searxng_url": "http://searxng:8080",
     "skills_enabled": True,
+    "director_enabled": True,  # decide before each answer which of the allowed capabilities it needs (services/director.py)
     "skills_auto_install": True,  # the model may install skills from the internet without asking first
     "skill_sources": ["anthropics/skills"],  # GitHub repos (owner/repo[/path]) offered as the skill catalog
     "agents_enabled": True,
@@ -100,6 +103,36 @@ DEFAULTS: dict[str, Any] = {
 
 SECRET_KEYS = {"hf_token", "smtp_password", "tailscale_api_key", "oidc_google_client_secret", "oidc_microsoft_client_secret",
                "oidc_generic_client_secret"}
+
+
+_BRAND: dict = {"at": 0.0, "v": None}
+
+
+def branding() -> dict:
+    """Organisation name and default language for hot paths without a database session (prompts, e-mails, terms).
+    The organisation is the one chosen in the first-run setup, else SAH_ORG_NAME, else none. Cached a few seconds."""
+    import time
+
+    if _BRAND["v"] is None or time.monotonic() - _BRAND["at"] > 20:
+        org, lang = "", "es"
+        try:
+            from .config import get_settings
+            from .db import SessionLocal
+
+            with SessionLocal() as db:
+                org = str(get_setting(db, "org_name") or "").strip()
+                lang = get_setting(db, "default_language") or "es"
+            org = org or get_settings().org_name.strip()
+        except Exception:  # noqa: BLE001 — never break an e-mail or a prompt over branding
+            from .config import get_settings
+
+            org = get_settings().org_name.strip()
+        _BRAND.update(at=time.monotonic(), v={"org_name": org, "default_language": lang if lang in ("es", "en") else "es"})
+    return _BRAND["v"]
+
+
+def forget_branding() -> None:
+    _BRAND["v"] = None
 
 
 def get_setting(db: Session, key: str) -> Any:

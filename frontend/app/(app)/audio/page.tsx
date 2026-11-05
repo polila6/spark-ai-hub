@@ -7,7 +7,7 @@ import { Guide } from "@/components/guide";
 import { Badge, Button, Card, CardBody, CardHeader, Empty, ErrorBox, Field, Input, Notice, PageHeader, Progress, Select, StatusBadge, Switch, Textarea } from "@/components/ui";
 import { api, upload } from "@/lib/api";
 import { dt, num } from "@/lib/format";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, tr } from "@/lib/i18n";
 import { useToast } from "@/lib/providers";
 
 function JobResult({ id }: { id: string }) {
@@ -58,12 +58,12 @@ export default function AudioPage() {
       <PageHeader title={t("aud.title")} subtitle={t("aud.subtitle")} icon={<AudioLines className="h-5 w-5" />} />
       <Guide id="audio" />
       {mlw && mlw.status === "not_installed" && <div className="mb-4"><Notice tone="warn">ML worker no instalado: {mlw.detail}</Notice></div>}
-      <Notice tone="muted">Diarización de hablantes: no disponible (requiere modelos gated pyannote; no instalados). Solo se ofrecen modalidades con un pipeline verificado.</Notice>
+      <Notice tone="muted">{tr("Diarización de hablantes: no disponible (requiere modelos gated pyannote; no instalados). Solo se ofrecen modalidades con un pipeline verificado.", "Speaker diarization: not available (needs gated pyannote models; not installed). Only modes with a verified pipeline are offered.")}</Notice>
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardHeader title={t("aud.transcribe")} subtitle="Whisper (transformers) · ASR, detección de idioma, traducción al inglés, SRT" icon={<Mic className="h-4 w-4" />} />
+          <CardHeader title={t("aud.transcribe")} subtitle={tr("Whisper (transformers) · ASR, detección de idioma, traducción al inglés, SRT", "Whisper (transformers) · ASR, language detection, translation to English, SRT")} icon={<Mic className="h-4 w-4" />} />
           <CardBody className="space-y-3">
-            {asr.length === 0 ? <Empty title="No hay modelos ASR instalados" hint="Instala p. ej. openai/whisper-large-v3-turbo desde Descubrir modelos (motor mlworker)" action={<Link href="/discover"><Button size="sm">{t("nav.discover")}</Button></Link>} /> : (
+            {asr.length === 0 ? <Empty title={tr("No hay modelos ASR instalados", "No ASR models installed")} hint={tr("Instala p. ej. openai/whisper-large-v3-turbo desde Descubrir modelos (motor mlworker)", "Install e.g. openai/whisper-large-v3-turbo from Discover models (mlworker engine)")} action={<Link href="/discover"><Button size="sm">{t("nav.discover")}</Button></Link>} /> : (
               <>
                 <Field label={t("common.model")}><Select value={asrModel} onChange={(e) => setAsrModel(e.target.value)}>{asr.map((m: any) => <option key={m.id} value={m.id}>{m.alias}</option>)}</Select></Field>
                 <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-dashed border-border px-4 py-5 text-sm text-muted hover:border-accent">
@@ -74,7 +74,7 @@ export default function AudioPage() {
                   }} />
                 </label>
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label={t("aud.language")} hint="vacío = detección automática"><Input value={lang} placeholder="es, en, …" onChange={(e) => setLang(e.target.value)} /></Field>
+                  <Field label={t("aud.language")} hint={tr("vacío = detección automática", "empty = automatic detection")}><Input value={lang} placeholder="es, en, …" onChange={(e) => setLang(e.target.value)} /></Field>
                   <div className="flex items-end"><Switch checked={translate} onChange={setTranslate} label={t("aud.translate")} /></div>
                 </div>
                 <Button variant="primary" disabled={!file} loading={busy} onClick={async () => {
@@ -89,7 +89,7 @@ export default function AudioPage() {
         <Card>
           <CardHeader title={t("aud.tts")} subtitle="VITS / MMS-TTS (transformers)" icon={<AudioLines className="h-4 w-4" />} />
           <CardBody className="space-y-3">
-            {tts.length === 0 ? <Empty title="No hay modelos TTS instalados" hint="Instala p. ej. facebook/mms-tts-spa (licencia CC-BY-NC-4.0) desde Descubrir modelos" /> : (
+            {tts.length === 0 ? <Empty title={tr("No hay modelos TTS instalados", "No TTS models installed")} hint={tr("Instala p. ej. facebook/mms-tts-spa (licencia CC-BY-NC-4.0) desde Descubrir modelos", "Install e.g. facebook/mms-tts-spa (CC-BY-NC-4.0 licence) from Discover models")} /> : (
               <>
                 <Field label={t("common.model")}><Select value={ttsModel} onChange={(e) => setTtsModel(e.target.value)}>{tts.map((m: any) => <option key={m.id} value={m.id}>{m.alias} {m.license && `· ${m.license}`}</option>)}</Select></Field>
                 <Field label={t("aud.text")}><Textarea rows={4} value={text} onChange={(e) => setText(e.target.value)} maxLength={5000} /></Field>

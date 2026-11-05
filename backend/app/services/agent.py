@@ -32,8 +32,9 @@ from ..db import SessionLocal
 from ..engines import EngineError
 from ..models import (AgentProfile, Artifact, CanvasDoc, Conversation, Job, JobStatus, Memory, Message, Project, RegisteredModel,
                       SchedClass, User, UserFile, Visibility)
-from ..settings_store import get_setting
+from ..settings_store import branding, get_setting
 from . import canvas as canvas_svc
+from . import director
 from . import dataq, kb, llm, sandbox, scheduler, web, workflows
 from . import skills as skills_svc
 from . import files as files_svc
@@ -85,6 +86,9 @@ class Turn:
     auto_compact: bool = True
     web: bool = True
     research: bool = False  # "Deep research" switch: the assistant calls deep_research
+    effort: int = 2  # 0 instant … 4 maximum: how far the director lets thinking go (see services/director.py)
+    director: bool = False  # a decision before answering: which of the allowed capabilities this message needs
+    allow: dict = field(default_factory=dict)  # capability → auto | on | off (think, web, research, skills, agents, code)
     workspace_id: uuid.UUID | None = None  # workspace mode: files and commands in the user's persistent workspace
     user_message_id: int | None = None  # the message being answered: history = messages before it (queued ones after)
     history_upto: int | None = None  # follow-up turns: history = messages with id < this (default user_message_id)...
@@ -883,13 +887,55 @@ class Runner:
         self.injected = 0
         self.max_steps = MAX_STEPS
         self.max_seconds = MAX_MINUTES_CHAT * 60
+        self.decision: director.Decision | None = None
 
     # -------------------------------------------------------------- context
+
+    def _director_complete(self, model: RegisteredModel, messages: list[dict]) -> str:
+        body = {"messages": messages, "max_tokens": director.LLM_TIMEOUT_TOKENS, "temperature": 0}
+        if model.backend == "vllm":
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        inst = scheduler.ensure_loaded(self.t.model_id, wait_s=1800)
+        scheduler.begin_request(inst.id)
+        try:
+            r = llm.chat_once(model, body)
+        finally:
+            scheduler.end_request(inst.id)
+        return (r.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+
+    def _decide(self, db, conv: Conversation, model: RegisteredModel, files: list, ws_mode: bool) -> director.Decision | None:
+        """The director: narrow what this message is offered to what it needs, then say so (event "director")."""
+        if self.t.mode != "chat":
+            return None
+        avail = {c for c in ("web", "skills", "agents", "code") if self.flags[c]}
+        if self.flags["web"] and self.flags["agents"]:
+            avail.add("research")
+        previous = ""
+        try:
+            last = [m for m in prior_messages(db, conv.id, *self.t.history_bounds()) if m.role == "assistant"]
+            previous = _message_text(last[-1]) if last else ""
+        except Exception:  # noqa: BLE001
+            pass
+        ask = director.Ask(content=self.t.content, level=self.t.effort, available=avail, workspace=ws_mode,
+                           allow=director.normalize_allow(self.t.allow, {"thinking": self.t.thinking, "web": self.t.web,
+                                                                         "research": self.t.research}),
+                           attachments=[f.filename for f in files], previous=previous, es=self.t.lang != "en",
+                           director=self.t.director and bool(get_setting(db, "director_enabled")))
+        d = director.decide(ask, lambda msgs: self._director_complete(model, msgs))
+        for cap in ("web", "skills", "agents", "code"):
+            self.flags[cap] = self.flags[cap] and getattr(d, cap)
+        if model.backend == "vllm":
+            self.t.thinking = d.think
+        self.t.research = d.research and self.flags["web"] and self.flags["agents"]
+        if d.steps:
+            self.max_steps = min(self.max_steps, d.steps)
+        self.emit({"type": "director", **d.public()})
+        return d
 
     def _system(self, db, user: User, conv: Conversation, model: RegisteredModel, tools_on: bool) -> str:
         prefs = user.preferences or {}
         es = self.t.lang != "en"
-        org = get_settings().org_name.strip()
+        org = branding()["org_name"]
         lines = [(f"Eres el asistente de Spark AI Hub, la plataforma de IA privada{' de ' + org if org else ''}. Te ejecutas "
                   "localmente en un NVIDIA DGX Spark; las conversaciones no salen de este equipo.") if es else
                  (f"You are the Spark AI Hub assistant, the private AI platform{' of ' + org if org else ''}. You run "
@@ -2298,6 +2344,7 @@ class Runner:
                                         or (WORKSPACE_MAX_STEPS if ws_mode else MAX_STEPS)))
             self.max_seconds = 60 * float(get_setting(db, "agent_max_minutes_workspace" if ws_mode else "agent_max_minutes_chat")
                                           or (MAX_MINUTES_WORKSPACE if ws_mode else MAX_MINUTES_CHAT))
+            self.decision = self._decide(db, conv, model, files, ws_mode)
             self.agents = agent_profiles(db, user) if self.flags["agents"] else {}
             if not self.flags["web"]:
                 self.agents.pop("investigador", None)
@@ -2533,7 +2580,8 @@ class Runner:
                    "limit_hit": limit_hit, "plan_open": len(plan_open(self.plan)) if self.plan else None,
                    "tools": [p["name"] for p in self.parts if p.get("type") == "tool"],
                    "context_used": (usage_total.get("last_prompt") or 0) + (usage_total.get("last_completion") or 0) or None,
-                   "context_limit": self.ctx}
+                   "context_limit": self.ctx,
+                   "director": self.decision.public() if self.decision else None}
         return {"text": final, "reasoning": "".join(reasoning) or None, "metrics": metrics, "parts": self.parts}
 
 

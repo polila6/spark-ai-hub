@@ -6,7 +6,7 @@ import { Badge, Button, Card, CardBody, CardHeader, Empty, ErrorBox, Field, Inpu
 import { api, upload } from "@/lib/api";
 import { Guide } from "./guide";
 import { bytes, dt, duration, num } from "@/lib/format";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, tr } from "@/lib/i18n";
 import { useMe, useToast } from "@/lib/providers";
 
 function ImageInput({ value, onChange }: { value?: string; onChange: (id?: string) => void }) {
@@ -154,8 +154,8 @@ export function Studio({ kind, title, subtitle, icon }: { kind: "image" | "video
             <div className="space-y-2 text-xs">
               <a href={`${view.url}?download=true`}><Button size="sm" variant="primary" className="w-full"><Download className="h-3.5 w-3.5" />{t("common.download")}</Button></a>
               {[["workflow", view.meta?.workflow], ["seed", view.meta?.params?.seed], ["steps", view.meta?.params?.steps], ["cfg", view.meta?.params?.cfg], ["sampler", view.meta?.params?.sampler],
-                ["size", `${view.meta?.width ?? "?"}×${view.meta?.height ?? "?"}`], ["frames/fps", view.meta?.frames ? `${view.meta.frames} @ ${view.meta.fps}` : null], ["duración", view.meta?.duration_s ? `${view.meta.duration_s} s` : null],
-                ["tiempo", duration(view.meta?.generation_seconds)], ["archivo", bytes(view.size_bytes)], ["sha256", view.sha256?.slice(0, 16)], [t("common.created"), dt(view.created_at, lang)]]
+                ["size", `${view.meta?.width ?? "?"}×${view.meta?.height ?? "?"}`], ["frames/fps", view.meta?.frames ? `${view.meta.frames} @ ${view.meta.fps}` : null], [tr("duración", "duration"), view.meta?.duration_s ? `${view.meta.duration_s} s` : null],
+                [tr("tiempo", "time"), duration(view.meta?.generation_seconds)], [tr("archivo", "file"), bytes(view.size_bytes)], ["sha256", view.sha256?.slice(0, 16)], [t("common.created"), dt(view.created_at, lang)]]
                 .filter(([, v]) => v).map(([k, v]: any) => <div key={k} className="flex justify-between gap-2 border-b border-border/50 pb-1"><span className="text-muted">{k}</span><span className="text-right">{String(v)}</span></div>)}
               {view.meta?.params?.prompt && <p className="rounded-lg bg-elevated p-2">{view.meta.params.prompt}</p>}
               {view.job_id && <a className="text-accent hover:underline" href={`/jobs?open=${view.job_id}`}>workflow.json → {t("nav.jobs")}</a>}

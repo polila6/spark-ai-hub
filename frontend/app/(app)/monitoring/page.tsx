@@ -9,7 +9,7 @@ import { PeoplePanel } from "@/components/people-panel";
 import { Badge, Button, Card, CardBody, CardHeader, Empty, Modal, PageHeader, Select, Skeleton, StatusBadge, Table, Td } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ago, bytes, dt, num } from "@/lib/format";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, tr } from "@/lib/i18n";
 import { useMe } from "@/lib/providers";
 
 export default function MonitoringPage() {
@@ -41,10 +41,10 @@ export default function MonitoringPage() {
         </CardBody></Card>
       )}
       <div className="grid gap-4 xl:grid-cols-2">
-        {!hist ? <Skeleton className="h-60 xl:col-span-2" /> : pts.length === 0 ? <Card className="xl:col-span-2"><Empty hint="Se guarda una muestra por minuto." /></Card> : (
+        {!hist ? <Skeleton className="h-60 xl:col-span-2" /> : pts.length === 0 ? <Card className="xl:col-span-2"><Empty hint={tr("Se guarda una muestra por minuto.", "One sample is stored per minute.")} /></Card> : (
           <>
             <Card><CardHeader title="CPU / GPU (%)" subtitle={`${t("common.measured")} · resolución ${hist.resolution}`} /><CardBody><TimeChart data={pts} unit="%" lines={[{ key: "cpu_percent", name: "CPU" }, { key: "gpu_util", name: "GPU" }, { key: "mem_used_percent", name: "Mem" }]} /></CardBody></Card>
-            <Card><CardHeader title="Temperatura (°C) y potencia GPU (W)" /><CardBody><TimeChart data={pts} lines={[{ key: "gpu_temp", name: "GPU °C" }, { key: "cpu_temp_max", name: "SoC máx °C" }, { key: "gpu_power", name: "GPU W" }]} /></CardBody></Card>
+            <Card><CardHeader title={tr("Temperatura (°C) y potencia GPU (W)", "Temperature (°C) and GPU power (W)")} /><CardBody><TimeChart data={pts} lines={[{ key: "gpu_temp", name: "GPU °C" }, { key: "cpu_temp_max", name: "SoC máx °C" }, { key: "gpu_power", name: "GPU W" }]} /></CardBody></Card>
             <Card><CardHeader title="Disco (MB/s)" /><CardBody><TimeChart data={pts} lines={[{ key: "disk_r", name: "lectura" }, { key: "disk_w", name: "escritura" }]} /></CardBody></Card>
             <Card><CardHeader title="Red (MB/s)" /><CardBody><TimeChart data={pts} lines={[{ key: "rx", name: "rx" }, { key: "tx", name: "tx" }]} /></CardBody></Card>
           </>
@@ -71,7 +71,7 @@ export default function MonitoringPage() {
       <Card className="mt-4">
         <CardHeader title={t("dash.alerts")} />
         {!alerts?.length ? <Empty title={t("dash.no_alerts")} /> : (
-          <Table head={["", "tipo", "mensaje", "primera vez", "última", "resuelta", ""]}>
+          <Table head={["", tr("tipo", "type"), tr("mensaje", "message"), tr("primera vez", "first seen"), tr("última", "last"), tr("resuelta", "resolved"), ""]}>
             {alerts.map((a: any) => <tr key={a.id}><Td><Badge tone={a.resolved_at ? "muted" : a.severity === "critical" ? "danger" : "warn"}>{a.severity}</Badge></Td><Td>{a.kind}</Td><Td>{a.message}</Td><Td className="text-xs text-muted">{dt(a.first_seen, lang)}</Td><Td className="text-xs text-muted">{dt(a.last_seen, lang)}</Td><Td className="text-xs">{a.resolved_at ? dt(a.resolved_at, lang) : "—"}</Td>
               <Td>{me?.role === "admin" && !a.resolved_at && !a.acknowledged && <Button size="sm" variant="ghost" onClick={async () => { await api(`/api/v1/metrics/alerts/${a.id}/ack`, { method: "POST" }); mutAlerts(); }}>ack</Button>}</Td></tr>)}
           </Table>

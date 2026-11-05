@@ -6,6 +6,8 @@ import {
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { AnswerMarkdown } from "@/components/deliverable-link";
+import { effortBody, effortFrom, EffortSlider, PermChips, useEffort } from "@/components/effort";
 import remarkGfm from "remark-gfm";
 import useSWR from "swr";
 import { CanvasChip, CanvasPanel } from "@/components/canvas";
@@ -20,7 +22,7 @@ import { JumpToEnd, useStickToBottom } from "@/components/stick-to-bottom";
 import { useAutoGrow } from "@/components/workspace/common";
 import { api, streamGet, streamPost, upload } from "@/lib/api";
 import { bytes, num } from "@/lib/format";
-import { useI18n, useL } from "@/lib/i18n";
+import { useI18n, useL, tr } from "@/lib/i18n";
 import { useToast } from "@/lib/providers";
 
 type Att = { file_id: string; name: string; mime: string; kind: string; size_bytes?: number; url: string };
@@ -49,6 +51,7 @@ function Metrics({ m }: { m: any }) {
       {m.completion_tokens != null && <span>· {m.completion_tokens} tok</span>}
       {m.latency_ms != null && <span>· {num(m.latency_ms / 1000, 1)} s</span>}
       {m.tools?.length > 0 && <span>· {m.tools.join(", ")}</span>}
+      {m.director && <span title="Director">· 🧭 {m.director.think ? "razona" : "directo"}</span>}
     </div>
   );
 }
@@ -59,11 +62,17 @@ const MD_COMPONENTS = {
   pre: CodeBlock,
 };
 
-const TOOL_LABELS_ES: Record<string, string> = { run_code: "Código ejecutado", canvas_write: "Lienzo", canvas_edit: "Lienzo editado", deep_research: "Investigación a fondo",
-  schedule_task: "Tarea programada", web_search: "Búsqueda en internet", fetch_url: "Página web", delegate_task: "Agente", generate_image: "Imagen generada",
-  edit_image: "Imagen editada", search_knowledge: "Búsqueda en documentos", read_document: "Documento leído", query_data: "Consulta de datos",
-  describe_data: "Datos analizados", save_memory: "Guardado en memoria", use_skill: "Skill", install_skill: "Skill instalada", find_skills: "Búsqueda de skills",
-  compact_context: "Contexto compactado" };
+// Past-tense names of finished tools, in the page's language (read when drawn, so a language change applies at once).
+const toolLabel = (n: string): string | undefined => ({
+  run_code: tr("Código ejecutado", "Code run"), canvas_write: tr("Lienzo", "Canvas"), canvas_edit: tr("Lienzo editado", "Canvas edited"),
+  deep_research: tr("Investigación a fondo", "Deep research"), schedule_task: tr("Tarea programada", "Task scheduled"),
+  web_search: tr("Búsqueda en internet", "Web search"), fetch_url: tr("Página web", "Web page"), delegate_task: tr("Agente", "Agent"),
+  generate_image: tr("Imagen generada", "Image generated"), edit_image: tr("Imagen editada", "Image edited"),
+  search_knowledge: tr("Búsqueda en documentos", "Document search"), read_document: tr("Documento leído", "Document read"),
+  query_data: tr("Consulta de datos", "Data query"), describe_data: tr("Datos analizados", "Data analysed"),
+  save_memory: tr("Guardado en memoria", "Saved to memory"), use_skill: "Skill", install_skill: tr("Skill instalada", "Skill installed"),
+  find_skills: tr("Búsqueda de skills", "Skills search"), compact_context: tr("Contexto compactado", "Context compacted"),
+} as Record<string, string>)[n];
 
 // Tools whose result is something to look at (image, table, canvas, files…) keep their card under the activity panel.
 const hasOutput = (t: ToolRun) => !!(t.done && (t.image || t.table || t.canvas || t.memory || t.code?.files?.length || (t.name === "install_skill" && t.skill)));
@@ -152,15 +161,11 @@ function Chat() {
   const [mode, setMode] = useState<"chat" | "image">("chat");
   const [aspect, setAspect] = useState("square");
   const [tools, setTools] = useState(true);
-  const [thinking, setThinkingState] = useState(false);
-  useEffect(() => { try { setThinkingState(localStorage.getItem("sah-think") === "1"); } catch {} }, []);
-  const setThinking = (v: boolean) => { setThinkingState(v); try { localStorage.setItem("sah-think", v ? "1" : "0"); } catch {} };
+  const [effort, setEffort] = useEffort();
   const { data: voice } = useSWR("/api/v1/voice");
   const [autoRead, setAutoRead] = useState(false);
   const autoReadRef = useRef(false);
   autoReadRef.current = autoRead;
-  const [web, setWeb] = useState(true);
-  const [research, setResearch] = useState(false);
   const [canvas, setCanvas] = useState<{ id: string; v?: number } | null>(null);
   const [ctxLimit, setCtxLimit] = useState(0);  // 0 = the model's full window
   const [autoCompact, setAutoCompact] = useState(true);
@@ -235,14 +240,13 @@ function Chat() {
     setErr(null);
     setStatus(null);
     setEditing(null);
-    const history: Msg[] = c.messages.map((m: any) => ({ ...m, ...(m.role === "assistant" ? liveFromSaved(m, (n) => TOOL_LABELS_ES[n]) : {}) }));
+    const history: Msg[] = c.messages.map((m: any) => ({ ...m, ...(m.role === "assistant" ? liveFromSaved(m, toolLabel) : {}) }));
     if (c.model_alias) setModel(c.model_alias);
     if (c.project_id) setProjectId(c.project_id);
     setSystem(c.settings?.system_prompt ?? "");
     setCtxLimit(c.settings?.context_limit ?? 0);
     setAutoCompact(c.settings?.auto_compact ?? true);
-    setWeb(c.settings?.web ?? true);
-    if (typeof c.settings?.thinking === "boolean") setThinkingState(c.settings.thinking);
+    setEffort((cur) => effortFrom(c.settings, cur));
     setCanvas(null);
     setCtxUsed([...c.messages].reverse().find((m: any) => m.metrics?.context_used)?.metrics?.context_used ?? null);
     if (c.active_turn) {  // still answering (sent before leaving the page): replay its events and follow live
@@ -311,7 +315,7 @@ function Chat() {
   }
   const turnBody = (useModel: string, useSel: any, m: string) => ({
     model_alias: useModel, system_prompt: system || undefined, temperature: temp, max_tokens: maxTok, mode: m, tools,
-    thinking: useSel?.backend === "vllm" ? thinking : undefined, aspect, context_limit: ctxLimit || undefined, auto_compact: autoCompact, web, research: research && web,
+    aspect, context_limit: ctxLimit || undefined, auto_compact: autoCompact, ...effortBody(effort),
   });
   const pendingMsg = (alias: string): Msg => ({ role: "assistant", content: "", pending: true, model_alias: alias, tools: [], activity: { t0: Date.now() } });
 
@@ -520,7 +524,7 @@ function Chat() {
                     <LiveActivity tools={m.tools} reasoning={m.reasoning} activity={m.activity} running={!!m.pending} queued={last && m.pending ? queuedCount : undefined}
                       seconds={m.metrics?.latency_ms != null ? m.metrics.latency_ms / 1000 : undefined} />
                     {m.tools?.filter(hasOutput).map((tr) => <ToolCard key={tr.id} t={tr} onEdit={editImage} onCanvas={(id, v) => setCanvas({ id, v })} />)}
-                    <div className="prose-chat" data-quote-scope>{m.content && <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.content}</ReactMarkdown>}</div>
+                    <div className="prose-chat" data-quote-scope>{m.content && <AnswerMarkdown content={m.content} tools={m.tools} components={MD_COMPONENTS} onCanvas={(id, v) => setCanvas({ id, v })} />}</div>
                     {!m.pending && <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:group-hover/msg:opacity-100">
                       {m.model_alias && <span className="text-[10px] text-subtle">{m.model_alias}</span>}<Metrics m={m.metrics} />{voice?.enabled && voice?.read_aloud && m.content && <SpeakButton text={m.content} lang={lang} />}</div>}
                   </>
@@ -559,9 +563,9 @@ function Chat() {
             ) : (
               <>
                 <Chip on={tools} onChange={setTools} icon={Wrench} label={L("Herramientas", "Tools")} tip={L("Archivos, código, imágenes, agentes y skills", "Files, code, images, agents and skills")} />
-                {tools && sel?.tools_enabled && pub?.web_search_enabled !== false && <Chip on={web} onChange={setWeb} icon={Globe} label={L("Internet", "Web")} tip={L("Buscar y leer páginas web", "Search and read web pages")} />}
-                {sel?.backend === "vllm" && <Chip on={thinking} onChange={setThinking} icon={Brain} label={L("Pensar", "Think")} tip={L("Razona antes de responder: más lento, mejor en problemas difíciles", "Reasons before answering: slower, better for hard problems")} />}
-                {tools && web && sel?.tools_enabled && pub?.web_search_enabled !== false && pub?.agents_enabled !== false && <Chip on={research} onChange={setResearch} icon={Telescope} label={L("Investigar", "Research")} tip={L("Investigación a fondo: varios agentes y un informe largo con fuentes", "Deep research: several agents and a long report with sources")} />}
+                <PermChips value={effort} onChange={setEffort} canThink={sel?.backend === "vllm"} canWeb={!!(tools && sel?.tools_enabled && pub?.web_search_enabled !== false)}
+                  canResearch={!!(tools && sel?.tools_enabled && pub?.web_search_enabled !== false && pub?.agents_enabled !== false)} />
+                <EffortSlider value={effort} onChange={setEffort} compact />
                 {voice?.enabled && voice?.read_aloud && <Chip on={autoRead} onChange={setAutoRead} icon={Volume2} label={L("Leer", "Read")} tip={L("Leer las respuestas en voz alta", "Read answers aloud")} />}
                 {sel && !sel.tools_enabled && <span className="px-1 text-xs text-warn">{L("Este modelo no usa herramientas: para imágenes usa el modo 🎨.", "This model has no tools: use 🎨 mode for images.")}</span>}
               </>

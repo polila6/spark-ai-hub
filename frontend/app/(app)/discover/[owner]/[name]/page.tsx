@@ -8,7 +8,7 @@ import useSWR from "swr";
 import { Badge, Button, Card, CardBody, CardHeader, ErrorBox, Field, Input, Modal, Notice, PageHeader, Select, Skeleton, StatusBadge, Switch, Table, Tabs, Td, Textarea } from "@/components/ui";
 import { api } from "@/lib/api";
 import { bytes, compact, dt, num } from "@/lib/format";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, tr } from "@/lib/i18n";
 import { useMe, useToast } from "@/lib/providers";
 
 function Verdicts({ analysis }: { analysis: any }) {
@@ -21,7 +21,7 @@ function Verdicts({ analysis }: { analysis: any }) {
         {analysis.architectures?.map((a: string) => <Badge key={a}>{a}</Badge>)}
         <span className="text-xs text-muted">{num(analysis.disk_gb_total)} GB en el repositorio</span></div>
       {analysis.reasons?.map((r: string, i: number) => <Notice key={i} tone="danger">{r}</Notice>)}
-      {analysis.engines?.length === 0 && <Notice tone="warn">No hay adaptador de motor para este repositorio.</Notice>}
+      {analysis.engines?.length === 0 && <Notice tone="warn">{tr("No hay adaptador de motor para este repositorio.", "No engine adapter for this repository.")}</Notice>}
       {analysis.engines?.map((e: any) => (
         <div key={e.engine} className="rounded-xl border border-border p-4">
           <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{e.engine}</span><StatusBadge state={e.verdict} /><span className="text-xs text-muted">{t("discover.confidence")} {Math.round(e.confidence * 100)} %</span></div>
@@ -82,7 +82,7 @@ function InstallDialog({ repo, info, open, onOpenChange }: any) {
   return (
     <Modal open={open} onOpenChange={onOpenChange} title={`${t("discover.install")} ${repo}`} description={t("discover.plan")} wide>
       <div className="grid gap-3 sm:grid-cols-3">
-        <Field label="Cómo instalarlo" hint={current?.summary}>
+        <Field label={tr("Cómo instalarlo", "How to install")} hint={current?.summary}>
           <Select value={engine} onChange={(e) => { setEngine(e.target.value); setPlan(null); setForce(false); }}>
             {installers.map((i: any) => <option key={i.engine} value={i.engine} disabled={!i.usable}>
               {i.label}{i.recommended ? " · recomendado" : ""}{!i.usable ? " · no aplicable" : i.needs_force ? " · requiere forzar" : ""}</option>)}
@@ -93,11 +93,11 @@ function InstallDialog({ repo, info, open, onOpenChange }: any) {
       </div>
       {current && !current.usable && <div className="mt-2"><Notice tone="warn">{current.unusable_reason}</Notice></div>}
       <details className="mt-3 rounded-xl border border-border p-3 text-sm">
-        <summary className="cursor-pointer font-medium">Opciones avanzadas: elegir qué archivos descargar</summary>
+        <summary className="cursor-pointer font-medium">{tr("Opciones avanzadas: elegir qué archivos descargar", "Advanced options: choose which files to download")}</summary>
         <p className="mt-2 text-xs text-muted">Un patrón por línea o separados por comas (<code>*.safetensors</code>, <code>config.json</code>, <code>Q4_K_M/*</code>). Si no pones nada, se descarga lo que necesita el motor elegido. Con «Solo archivos» se baja todo salvo los duplicados .bin.</p>
         <div className="mt-2 grid gap-3 sm:grid-cols-2">
-          <Field label="Descargar solo"><Textarea rows={2} value={include} placeholder="*.safetensors&#10;config.json" onChange={(e) => { setInclude(e.target.value); setPlan(null); }} /></Field>
-          <Field label="Excluir"><Textarea rows={2} value={exclude} placeholder="onnx/*&#10;*.md" onChange={(e) => { setExclude(e.target.value); setPlan(null); }} /></Field>
+          <Field label={tr("Descargar solo", "Download only")}><Textarea rows={2} value={include} placeholder="*.safetensors&#10;config.json" onChange={(e) => { setInclude(e.target.value); setPlan(null); }} /></Field>
+          <Field label={tr("Excluir", "Exclude")}><Textarea rows={2} value={exclude} placeholder="onnx/*&#10;*.md" onChange={(e) => { setExclude(e.target.value); setPlan(null); }} /></Field>
         </div>
       </details>
       <div className="mt-3"><Button onClick={() => makePlan()} loading={busy && !plan}>{t("discover.plan")}</Button></div>
@@ -114,11 +114,11 @@ function InstallDialog({ repo, info, open, onOpenChange }: any) {
           <p className="text-xs text-muted">Revisión fijada: <code className="font-mono">{plan.revision}</code> · {bytes(plan.download_bytes)} · {plan.files.length} archivos · {plan.engine === "files" ? "solo archivos" : <>veredicto <StatusBadge state={plan.verdict} /></>}</p>
           {plan.warnings.map((w: any, i: number) => <Notice key={i} tone={w.level === "danger" ? "danger" : w.level === "warning" ? "warn" : "info"} icon={<ShieldAlert className="h-4 w-4" />}>{w.message}</Notice>)}
           {plan.blockers.map((b: string, i: number) => <Notice key={i} tone="danger" icon={<AlertTriangle className="h-4 w-4" />}>{b}</Notice>)}
-          {plan.blockers.length > 0 && !plan.overridable && plan.engine !== "files" && <Notice tone="info">Si ningún motor lo admite, elige «Solo archivos» en «Cómo instalarlo»: se descarga y se registra sin cargarlo en ningún motor.</Notice>}
-          {(plan.overridable || plan.forced) && isManager && <Switch checked={force} onChange={(v: boolean) => { setForce(v); makePlan(v); }} label="Instalar de todos modos (ignora el veredicto de compatibilidad; el disco y los permisos se siguen respetando)" />}
+          {plan.blockers.length > 0 && !plan.overridable && plan.engine !== "files" && <Notice tone="info">{tr("Si ningún motor lo admite, elige «Solo archivos» en «Cómo instalarlo»: se descarga y se registra sin cargarlo en ningún motor.", "If no engine supports it, choose “Files only” under “How to install”: it is downloaded and registered without loading it into any engine.")}</Notice>}
+          {(plan.overridable || plan.forced) && isManager && <Switch checked={force} onChange={(v: boolean) => { setForce(v); makePlan(v); }} label={tr("Instalar de todos modos (ignora el veredicto de compatibilidad; el disco y los permisos se siguen respetando)", "Install anyway (ignores the compatibility verdict; disk space and permissions are still respected)")} />}
           {plan.requires_admin_approval && <>
-            <Notice tone="info">Tu petición se enviará a los administradores y gestores. Te avisaremos (🔔 y correo) cuando se apruebe y cuando el modelo esté listo. Puedes seguirla en «Solicitudes».</Notice>
-            <Field label="¿Para qué lo necesitas? (lo verá quien revise la solicitud)"><Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="p. ej. Transcribir entrevistas del proyecto X en valenciano" /></Field>
+            <Notice tone="info">{tr("Tu petición se enviará a los administradores y gestores. Te avisaremos (🔔 y correo) cuando se apruebe y cuando el modelo esté listo. Puedes seguirla en «Solicitudes».", "Your request will be sent to the administrators and managers. We will notify you (🔔 and e-mail) when it is approved and when the model is ready. You can follow it under “Requests”.")}</Notice>
+            <Field label={tr("¿Para qué lo necesitas? (lo verá quien revise la solicitud)", "What do you need it for? (the reviewer will see this)")}><Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder={tr("p. ej. Transcribir entrevistas del proyecto X en valenciano", "e.g. Transcribe interviews for project X in Valencian")} /></Field>
           </>}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Alias" hint="Nombre expuesto en la API (/v1/models)"><Input value={alias} placeholder={repo.split("/")[1].toLowerCase()} onChange={(e) => setAlias(e.target.value)} /></Field>

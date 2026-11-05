@@ -4,8 +4,7 @@
 // regenerate, reply quoting a selection, resume from a point).
 import { ListPlus, Loader2, MessageSquarePlus, Send, Sparkles, Square } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { AnswerMarkdown } from "@/components/deliverable-link";
 import { Badge, Button, cx } from "@/components/ui";
 import { api, streamGet, streamPost } from "@/lib/api";
 import { useL } from "@/lib/i18n";
@@ -13,6 +12,7 @@ import { useToast } from "@/lib/providers";
 import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markInjected, QueuedChip, toMs, type Activity } from "@/components/live-activity";
 import { CodeBlock, MessageActions, MessageEditor, MSG_GROUP, quoteMarkdown, quoteStart, SelectionQuote, USER_BUBBLE_SELECTION } from "@/components/message-actions";
 import { JumpToEnd, useStickToBottom } from "@/components/stick-to-bottom";
+import { effortBody, EffortSlider, PermChips, useEffort } from "@/components/effort";
 import { useAutoGrow, useConfirm } from "./common";
 
 export type ChatMsg = { id?: number; role: string; content: string; tools?: any[]; pending?: boolean; reasoning?: string; activity?: Activity; metrics?: any;
@@ -26,7 +26,7 @@ export function WsMessage({ m, onOpen, queued }: { m: ChatMsg; onOpen: (p: strin
     <div>
       <LiveActivity tools={m.tools} reasoning={m.reasoning} activity={m.activity} running={!!m.pending} queued={queued} onOpen={onOpen}
         seconds={m.metrics?.latency_ms != null ? m.metrics.latency_ms / 1000 : undefined} />
-      {m.content && <div className="prose-chat" data-quote-scope><ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>{m.content}</ReactMarkdown></div>}
+      {m.content && <div className="prose-chat" data-quote-scope><AnswerMarkdown content={m.content} tools={m.tools} components={MD} onWs={onOpen} /></div>}
     </div>
   );
 }
@@ -39,7 +39,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [think, setThink] = useState(false);
+  const [effort, setEffort] = useEffort("sah-effort-ws");
   const [editing, setEditing] = useState<number | null>(null);
   const { confirm, confirmElement } = useConfirm();
   const abort = useRef<AbortController | null>(null);
@@ -118,7 +118,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
       if (streamed) { setBusy(false); upd((m) => ({ ...m, pending: false })); onFiles(); }
     }
   }
-  const turnBody = () => ({ model_alias: model, max_tokens: 16384, temperature: 0.3, tools: true, thinking: think, web: true, workspace_id: wid });
+  const turnBody = () => ({ model_alias: model, max_tokens: 16384, temperature: 0.3, tools: true, ...effortBody(effort), workspace_id: wid });
   // Edit a sent message (text) or answer it again: the server drops what follows and runs a new turn.
   async function regenerate(i: number, text?: string) {
     const um = msgs[i];
@@ -196,9 +196,9 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
           aria-label={L("Mensaje para el asistente", "Message for the assistant")}
           className="w-full resize-none rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-subtle transition focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
-        <div className="flex items-center gap-2">
-          <label className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted" title={L("Más lento, mejor en problemas difíciles", "Slower, better for hard problems")}>
-            <input type="checkbox" checked={think} onChange={(e) => setThink(e.target.checked)} />{L("Pensar más", "Think harder")}</label>
+        <div className="flex flex-wrap items-center gap-2">
+          <PermChips value={effort} onChange={setEffort} canThink canWeb canResearch={false} />
+          <EffortSlider value={effort} onChange={setEffort} compact />
           <span className="hidden text-[10.5px] text-subtle xl:inline">{L("Mayús+Enter: nueva línea", "Shift+Enter: new line")}</span>
           {busy && <Button type="button" size="sm" variant="danger" className="ml-auto" onClick={stop} title={L("Detiene la tarea", "Stops the task")}><Square className="h-3.5 w-3.5" />{L("Parar", "Stop")}</Button>}
           <Button type="submit" size="sm" variant="primary" className={busy ? undefined : "ml-auto"} disabled={!input.trim() || !cid}

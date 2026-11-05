@@ -8,7 +8,7 @@ import { Guide } from "@/components/guide";
 import { Badge, Button, Card, CardBody, CardHeader, Code, Empty, ErrorBox, Field, Input, Modal, Notice, PageHeader, Select, StatusBadge, Table, Tabs, Td, Textarea } from "@/components/ui";
 import { api } from "@/lib/api";
 import { dt } from "@/lib/format";
-import { useI18n, useL } from "@/lib/i18n";
+import { useI18n, useL, tr } from "@/lib/i18n";
 import { useToast } from "@/lib/providers";
 
 function Keys() {
@@ -25,7 +25,7 @@ function Keys() {
       <div className="flex justify-end"><Button variant="primary" onClick={() => { setCreated(null); setOpen(true); }}><KeyRound className="h-4 w-4" />{t("api.new_key")}</Button></div>
       <Card>
         {!data?.length ? <Empty /> : (
-          <Table head={[t("common.name"), "prefijo", "scopes", t("common.created"), "expira", "último uso", t("common.status"), ""]}>
+          <Table head={[t("common.name"), tr("prefijo", "prefix"), "scopes", t("common.created"), tr("expira", "expires"), tr("último uso", "last used"), t("common.status"), ""]}>
             {data.map((k: any) => (
               <tr key={k.id}><Td className="font-medium">{k.name}</Td><Td className="font-mono text-xs">{k.prefix}…</Td><Td>{k.scopes.map((s: string) => <Badge key={s} className="mr-1">{s}</Badge>)}</Td>
                 <Td className="text-xs text-muted">{dt(k.created_at, lang)}</Td><Td className="text-xs text-muted">{dt(k.expires_at, lang)}</Td><Td className="text-xs text-muted">{dt(k.last_used_at, lang)}</Td>
@@ -44,10 +44,10 @@ function Keys() {
           <div className="space-y-3">
             <Field label={t("common.name")}><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Expira (días)"><Input type="number" min={1} max={730} value={f.expires_in_days} onChange={(e) => setF({ ...f, expires_in_days: Number(e.target.value) })} /></Field>
-              <Field label="Límite req/min" hint="vacío = política de tu rol"><Input type="number" value={f.rpm_limit} onChange={(e) => setF({ ...f, rpm_limit: e.target.value })} /></Field>
+              <Field label={tr("Expira (días)", "Expires (days)")}><Input type="number" min={1} max={730} value={f.expires_in_days} onChange={(e) => setF({ ...f, expires_in_days: Number(e.target.value) })} /></Field>
+              <Field label={tr("Límite req/min", "Requests/min limit")} hint={tr("vacío = política de tu rol", "empty = your role's policy")}><Input type="number" value={f.rpm_limit} onChange={(e) => setF({ ...f, rpm_limit: e.target.value })} /></Field>
             </div>
-            <Field label="Scopes" tip="inference = /v1 (OpenAI). jobs = API de trabajos asíncronos. Ninguna clave da acceso administrativo.">
+            <Field label="Scopes" tip={tr("inference = /v1 (OpenAI). jobs = API de trabajos asíncronos. Ninguna clave da acceso administrativo.", "inference = /v1 (OpenAI). jobs = asynchronous jobs API. No key gives administrative access.")}>
               <div className="flex gap-4 text-sm">{["inference", "jobs"].map((s) => <label key={s} className="flex items-center gap-1.5"><input type="checkbox" checked={f.scopes.includes(s)} onChange={(e) => setF({ ...f, scopes: e.target.checked ? [...f.scopes, s] : f.scopes.filter((x) => x !== s) })} />{s}</label>)}</div>
             </Field>
             {err && <ErrorBox error={err} />}
@@ -71,7 +71,7 @@ function Usage() {
   }
   return (
     <div className="space-y-4">
-      <Card><CardHeader title={t("api.usage")} subtitle="30 días · solo metadatos (sin contenido de prompts)" /><CardBody>{Object.keys(byDay).length ? <Bars data={Object.values(byDay)} xKey="day" bars={[{ key: "requests", name: "requests" }, { key: "errors", name: "errors", color: "rgb(var(--danger))" }]} /> : <Empty />}</CardBody></Card>
+      <Card><CardHeader title={t("api.usage")} subtitle={tr("30 días · solo metadatos (sin contenido de prompts)", "30 days · metadata only (no prompt content)")} /><CardBody>{Object.keys(byDay).length ? <Bars data={Object.values(byDay)} xKey="day" bars={[{ key: "requests", name: "requests" }, { key: "errors", name: "errors", color: "rgb(var(--danger))" }]} /> : <Empty />}</CardBody></Card>
       <Card><Table head={["día", t("common.model"), "requests", "prompt tok", "completion tok", "latencia media", "errores"]}>
         {(data ?? []).map((r: any, i: number) => <tr key={i}><Td className="text-xs">{r.day.slice(0, 10)}</Td><Td>{r.model}</Td><Td>{r.requests}</Td><Td>{r.prompt_tokens}</Td><Td>{r.completion_tokens}</Td><Td>{r.avg_latency_ms} ms</Td><Td>{r.errors}</Td></tr>)}
       </Table></Card>
@@ -129,7 +129,7 @@ for a in j["artifacts"]:
         <p className="text-xs text-muted">Endpoints: <code>GET /v1/models</code>, <code>POST /v1/chat/completions</code> (streaming SSE, tools, visión), <code>POST /v1/embeddings</code>, <code>POST /v1/messages</code> (Anthropic / Claude Code), <code>POST /mcp</code> (MCP). Solo accesible desde el tailnet. Documentación OpenAPI completa: <a className="text-accent underline" href="/api/docs" target="_blank">/api/docs</a>.</p></CardBody></Card>
       <Card><CardHeader title="Python (OpenAI SDK)" /><CardBody><Code>{py}</Code></CardBody></Card>
       <Card><CardHeader title="cURL" /><CardBody><Code>{curl}</Code></CardBody></Card>
-      <Card><CardHeader title="Trabajos asíncronos" /><CardBody><Code>{jobs}</Code></CardBody></Card>
+      <Card><CardHeader title={tr("Trabajos asíncronos", "Asynchronous jobs")} /><CardBody><Code>{jobs}</Code></CardBody></Card>
     </div>
   );
 }
@@ -144,7 +144,7 @@ function Tester() {
   const [out, setOut] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   return (
-    <Card><CardHeader title={t("api.test")} subtitle="La clave solo se usa en esta petición desde tu navegador; no se guarda." /><CardBody className="space-y-3">
+    <Card><CardHeader title={t("api.test")} subtitle={tr("La clave solo se usa en esta petición desde tu navegador; no se guarda.", "The key is only used in this request from your browser; it is not stored.")} /><CardBody className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-2"><Field label="API key"><Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="sah-…" autoComplete="off" /></Field>
         <Field label={t("common.model")}><Select value={model} onChange={(e) => setModel(e.target.value)}><option value="">—</option>{chat.map((m: any) => <option key={m.id}>{m.alias}</option>)}</Select></Field></div>
       <Field label={t("common.prompt")}><Textarea rows={2} value={prompt} onChange={(e) => setPrompt(e.target.value)} /></Field>

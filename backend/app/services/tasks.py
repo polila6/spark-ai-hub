@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from ..db import SessionLocal
 from ..logging_setup import log
 from ..models import ApiUsage, Conversation, Message, ModelStatus, RegisteredModel, ScheduledTask, User
-from ..settings_store import get_setting
+from ..settings_store import branding, get_setting
 from . import turns
 
 FREQS = ("hourly", "daily", "weekly", "monthly")
@@ -169,7 +169,7 @@ def run_task(task_id: uuid.UUID, manual: bool = False) -> dict:
                 db.add(conv)
                 db.flush()
                 t.conversation_id = conv.id
-            lang = (user.preferences or {}).get("language") or "es"
+            lang = (user.preferences or {}).get("language") or branding()["default_language"]
             stamp = datetime.now(_tz(t.timezone)).strftime("%d/%m/%Y %H:%M")
             content = (f"[Tarea programada «{t.name}» · {stamp}]\n{t.prompt}" if lang != "en"
                        else f"[Scheduled task «{t.name}» · {stamp}]\n{t.prompt}")

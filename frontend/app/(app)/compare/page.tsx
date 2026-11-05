@@ -9,7 +9,7 @@ import { Guide } from "@/components/guide";
 import { Badge, Button, Card, CardBody, CardHeader, Empty, ErrorBox, Field, Input, Notice, PageHeader, StatusBadge, Switch, Textarea } from "@/components/ui";
 import { api } from "@/lib/api";
 import { dt, num } from "@/lib/format";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, tr } from "@/lib/i18n";
 
 export default function ComparePage() {
   const { t, lang } = useI18n();
@@ -48,7 +48,7 @@ export default function ComparePage() {
                   <input type="checkbox" checked={selected.includes(m.id)} onChange={(e) => setSelected(e.target.checked ? [...selected, m.id] : selected.filter((x) => x !== m.id))} />
                   <span className="flex-1">{m.alias}</span><Badge>{m.backend}</Badge>
                 </label>))}
-                {chat.length < 2 && <Notice tone="warn">Se necesitan al menos 2 modelos de chat instalados.</Notice>}
+                {chat.length < 2 && <Notice tone="warn">{tr("Se necesitan al menos 2 modelos de chat instalados.", "At least 2 chat models must be installed.")}</Notice>}
               </div>
               <Field label={t("play.system")}><Textarea rows={2} value={system} onChange={(e) => setSystem(e.target.value)} /></Field>
               <Field label={t("common.prompt")}><Textarea rows={5} value={prompt} onChange={(e) => setPrompt(e.target.value)} /></Field>
@@ -57,7 +57,7 @@ export default function ComparePage() {
                 <Field label={t("play.max_tokens")}><Input type="number" value={maxTok} onChange={(e) => setMaxTok(Number(e.target.value))} /></Field>
               </div>
               <Switch checked={blind} onChange={setBlind} label={t("cmp.blinded")} />
-              <Notice tone="muted">Los modelos se ejecutan uno tras otro: los modelos grandes no necesitan estar residentes a la vez.</Notice>
+              <Notice tone="muted">{tr("Los modelos se ejecutan uno tras otro: los modelos grandes no necesitan estar residentes a la vez.", "Models run one after another: large models do not need to be resident at the same time.")}</Notice>
               {err && <ErrorBox error={err} />}
               <Button variant="primary" className="w-full" disabled={selected.length < 2 || !prompt} onClick={run}>{t("common.run")}</Button>
             </CardBody>

@@ -7,7 +7,7 @@ import { Guide } from "@/components/guide";
 import { Badge, Button, Card, CardBody, CardHeader, Empty, ErrorBox, Field, Input, Modal, Notice, PageHeader, Select, StatusBadge, Table, Tabs, Td, Textarea } from "@/components/ui";
 import { api, upload } from "@/lib/api";
 import { bytes, dt } from "@/lib/format";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, tr } from "@/lib/i18n";
 import { useMe, useToast } from "@/lib/providers";
 
 function Datasets() {
@@ -23,10 +23,10 @@ function Datasets() {
   return (
     <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
       <Card>
-        <CardHeader title={t("sci.upload_dataset")} subtitle="CSV, JSON, JSONL, NPY, NPZ (sin pickle), ZIP de imágenes" icon={<Upload className="h-4 w-4" />} />
+        <CardHeader title={t("sci.upload_dataset")} subtitle={tr("CSV, JSON, JSONL, NPY, NPZ (sin pickle), ZIP de imágenes", "CSV, JSON, JSONL, NPY, NPZ (no pickle), image ZIP")} icon={<Upload className="h-4 w-4" />} />
         <CardBody className="space-y-3">
           <Field label={t("common.name")}><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
-          <Field label="Descripción"><Textarea rows={2} value={desc} onChange={(e) => setDesc(e.target.value)} /></Field>
+          <Field label={tr("Descripción", "Description")}><Textarea rows={2} value={desc} onChange={(e) => setDesc(e.target.value)} /></Field>
           <input aria-label="file" type="file" accept=".csv,.json,.jsonl,.npy,.npz,.zip" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="block w-full text-xs text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-elevated file:px-3 file:py-2 file:text-fg" />
           {err && <ErrorBox error={err} />}
           <Button variant="primary" className="w-full" disabled={!file || !name} loading={busy} onClick={async () => {
@@ -100,7 +100,7 @@ function Models() {
       </Card>
       <Card>
         {!models?.length ? <Empty /> : (
-          <Table head={[t("common.name"), t("sci.adapter"), "parámetros", t("common.size"), t("common.status"), t("common.visibility")]}>
+          <Table head={[t("common.name"), t("sci.adapter"), tr("parámetros", "parameters"), t("common.size"), t("common.status"), t("common.visibility")]}>
             {models.map((m: any) => <tr key={m.id}><Td><Link className="font-medium hover:text-accent" href={`/models/${m.id}`}>{m.alias}</Link><div className="text-[10px] text-muted">{m.repo_id}</div></Td><Td><Badge tone="info">{m.task}</Badge></Td><Td className="tabular-nums">{m.parameters_b != null ? (m.parameters_b * 1e9).toLocaleString() : "—"}</Td><Td>{bytes(m.size_bytes)}</Td><Td><StatusBadge state={m.status} /></Td><Td><Badge>{m.visibility}</Badge></Td></tr>)}
           </Table>
         )}
@@ -142,7 +142,7 @@ function Experiments() {
       <Modal open={open} onOpenChange={setOpen} title={t("sci.new_experiment")}>
         <div className="space-y-3">
           <Field label={t("common.name")}><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
-          <Field label="Descripción"><Textarea rows={2} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
+          <Field label={tr("Descripción", "Description")}><Textarea rows={2} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
           <Field label={t("common.model")}><Select value={f.model_id} onChange={(e) => setF({ ...f, model_id: e.target.value })}><option value="">—</option>{models?.map((m: any) => <option key={m.id} value={m.id}>{m.alias} ({m.task})</option>)}</Select></Field>
           <Field label="Dataset"><Select value={f.dataset_id} onChange={(e) => setF({ ...f, dataset_id: e.target.value })}><option value="">—</option>{ds?.map((d: any) => <option key={d.id} value={d.id}>{d.name} ({d.format})</option>)}</Select></Field>
           <Field label="Opciones (JSON)" hint='p. ej. {"batch_size": 32}'><Textarea rows={2} className="font-mono text-xs" value={f.config} onChange={(e) => setF({ ...f, config: e.target.value })} /></Field>

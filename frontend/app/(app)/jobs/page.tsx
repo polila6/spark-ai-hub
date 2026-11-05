@@ -7,7 +7,7 @@ import { Guide } from "@/components/guide";
 import { Badge, Button, Card, CardBody, CardHeader, Empty, Modal, PageHeader, Progress, Select, Skeleton, StatusBadge, Switch, Table, Td } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ago, bytes, dt, duration } from "@/lib/format";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, tr } from "@/lib/i18n";
 import { useMe, useToast } from "@/lib/providers";
 
 function JobDetail({ id, onClose }: { id: string; onClose: () => void }) {
@@ -71,7 +71,7 @@ function JobsInner() {
       <Guide id="jobs" />
       <Card>
         {!data ? <Skeleton className="h-40" /> : data.items.length === 0 ? <Empty /> : (
-          <Table head={[t("common.name"), t("jobs.type"), t("jobs.class"), t("common.status"), t("jobs.progress"), t("common.created"), "duración"]}>
+          <Table head={[t("common.name"), t("jobs.type"), t("jobs.class"), t("common.status"), t("jobs.progress"), t("common.created"), tr("duración", "duration")]}>
             {data.items.map((j: any) => (
               <tr key={j.id} className="cursor-pointer hover:bg-elevated/40" onClick={() => setOpen(j.id)}>
                 <Td><span className="font-medium">{j.title || j.id.slice(0, 8)}</span>{j.message && <div className="max-w-sm truncate text-[11px] text-muted">{j.message}</div>}{j.error && <div className="max-w-sm truncate text-[11px] text-danger">{j.error}</div>}</Td>

@@ -7,7 +7,7 @@ import { Guide } from "@/components/guide";
 import { Badge, Button, Card, Code, Empty, ErrorBox, Field, Input, Modal, Notice, PageHeader, Select, Table, Tabs, Td, Textarea } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ago, bytes, dt } from "@/lib/format";
-import { useI18n, useL } from "@/lib/i18n";
+import { useI18n, useL, tr } from "@/lib/i18n";
 import { isManager, useMe, useToast } from "@/lib/providers";
 
 function InviteResult({ r, onClose }: { r: any; onClose: () => void }) {
@@ -148,7 +148,7 @@ function AuditTab() {
     <Card>
       <div className="p-3"><Input placeholder="filtrar acción (auth., models., users.…)" value={q} onChange={(e) => setQ(e.target.value)} /></div>
       {!data?.length ? <Empty /> : (
-        <Table head={["fecha", "actor", "acción", "objetivo", "ok", "IP", "detalles"]}>
+        <Table head={[tr("fecha", "date"), "actor", tr("acción", "action"), tr("objetivo", "target"), "ok", "IP", tr("detalles", "details")]}>
           {data.map((e: any) => <tr key={e.id}><Td className="whitespace-nowrap text-xs text-muted">{dt(e.ts, lang)}</Td><Td>{e.actor ?? "—"}</Td><Td><Badge>{e.action}</Badge></Td><Td className="text-xs">{e.target_type} {e.target_id?.slice(0, 12)}</Td><Td>{e.success ? "✔" : <span className="text-danger">✘</span>}</Td><Td className="text-xs text-muted">{e.ip}</Td><Td className="max-w-xs truncate font-mono text-[10px] text-muted">{JSON.stringify(e.details)}</Td></tr>)}
         </Table>
       )}

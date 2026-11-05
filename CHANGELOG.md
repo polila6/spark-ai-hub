@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.18.0 — 2026-11-05
+Faster answers, files one click away, and a first-run setup.
+
+* **Effort bar + director.** A slider (Instant · Fast · Balanced · Deep · Maximum) sets how much the assistant thinks, and a
+  *director* decides, before each answer, which of the allowed capabilities that message needs (thinking, web, deep research,
+  skills, agents, code). Simple questions no longer wait for a web search or long reasoning. Cheap rules decide when the message
+  is clear; the model is asked only when it is not, and never at the two fastest levels. If anything fails, the answer runs with
+  everything that was allowed, as before. Works in chat, projects and the workspace (whose commands are never taken away).
+* **Permissions, not obligations.** Think / Web / Research have three states: *auto* (may use it), *always*, *off*. Admin setting
+  `director_enabled` turns the director off hub-wide. Each answer shows what the director chose and why.
+* **Files open from the answer.** «Aquí está el informe» / «here is the report» and mentions of a file the assistant produced
+  become blue links that open the canvas, the file viewer or the workspace file.
+* **First-run setup** (`POST /api/v1/admin/setup`, shown once to the first administrator): default language and, optionally,
+  the organisation's name (also editable in Settings → System). Nothing about any organisation is built in. Every person still
+  chooses their own language, and it follows their account to any browser. The language of the assistant and of e-mails defaults
+  to the hub's default language.
+* **English review**: menus verified; hard-coded Spanish in a dozen pages and the live tool labels now follow the language.
+
 ## 0.17.0 — 2026-11-05
 Installing models is no longer all-or-nothing, and the hub opens on the chat.
 

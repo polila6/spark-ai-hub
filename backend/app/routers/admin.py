@@ -29,7 +29,7 @@ from ..models import (
 )
 from ..services import hf, mailer, orchestrator, people, scheduler, storage, tailscale, telemetry
 from ..services.jobs import create_job
-from ..settings_store import DEFAULTS, SECRET_KEYS, all_settings, get_setting, set_setting
+from ..settings_store import DEFAULTS, SECRET_KEYS, all_settings, branding, forget_branding, get_setting, set_setting
 
 router = APIRouter(tags=["admin"])
 
@@ -136,7 +136,44 @@ def public_settings(_: Principal = Depends(current_principal), db: Session = Dep
     out = {k: get_setting(db, k) for k in keys}
     out["public_base_url"] = public_base_url()
     out["mail_enabled"] = mailer.mail_enabled(db)
+    out["org_name"] = branding()["org_name"]
+    out["needs_setup"] = _needs_setup(db)
     return out
+
+
+def _needs_setup(db: Session) -> bool:
+    """A brand-new hub (its first administrator only) that nobody has set up yet."""
+    if get_setting(db, "setup_completed"):
+        return False
+    return (db.scalar(select(func.count()).select_from(User)) or 0) <= 1
+
+
+@router.get("/api/v1/branding")
+def branding_public():
+    """What the sign-in page needs before anybody is logged in: the default language and the organisation, if any."""
+    return branding()
+
+
+class SetupIn(BaseModel):
+    default_language: str | None = Field(default=None, pattern="^(es|en)$")
+    org_name: str | None = Field(default=None, max_length=120)
+
+
+@router.post("/api/v1/admin/setup")
+def finish_setup(body: SetupIn, request: Request, p: Principal = Depends(require_admin), db: Session = Depends(get_db)):
+    """First-run setup: the default language and the organisation's name. Both are optional, and both can be changed later
+    in Settings; every person still chooses their own language."""
+    changed = {}
+    if body.default_language:
+        set_setting(db, "default_language", body.default_language, p.user.id)
+        changed["default_language"] = body.default_language
+    if body.org_name is not None:
+        set_setting(db, "org_name", body.org_name.strip(), p.user.id)
+        changed["org_name"] = body.org_name.strip()
+    set_setting(db, "setup_completed", True, p.user.id)
+    forget_branding()
+    audit(db, "settings.setup", actor=p.user, request=request, details=changed)
+    return {"ok": True, **branding()}
 
 
 @router.put("/api/v1/admin/settings")
@@ -193,8 +230,13 @@ def put_settings(body: dict, request: Request, p: Principal = Depends(require_ad
             if not isinstance(v, list) or not all(isinstance(x, str) and re.fullmatch(r"[\w.-]+/[\w.-]+(/[\w./-]+)?", x)
                                                   for x in v) or len(v) > 20:
                 raise HTTPException(422, detail={"code": "invalid", "message": "skill_sources: list of owner/repo[/path]"})
+        if k == "default_language" and v not in ("es", "en"):
+            raise HTTPException(422, detail={"code": "invalid", "message": "default_language must be es|en"})
+        if k == "org_name":
+            v = str(v or "").strip()[:120]
         set_setting(db, k, v, p.user.id)
         changed[k] = "***" if k in SECRET_KEYS else v
+    forget_branding()
     audit(db, "settings.update", actor=p.user, request=request, details=changed)
     return all_settings(db)
 

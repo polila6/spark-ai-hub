@@ -6,18 +6,40 @@
 // events (re-attach) and from the saved message (`parts`, `metrics.reasoning`). Events it does not know are ignored, so
 // it degrades to tools + reasoning with an older backend.
 import {
-  Activity as ActivityIcon, Bot, Brain, CalendarClock, Check, ChevronDown, ChevronRight, Circle, Code2, FilePen, FileText, FolderOpen, Globe,
+  Activity as ActivityIcon, Bot, Brain, CalendarClock, Check, ChevronDown, ChevronRight, Circle, Code2, Compass, FilePen, FileText, FolderOpen, Globe,
   Image as ImageIcon, ListChecks, Loader2, MessageSquarePlus, Minus, Puzzle, Search, Shrink, Table2, Telescope, Terminal, TriangleAlert, Wrench, X,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { AgentReport, CodeRun, kTok, WebSources } from "@/components/assistant";
+import { directorText } from "@/components/effort";
 import { cx } from "@/components/ui";
-import { useL } from "@/lib/i18n";
+import { tr, useL } from "@/lib/i18n";
+
+// The server names the tool it is running in Spanish; show the name in the page's language when we know it.
+const RUNNING_LABELS: Record<string, [string, string]> = {
+  generate_image: ["Generando imagen", "Generating image"], edit_image: ["Editando imagen", "Editing image"],
+  search_knowledge: ["Buscando en tus documentos", "Searching your documents"], read_document: ["Leyendo documento", "Reading document"],
+  describe_data: ["Analizando datos", "Analysing data"], query_data: ["Consultando datos", "Querying data"],
+  save_memory: ["Guardando en memoria", "Saving to memory"], web_search: ["Buscando en internet", "Searching the web"],
+  fetch_url: ["Leyendo página web", "Reading web page"], use_skill: ["Cargando skill", "Loading skill"],
+  read_skill_file: ["Leyendo archivo de skill", "Reading skill file"], find_skills: ["Buscando skills", "Finding skills"],
+  install_skill: ["Instalando skill", "Installing skill"], delegate_task: ["Agente trabajando", "Agent working"],
+  compact_context: ["Contexto compactado", "Context compacted"], run_code: ["Ejecutando código", "Running code"],
+  canvas_write: ["Escribiendo en el lienzo", "Writing to the canvas"], canvas_edit: ["Editando el lienzo", "Editing the canvas"],
+  deep_research: ["Investigación a fondo", "Deep research"], schedule_task: ["Programando tarea", "Scheduling task"],
+  ws_list: ["Mirando archivos", "Looking at files"], ws_read: ["Leyendo archivo", "Reading file"], ws_write: ["Escribiendo archivo", "Writing file"],
+  ws_append: ["Añadiendo al archivo", "Appending to file"], ws_edit: ["Editando archivo", "Editing file"], ws_run: ["Ejecutando en el workspace", "Running in the workspace"],
+  update_plan: ["Actualizando el plan", "Updating the plan"],
+};
+export const runningLabel = (t: { name?: string; label?: string }): string => {
+  const k = RUNNING_LABELS[t.name ?? ""];
+  return k ? tr(k[0], k[1]) : t.label || t.name || "";
+};
 
 export type PlanItem = { content: string; status: string };
 export type ActivityNote = { kind: "compacted" | "warning" | "user"; text: string; at: number };  // at = number of tools before it
 export type Activity = { plan?: PlanItem[]; step?: number; status?: string; phase?: "thinking" | "writing" | "tool"; ctx?: { used: number; limit?: number };
-  notes?: ActivityNote[]; t0?: number; t1?: number; preparing?: { label: string; chars: number } };
+  notes?: ActivityNote[]; t0?: number; t1?: number; preparing?: { label: string; chars: number }; director?: any };
 type LiveMsg = { tools?: any[]; reasoning?: string; activity?: Activity };
 
 // `started` may come as epoch seconds, epoch ms or an ISO date.
@@ -50,6 +72,7 @@ export function reduceActivity(a: Activity | undefined, ev: any, toolCount: numb
     case "context_compacted": return note("compacted", `${kTok(ev.before)} → ${kTok(ev.after)}`);
     case "warning": return ev.message ? note("warning", ev.message) : a;
     case "user_injected": return note("user", ev.content ?? "");
+    case "director": return { ...x, director: ev };
     case "done": case "error": return { ...x, t1: Date.now() };
     default: return a;
   }
@@ -70,7 +93,7 @@ export function liveFromSaved(m: any, label?: (name: string) => string | undefin
   const tools = parts.filter((p) => p.type === "tool").map((p, i) => ({ id: `p${i}`, label: label?.(p.name), ...p, done: true }));
   const reasoning = m.reasoning ?? m.metrics?.reasoning ?? undefined;
   const items = plan?.items ?? plan?.plan;
-  const activity: Activity | undefined = Array.isArray(items) || m.metrics?.steps ? { plan: Array.isArray(items) ? items : undefined, step: m.metrics?.steps } : undefined;
+  const activity: Activity | undefined = Array.isArray(items) || m.metrics?.steps || m.metrics?.director ? { plan: Array.isArray(items) ? items : undefined, step: m.metrics?.steps, director: m.metrics?.director } : undefined;
   return { tools, reasoning: reasoning || undefined, activity };
 }
 
@@ -139,7 +162,7 @@ const StepRow = memo(function StepRow({ t, n, now, live, onOpen }: { t: any; n: 
         <span className="w-5 shrink-0 pt-0.5 text-right font-mono text-[10px] text-subtle">{n}</span>
         <span className={cx("mt-px grid h-5 w-5 shrink-0 place-items-center rounded-md", running ? "bg-info/15 text-info" : !t.done ? "bg-elevated text-subtle" : t.ok === false ? "bg-warn/15 text-warn" : "bg-accent/12 text-accent")}><Icon className="h-3 w-3" /></span>
         <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-1.5"><span className="shrink-0 font-medium text-fg">{t.label || t.name}</span>{arg && <span className="truncate font-mono text-[10.5px] text-muted">{arg}</span>}</span>
+          <span className="flex items-center gap-1.5"><span className="shrink-0 font-medium text-fg">{runningLabel(t)}</span>{arg && <span className="truncate font-mono text-[10.5px] text-muted">{arg}</span>}</span>
           {(running ? t.message : t.summary) && <span className={cx("block truncate text-[11px]", t.ok === false ? "text-warn" : "text-subtle")}>{running ? t.message : t.summary}</span>}
           {!t.done && !live && <span className="block text-[11px] text-subtle">{L("Interrumpido", "Interrupted")}</span>}
         </span>
@@ -265,7 +288,7 @@ function LiveActivityInner({ tools: toolsIn, reasoning, activity: a, running, se
   const planDone = plan.filter((i) => i.status === "completed").length;
   const total = seconds ?? (a?.t0 ? ((running ? now : a.t1 ?? now) - a.t0) / 1000 : undefined);
   const cur = runningTools[runningTools.length - 1];
-  const statusText = cur ? `${cur.label || cur.name}${cur.t0 ? ` · ${dur((now - cur.t0) / 1000)}` : ""}${runningTools.length > 1 ? L(` (+${runningTools.length - 1} en paralelo)`, ` (+${runningTools.length - 1} in parallel)`) : ""}`
+  const statusText = cur ? `${runningLabel(cur)}${cur.t0 ? ` · ${dur((now - cur.t0) / 1000)}` : ""}${runningTools.length > 1 ? L(` (+${runningTools.length - 1} en paralelo)`, ` (+${runningTools.length - 1} in parallel)`) : ""}`
     : a?.status === "loading" ? L("Cargando el modelo…", "Loading the model…") : a?.status === "compacting" ? L("Comprimiendo el contexto…", "Compacting the context…")
     : a?.preparing ? L(`Preparando: ${a.preparing.label} · ${kChars(a.preparing.chars)}`, `Preparing: ${a.preparing.label} · ${kChars(a.preparing.chars)}`)
     : a?.phase === "thinking" ? L("Pensando…", "Thinking…") : a?.phase === "writing" ? L("Generando respuesta…", "Writing the answer…")
@@ -294,6 +317,8 @@ function LiveActivityInner({ tools: toolsIn, reasoning, activity: a, running, se
           {hasBody && (isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />)}
         </span>
       </button>
+      {a?.director && <div className="flex items-center gap-1.5 px-3 pb-1.5 text-[10.5px] text-subtle" title={L("El director elige qué necesita este mensaje antes de empezar", "The director picks what this message needs before it starts")}>
+        <Compass className="h-3 w-3 text-accent" /><span className="truncate">{L("Director", "Director")}: {directorText(a.director, L)}{a.director.ms ? ` · ${Math.round(a.director.ms)} ms` : ""}</span></div>}
       {running && ctxPct != null && <div className="flex items-center gap-2 px-3 pb-1.5 text-[10px] text-subtle" title={L("Uso de la ventana de contexto", "Context window use")}>
         <span>{L("Contexto", "Context")}</span><span className="h-1 flex-1 overflow-hidden rounded bg-elevated"><span className={cx("block h-full transition-all", ctxPct > 85 ? "bg-warn" : "bg-info")} style={{ width: `${ctxPct}%` }} /></span>
         <span className="tabular-nums">{kTok(a!.ctx!.used)} / {kTok(a!.ctx!.limit)}</span></div>}
