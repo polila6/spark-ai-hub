@@ -18,9 +18,10 @@ from sqlalchemy import select
 
 from ..db import SessionLocal
 from ..deps import Principal, api_key_principal
-from ..models import (Conversation, Job, JobStatus, Memory, Message, ModelStatus, Project, RegisteredModel, SchedClass,
+from ..models import (Conversation, DbConnection, Job, JobStatus, Memory, Message, ModelStatus, Project, RegisteredModel, SchedClass,
                       User, UserFile)
-from ..services import dataq, kb, workflows
+from ..audit import audit
+from ..services import dataq, kb, remote_db, workflows
 from ..services import files as files_svc
 from ..services.jobs import JobError, create_job
 
@@ -31,6 +32,7 @@ SERVER_INFO = {"name": "spark-ai-hub", "title": "Spark AI Hub", "version": __imp
 INSTRUCTIONS = ("Personal private cloud of the user on their DGX Spark. Use search_knowledge for questions about the "
                 "user's documents, list_files/read_file for their drive, describe_data/query_data for CSV/Excel/SQLite "
                 "files, search_chats/get_chat for previous conversations, list_memories/save_memory for durable facts "
+                "list_databases/db_schema/db_query to query the user's REMOTE databases live (read-only; nothing is downloaded) "
                 "and generate_image to create images with the local image model.")
 
 
@@ -61,6 +63,19 @@ TOOLS = [
     {"name": "query_data", "title": "Query a data file with SQL",
      "description": "Run one SQL query (DuckDB; SQLite dialect for .sqlite/.db) on a data file; up to 200 rows.",
      "inputSchema": _schema({"file_id": {"type": "string"}, "sql": {"type": "string"}}, ["file_id", "sql"]),
+     "annotations": {"readOnlyHint": True}},
+    {"name": "list_databases", "title": "List my remote databases",
+     "description": "Remote databases the user connected in the hub. They are queried live on their own server: nothing is downloaded.",
+     "inputSchema": _schema({}), "annotations": {"readOnlyHint": True}},
+    {"name": "db_schema", "title": "Schema of a remote database",
+     "description": "Tables and columns (with approximate row counts) of one remote database, read from its catalog. "
+                    "Pass `table` to see just one.",
+     "inputSchema": _schema({"connection": {"type": "string"}, "table": {"type": "string"}}, ["connection"]),
+     "annotations": {"readOnlyHint": True}},
+    {"name": "db_query", "title": "Query a remote database",
+     "description": "Run ONE read-only SQL statement (SELECT/WITH/EXPLAIN/SHOW, PostgreSQL) on the remote server. Only a limited "
+                    "number of rows come back: aggregate, filter and select the columns you need.",
+     "inputSchema": _schema({"connection": {"type": "string"}, "sql": {"type": "string"}}, ["connection", "sql"]),
      "annotations": {"readOnlyHint": True}},
     {"name": "search_chats", "title": "Search my chats",
      "description": "Full-text search over the user's previous web chats; returns conversation ids and snippets.",
@@ -156,6 +171,30 @@ def call_tool(user_id: uuid.UUID, name: str, args: dict) -> list[dict]:
             except dataq.DataError as e:
                 raise ToolError(str(e))
             return [_text(res if name == "describe_data" else dataq.as_markdown(res, 200))]
+        if name == "list_databases":
+            rows = db.scalars(select(DbConnection).where(DbConnection.owner_id == user.id).order_by(DbConnection.name))
+            return [_text([{"name": c.name, "kind": c.kind, "host": c.host, "database": c.database, "row_limit": c.row_limit}
+                           for c in rows] or "No remote databases connected. Add one in the hub (Knowledge → Databases).")]
+        if name in ("db_schema", "db_query"):
+            c = remote_db.find(db, user.id, str(args.get("connection", "")))
+            if not c:
+                raise ToolError("Database connection not found; call list_databases")
+            try:
+                if name == "db_schema":
+                    return [_text(remote_db.schema_markdown(remote_db.schema(db, c, args.get("table"))))]
+                sql = str(args.get("sql", ""))
+                try:
+                    res = remote_db.query(db, c, sql)
+                except remote_db.RemoteDbError as e:
+                    audit(db, "databases.query", actor=user, target_type="db_connection", target_id=str(c.id), success=False,
+                          details={"name": c.name, "via": "mcp", "sql_chars": len(sql), "code": e.code})
+                    raise
+                audit(db, "databases.query", actor=user, target_type="db_connection", target_id=str(c.id),
+                      details={"name": c.name, "via": "mcp", "sql_chars": len(sql), "rows": res["row_count"],
+                               "truncated": res["truncated"], "ms": res["ms"]})
+                return [_text(remote_db.as_markdown(res, 200))]
+            except remote_db.RemoteDbError as e:
+                raise ToolError(e.message)
         if name == "search_chats":
             from .playground import search_conversations
 

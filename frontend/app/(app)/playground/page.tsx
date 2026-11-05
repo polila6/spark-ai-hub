@@ -72,6 +72,7 @@ const toolLabel = (n: string): string | undefined => ({
   query_data: tr("Consulta de datos", "Data query"), describe_data: tr("Datos analizados", "Data analysed"),
   save_memory: tr("Guardado en memoria", "Saved to memory"), use_skill: "Skill", install_skill: tr("Skill instalada", "Skill installed"),
   find_skills: tr("Búsqueda de skills", "Skills search"), compact_context: tr("Contexto compactado", "Context compacted"),
+  db_schema: tr("Esquema de base de datos", "Database schema"), db_query: tr("Consulta a base de datos", "Database query"),
 } as Record<string, string>)[n];
 
 // Tools whose result is something to look at (image, table, canvas, files…) keep their card under the activity panel.

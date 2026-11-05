@@ -39,6 +39,18 @@ MAX_FILE_BYTES = 100 * 1024 * 1024
 MAX_FILES = 2000
 IMPORT_EXT = files_svc.DOC_EXT | files_svc.CODE_EXT | {".csv", ".tsv", ".xlsx", ".xlsm", ".json", ".jsonl"}
 UA = "SparkAIHub-connector/0.5"
+# Database files are not copied into the Spark: they are queried where they live (Knowledge → Databases).
+DB_FILE_EXT = {".sqlite", ".sqlite3", ".db", ".mdb", ".accdb", ".dump", ".bak"}
+
+
+def skip_reason(path: str, size: int | None) -> str | None:
+    """Files a sync must not download, with the reason shown to the user."""
+    ext = PurePosixPath(path).suffix.lower()
+    if ext in DB_FILE_EXT:
+        return "archivo de base de datos: no se copia al Spark; conéctala en «Bases de datos» para consultarla en remoto"
+    if ext == ".sql" and size and size > files_svc.MAX_DUMP_BYTES:
+        return "volcado SQL grande: no se copia ni se indexa; conecta la base de datos para consultarla en remoto"
+    return None
 
 
 class ConnectorError(Exception):
@@ -380,7 +392,10 @@ def sync(db: Session, c: KbConnector, progress=None) -> dict:
 
 
 def _sync(db: Session, c: KbConnector, user: User, src, progress) -> dict:
-    remote = [i for i in src.list() if PurePosixPath(i["path"]).suffix.lower() in IMPORT_EXT
+    listing = src.list()
+    skipped = [(i["path"], why) for i in listing if (why := skip_reason(i["path"], i.get("size")))]
+    skip_paths = {p for p, _ in skipped}
+    remote = [i for i in listing if PurePosixPath(i["path"]).suffix.lower() in IMPORT_EXT and i["path"] not in skip_paths
               and (not i.get("size") or i["size"] <= MAX_FILE_BYTES)][:MAX_FILES]
     known = {it.remote_path: it for it in db.scalars(select(ConnectorItem).where(ConnectorItem.connector_id == c.id))}
     folder = f"Conectores/{safe_name(c.name)}"[:255]
@@ -422,6 +437,7 @@ def _sync(db: Session, c: KbConnector, user: User, src, progress) -> dict:
     c.status_message = "; ".join(errors[:5]) or None
     c.last_sync_at = datetime.now(timezone.utc)
     c.stats = {"remote": len(remote), "added": added, "updated": updated, "removed": removed, "failed": failed,
+               "skipped": len(skipped), "skipped_examples": [f"{p}: {w}" for p, w in skipped[:3]],
                "files": db.query(ConnectorItem).filter(ConnectorItem.connector_id == c.id).count()}
     db.commit()
     return c.stats
@@ -448,7 +464,7 @@ def _index(db: Session, f: UserFile, c: KbConnector) -> None:
         res = files_svc.process(f)
         f.text_status = {"ready": "ready", "unsupported": "unsupported"}.get(res["status"], "failed")
         f.text_chars = res["chars"]
-        f.meta = {**(f.meta or {}), "pages": res["pages"]}
+        f.meta = {**(f.meta or {}), "pages": res["pages"], **({"skipped_reason": res["reason"]} if res.get("reason") else {})}
         db.commit()
         if f.text_status != "ready" or not c.collection_id:
             return

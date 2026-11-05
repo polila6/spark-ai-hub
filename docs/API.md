@@ -141,13 +141,36 @@ detail, events, cancel, retry, test, stream/updates SSE) · `/benchmarks` (suite
 `/comparisons` · `/playground` (conversations, messages SSE — body fields `context_limit`, `auto_compact`, `web`, `research`; `conversations/{id}/context`, `/compact`, `DELETE /summary`; prompts, export) · `/skills` (list, catalog, install from GitHub/URL, create, patch, update, delete) · `/agents` (built-in + custom sub-agents CRUD) · `/canvas` (list by conversation, get, create, PUT with
 `base_version`, `restore/{version}`, `export` md/docx/pdf/html/odt/code, delete) · `/workspaces` (list/create/rename/delete, `tree`, `file` GET/PUT, `raw`, `table`, `upload`, `import`, `mkdir`,
 `move`, DELETE `file`, `run`, `zip`, `export`, `conversation`; chat messages accept `workspace_id`) · `/tasks` (scheduled tasks CRUD,
-`run`) · `/connectors` (WebDAV/GitHub/Zotero/SMB CRUD, `test`, `sync`) · `/voice` (status, `transcribe` multipart,
+`run`) · `/connectors` (WebDAV/GitHub/Zotero/SMB CRUD, `test`, `sync`) · `/databases` (remote PostgreSQL CRUD, `test`, `schema`, `query`; see below) · `/voice` (status, `transcribe` multipart,
 `speak` → audio/wav) · `/usage` (`days`, `scope=me|all`) · `/auth/oidc` (`providers`, `{provider}/start`,
 `{provider}/callback`) · `/models/{id}/context` (GET window info and KV capacity; POST `max_model_len`,
 `speculative_tokens`, reloads in the background) · `/models/main` (see below) · `/media` (workflows, install, uploads,
 generate, artifacts, audio/transcribe, audio/tts) · `/datasets` · `/science` (adapters, models, models/from-hf) ·
 `/experiments` (CRUD, run) · `/api-keys` (CRUD, usage) · `/storage` (overview, hf-cache, gc) · `/admin` (settings,
 hf-token status, audit, backups, restore-test, diagnostics, bundle).
+
+### Remote databases (`/api/v1/databases`, MCP `list_databases` / `db_schema` / `db_query`)
+
+Connect a PostgreSQL server once (host, port, database, a **read-only** user, password, `sslmode`, `row_limit` ≤ 5000,
+`timeout_s` ≤ 120). The password is encrypted and write-only: no endpoint ever returns it. Questions run **on the remote
+server**; the Spark never copies, syncs or indexes the data.
+
+* `POST /{id}/query {"sql": "..."}` — one statement (`SELECT`/`WITH`/`VALUES`/`EXPLAIN`/`SHOW`). The statement is wrapped as
+  `SELECT * FROM (...) LIMIT row_limit+1`, large text/JSON/bytea values are cut on the server (`left(...)`) and the result is
+  capped at about 20k characters. The response has `columns`, `rows`, `row_count`, `truncated`, `notes`, `ms`, `markdown`.
+* `GET /{id}/schema?table=public.orders` — tables, columns and the server's approximate row counts from the catalog (no
+  table is ever counted or read).
+* `POST /{id}/test` — connects and warns if the account can write or the connection is not encrypted.
+* Read-only is enforced twice: a SQL guard (single statement; no `INTO`, `COPY`, `SET`, data-modifying CTEs, `FOR UPDATE`,
+  file / large-object / `dblink` / `pg_sleep` functions…) and a read-only session on the server (`default_transaction_read_only`,
+  `BEGIN READ ONLY`, `statement_timeout`).
+* Hosts on private networks must be listed by an administrator in Settings → System → «Redes privadas para conectores»;
+  loopback and the hub's own containers are never allowed. The connection is pinned to the checked address.
+* Audit events `databases.create|update|delete|query` record names and sizes (never rows or SQL text).
+* The assistant gets `db_schema` and `db_query` automatically when the user has at least one connection.
+* Database files (`.sqlite`, `.db`, `.sqlite3`, `.mdb`, `.accdb`, `.dump`, `.bak`) and SQL dumps over 2 MB are never copied by
+  connector syncs or turned into searchable text; tables over 20 MB (`.csv`, `.tsv`, `.json`, `.jsonl`) are not text-indexed
+  either (the data tools `describe_data` / `query_data` still work on them).
 
 ### Main (general) model
 

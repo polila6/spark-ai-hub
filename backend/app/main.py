@@ -20,6 +20,7 @@ from .routers import (
     anthropic_gateway,
     api_keys,
     auth,
+    databases,
     evaluation,
     files,
     huggingface,
@@ -100,7 +101,7 @@ async def unhandled(request: Request, exc: Exception):
 
 
 for r in (auth, users, system, models, huggingface, jobs, evaluation, playground, media, science, api_keys, admin,
-          account, files, projects, assistant, oidc, workspaces, robot, people):
+          account, files, projects, assistant, oidc, workspaces, robot, people, databases):
     app.include_router(r.router)
 app.include_router(openai_gateway.router)
 app.include_router(anthropic_gateway.router)

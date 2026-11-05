@@ -232,7 +232,7 @@ def accept_terms(request: Request, p: Principal = Depends(session_principal), db
 @router.patch("/me/preferences")
 def update_preferences(prefs: dict, p: Principal = Depends(session_principal), db: Session = Depends(get_db)):
     allowed = {"language", "theme", "favorite_models", "recent_experiments", "dashboard_layout", "default_model",
-               "custom_instructions", "about_me", "memory_enabled", "email_notifications", "onboarding",
+               "custom_instructions", "about_me", "memory_enabled", "memory_auto", "email_notifications", "onboarding",
                "chat_tools", "dismissed_guides"}
     clean = {k: v for k, v in prefs.items() if k in allowed}
     merged = dict(p.user.preferences or {})

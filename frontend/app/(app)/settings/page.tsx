@@ -1,5 +1,6 @@
 "use client";
 import { Archive, Download, KeyRound, Mail, Network, Settings, ShieldAlert, Stethoscope, UserCheck } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import useSWR from "swr";
 import { Guide } from "@/components/guide";
@@ -41,6 +42,8 @@ function Preferences() {
 
 function Privacy() {
   const L = useL();
+  const { lang } = useI18n();
+  const { me, setPrefs } = useMe();
   const { push } = useToast();
   const { data } = useSWR("/api/v1/account/summary");
   const { data: accesses } = useSWR("/api/v1/account/content-accesses");
@@ -50,6 +53,14 @@ function Privacy() {
   return (
     <div className="space-y-4">
       <Guide id="privacy" />
+      <Card><CardHeader title={L("Tu memoria", "Your memory")} subtitle={L("Lo que el asistente va aprendiendo de ti. Es tuyo: llévatelo cuando quieras.", "What the assistant learns about you. It is yours: take it whenever you like.")} /><CardBody className="space-y-3">
+        <Switch checked={me?.preferences?.memory_auto ?? true} onChange={(v) => setPrefs({ memory_auto: v })} label={L("Aprender automáticamente de mis chats", "Learn automatically from my chats")} />
+        <div className="flex flex-wrap gap-2">
+          <a href={`/api/v1/memories/export?format=markdown&lang=${lang}`} download><Button size="sm" variant="outline" type="button"><Download className="h-3.5 w-3.5" />{L("Descargar para otra IA (.md)", "Download for another AI (.md)")}</Button></a>
+          <a href="/api/v1/memories/export?format=json" download><Button size="sm" variant="outline" type="button"><Download className="h-3.5 w-3.5" />{L("Descargar todo (JSON)", "Download everything (JSON)")}</Button></a>
+          <Link href="/memory"><Button size="sm" variant="ghost" type="button">{L("Ver, editar o importar", "View, edit or import")}</Button></Link>
+        </div>
+      </CardBody></Card>
       <Card><CardHeader title={L("Lo que guardamos de ti", "What we store about you")} /><CardBody>
         {data && <div className="grid gap-3 text-sm sm:grid-cols-4">
           {[["conversations", L("Chats", "Chats")], ["files", L("Archivos", "Files")], ["memories", L("Memorias", "Memories")], ["projects", L("Proyectos", "Projects")], ["collections", L("Colecciones", "Collections")], ["datasets", "Datasets"], ["artifacts", L("Resultados generados", "Generated results")], ["api_keys", L("Claves API", "API keys")]].map(([k, l]) => <div key={k} className="rounded-xl bg-elevated/60 p-3"><p className="text-xs text-muted">{l}</p><p className="text-lg font-semibold">{data[k]}</p></div>)}

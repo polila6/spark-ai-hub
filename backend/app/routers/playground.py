@@ -18,7 +18,7 @@ from ..db import SessionLocal, get_db
 from ..deps import Principal, current_principal, not_found, require_researcher, visible_filter
 from ..engines import LLM_ENGINES, EngineError
 from ..models import Conversation, Message, RegisteredModel, SavedPrompt, SharedResource, Visibility
-from ..services import llm, sandbox, scheduler, turns
+from ..services import llm, memory, sandbox, scheduler, turns
 from ..settings_store import branding
 from .openai_gateway import _record
 
@@ -429,6 +429,8 @@ def _run_one_turn(turn, p: Principal, model_alias: str, title: str):
                 source="playground")
         turns.emit(cid, {"type": "done", "metrics": m, "reasoning": r.get("reasoning"), "message_id": mid,
                          "followup": turns.followup_needed(leftover, "done", cancelled)})
+        if not cancelled and turn.mode == "chat" and turn.workspace_id is None and r["text"].strip():
+            memory.schedule(p.id, cid, turn.model_id)  # learn lasting facts from this exchange, in the background
     except agent.AgentError as e:
         status = "error"
         drain()

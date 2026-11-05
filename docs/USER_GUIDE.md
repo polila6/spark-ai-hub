@@ -31,3 +31,18 @@ administrator (invitation link). The interface is in Spanish by default; switch 
   datasets, outputs or experiments.
 * Do not upload sensitive personal data unless your project allows it; the platform stores files on the DGX disk.
 * Pickle checkpoints (`.pt/.pth/.ckpt/.bin`) are rejected for safety — convert to safetensors (docs/MODEL_ADAPTERS.md).
+
+## Memory (what the assistant knows about you)
+The assistant keeps a short list of lasting facts about you (your work, tools, projects, how you like answers) so you do not
+have to repeat them. It is built three ways: you say «recuerda que…» in a chat, you add facts on the **Memory** page, and —
+unless you turn it off — the assistant **learns by itself**: after each answer it notes what is lasting, merges repeats and
+corrects what changes. It never stores passwords, keys, tokens or identity/payment numbers, and it never rewrites or forgets
+what you wrote yourself.
+
+* **See and edit everything** on the Memory page: each fact shows where it came from (learned, written by you, imported),
+  its category, how important it is and how often it was confirmed. Delete one, edit it (it then becomes yours), or clear all.
+* **Switch learning off** with «Aprender automáticamente de mis chats» (Memory page or Settings → Privacy).
+* **Take it with you** (Settings → Privacy → Your memory, or the Memory page): `GET /api/v1/memories/export?format=markdown`
+  gives a document to paste into another AI as personal context; `format=json` gives the structured version.
+* **Bring memory from another AI**: ask it to list what it remembers about you as «- » lines, paste them under «Importar»
+  (`POST /api/v1/memories/import`); new facts are added and ones you already have are skipped.

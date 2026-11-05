@@ -3,6 +3,7 @@ import { LibraryBig, Plus, Search, Trash2, Upload } from "lucide-react";
 import { useState } from "react";
 import useSWR from "swr";
 import { Connectors } from "@/components/connectors";
+import { Databases } from "@/components/databases";
 import { UploadDialog } from "@/components/files";
 import { Guide, StepsEmpty } from "@/components/guide";
 import { Badge, Button, Card, CardBody, CardHeader, Empty, Field, Input, Modal, Notice, PageHeader, Table, Td, Textarea, cx } from "@/components/ui";
@@ -63,6 +64,7 @@ export default function KnowledgePage() {
             </Card>
           )}
           {data && <Connectors collections={data.collections ?? []} />}
+          <Databases />
           <Card>
             <CardHeader title={L("Probar búsqueda", "Test search")} subtitle={L("Lo que encontraría el asistente con search_knowledge (en todas tus colecciones)", "What the assistant would find with search_knowledge (all your collections)")} icon={<Search className="h-4 w-4" />} />
             <CardBody className="space-y-3">

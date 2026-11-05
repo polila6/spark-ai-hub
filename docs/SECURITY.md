@@ -119,3 +119,12 @@ encrypted at rest by the destination.
 5. No OIDC/SSO; no 2FA.
 6. Benchmark results (metrics and the shared infrastructure description) are visible to all users; outputs only to the owner.
 7. Admin users can read the diagnostic bundle (logs are redacted, but contain request paths and usernames).
+
+## Learned memory
+* The assistant learns lasting facts from a person's chats (`services/memory.py`) only if that person's `memory_enabled` and
+  `memory_auto` preferences are on. The extraction reads only the last exchange and the person's own memory list; nothing is sent
+  anywhere (it uses the model that is already loaded; if no model is resident it does not load one just to take notes).
+* Credentials and identity/payment numbers are refused by a filter before anything is stored, whatever the model proposes.
+* The assistant may refine or forget only what it learned itself; facts written or imported by the person are never changed.
+* Every item is visible and deletable by its owner, and exportable (`/api/v1/memories/export`). Administrators see only the
+  count of memories in the Users panel, as with any content (see content access).

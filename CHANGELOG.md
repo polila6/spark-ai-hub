@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.19.0 — 2026-11-05
+The assistant remembers you, and remote databases are queried where they live.
+
+* **Memory that learns** (`services/memory.py`): after each answer the assistant notes lasting facts about the person (work,
+  tools, projects, how they like answers), merges repeats, raises the importance of what keeps coming up and corrects what
+  changes. Credentials and identity/payment numbers are never stored; what the person wrote or imported is never rewritten or
+  forgotten by the assistant. Off switch: «Aprender automáticamente» (Memory page, Settings → Privacy, preference `memory_auto`).
+  Needs a resident model; it never loads one just to take notes. Migration `e6a0c3d92f55` (category, importance, mentions).
+* **Memory is portable**: `GET /api/v1/memories/export?format=markdown|json` (a document to paste into another AI, or the
+  structured version) and `POST /api/v1/memories/import` (our JSON or any list of «- » lines). Buttons in Settings → Privacy
+  and on the Memory page.
+* **Remote databases, queried live** (`services/remote_db.py`, `/api/v1/databases`, agent tools `db_schema`/`db_query`, MCP tools
+  `list_databases`/`db_schema`/`db_query`): PostgreSQL through a read-only account; each call runs one statement on the REMOTE
+  server and returns at most `row_limit` rows (a LIMIT is wrapped around it). Nothing is downloaded, synchronised or indexed.
+  Read-only is enforced twice (a strict SQL guard and a read-only server session with timeouts); private networks need the
+  administrator's allowlist; passwords are encrypted and never returned. Migration `f7b1d4a93c62`.
+* **A database can no longer be copied by accident**: knowledge connectors skip `.sqlite/.db/.mdb/.dump/.bak` and `.sql` over
+  2 MB (and say so), and uploads no longer text-index huge dumps or big CSV/JSON files (the data tools still query them).
+* Fix: with the effort bar on «Instant», an explicit request such as «busca…» now searches the web (0.18.x).
+
 ## 0.18.0 — 2026-11-05
 Faster answers, files one click away, and a first-run setup.
 

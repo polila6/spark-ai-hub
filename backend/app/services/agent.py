@@ -35,7 +35,8 @@ from ..models import (AgentProfile, Artifact, CanvasDoc, Conversation, Job, JobS
 from ..settings_store import branding, get_setting
 from . import canvas as canvas_svc
 from . import director
-from . import dataq, kb, llm, sandbox, scheduler, web, workflows
+from . import memory as memory_svc
+from . import dataq, kb, llm, remote_db, sandbox, scheduler, web, workflows
 from . import skills as skills_svc
 from . import files as files_svc
 from . import turns as turns_svc
@@ -44,7 +45,7 @@ from .jobs import JobError, create_job, request_cancel
 MAX_STEPS = 40  # fallback of the admin setting agent_max_steps_chat (safety net, not a goal)
 SMALL_MODEL_B = 14  # below this size models get only the core tools: 20+ tool definitions confuse them
 CORE_TOOLS = {"generate_image", "edit_image", "search_knowledge", "read_document", "describe_data", "query_data",
-              "save_memory", "web_search", "fetch_url", "use_skill"}
+              "save_memory", "web_search", "fetch_url", "use_skill", "db_schema", "db_query"}
 REMEMBER_RE = re.compile(r"^\s*(?:por favor,?\s*)?(?:recuerda|recuérdalo|apunta|guarda en (?:tu )?memoria|remember)\b[\s,:]*(?:que|that)?\s*(.+)",
                          re.I | re.S)
 WORKSPACE_MAX_STEPS = 400  # fallback of agent_max_steps_workspace: long tasks run until done (or stopped)
@@ -592,6 +593,26 @@ WEB_TOOLS = [
             "required": ["url"]}}},
 ]
 
+DB_TOOLS = [
+    {"type": "function", "function": {
+        "name": "db_schema",
+        "description": "List the tables and columns of one of the user's REMOTE databases (it runs on the remote server; "
+                       "nothing is downloaded). Call it before writing SQL; pass `table` to see only one table.",
+        "parameters": {"type": "object", "properties": {
+            "connection": {"type": "string", "description": "Name of the database connection"},
+            "table": {"type": "string", "description": "Only this table, e.g. 'public.orders' (optional)"}},
+            "required": ["connection"]}}},
+    {"type": "function", "function": {
+        "name": "db_query",
+        "description": "Run ONE read-only SQL query (SELECT / WITH / EXPLAIN / SHOW) on a REMOTE database. The query runs on the "
+                       "remote server and only a limited number of rows come back, so aggregate (COUNT, SUM, GROUP BY), filter "
+                       "and select just the columns you need; never try to bring a whole table. Writes are refused.",
+        "parameters": {"type": "object", "properties": {
+            "connection": {"type": "string", "description": "Name of the database connection"},
+            "sql": {"type": "string", "description": "One SQL statement (PostgreSQL dialect)"}},
+            "required": ["connection", "sql"]}}},
+]
+
 SKILL_TOOLS = [
     {"type": "function", "function": {
         "name": "use_skill",
@@ -807,7 +828,7 @@ TOOL_LABELS = {"generate_image": "Generando imagen", "edit_image": "Editando ima
                "canvas_edit": "Editando el lienzo", "deep_research": "Investigación a fondo",
                "schedule_task": "Programando tarea", "ws_list": "Mirando archivos", "ws_read": "Leyendo archivo",
                "ws_write": "Escribiendo archivo", "ws_append": "Añadiendo al archivo", "ws_edit": "Editando archivo", "ws_run": "Ejecutando en el workspace",
-               "update_plan": "Actualizando el plan"}
+               "update_plan": "Actualizando el plan", "db_schema": "Mirando la base de datos", "db_query": "Consultando la base de datos"}
 
 
 def agent_profiles(db, user: User) -> dict[str, dict]:
@@ -888,6 +909,7 @@ class Runner:
         self.max_steps = MAX_STEPS
         self.max_seconds = MAX_MINUTES_CHAT * 60
         self.decision: director.Decision | None = None
+        self.db_names: list[str] = []  # the user's remote database connections (names only), when tools are on
 
     # -------------------------------------------------------------- context
 
@@ -927,8 +949,8 @@ class Runner:
         if model.backend == "vllm" and not (d.source == "fixed" and allow["think"] == "auto" and not d.think):
             self.t.thinking = d.think  # (without a director, "auto" leaves the model's own default alone)
         self.t.research = d.research and self.flags["web"] and self.flags["agents"]
-        if d.steps:
-            self.max_steps = min(self.max_steps, d.steps)
+        if d.steps:  # (a remote database needs room for: look at the schema, query, answer)
+            self.max_steps = min(self.max_steps, max(d.steps, 8) if self.db_names else d.steps)
         self.emit({"type": "director", **d.public()})
         return d
 
@@ -962,6 +984,15 @@ class Runner:
                          "Internet: web_search searches the web (through the Spark's private search engine) and fetch_url "
                          "reads pages/PDFs. Use them for current facts; read sources before answering and cite as "
                          "[title](url). Never put personal or confidential data in a query.")
+        if tools_on and self.db_names:
+            lines.append(("Bases de datos remotas del usuario: " + ", ".join(self.db_names) + ". Consúltalas con db_schema (tablas y columnas) y "
+                          "db_query (UNA consulta SQL de solo lectura que se ejecuta en el servidor remoto). Mira el esquema antes de "
+                          "escribir SQL, agrega (COUNT, SUM, GROUP BY) o usa LIMIT y pide solo las columnas necesarias: nunca intentes "
+                          "traer la base de datos entera ni le pidas al usuario que la descargue." if es else
+                          "The user's remote databases: " + ", ".join(self.db_names) + ". Use db_schema (tables and columns) and db_query "
+                          "(ONE read-only SQL statement that runs on the remote server). Look at the schema before writing SQL, aggregate "
+                          "(COUNT, SUM, GROUP BY) or use LIMIT and select only the columns you need: never try to bring the whole "
+                          "database and never ask the user to download it."))
         if tools_on and self.flags["skills"]:
             sk = skills_svc.visible(db, user)
             self.skill_names = [x.name for x in sk]
@@ -1079,10 +1110,12 @@ class Runner:
         if prefs.get("custom_instructions"):
             lines.append(("Instrucciones del usuario: " if es else "User instructions: ") + str(prefs["custom_instructions"])[:5000])
         if prefs.get("memory_enabled", True):
-            mems = db.scalars(select(Memory).where(Memory.owner_id == user.id).order_by(Memory.created_at.desc()).limit(60)).all()
+            mems = memory_svc.list_for(db, user.id)
             if mems:
-                lines.append(("Memoria (cosas que el usuario te pidió recordar):\n" if es else "Memory:\n")
-                             + "\n".join(f"- {m.content}" for m in reversed(mems)))
+                lines.append(("Memoria (lo que sabes de esta persona, de más a menos importante; úsala con naturalidad, sin "
+                              "citarla ni mencionar que la tienes salvo que te lo pregunten):\n" if es else
+                              "Memory (what you know about this person, most important first; use it naturally, do not "
+                              "quote it or mention you have it unless asked):\n") + memory_svc.render_prompt_block(mems, es))
         if conv.project_id:
             pr = db.get(Project, conv.project_id)
             if pr:
@@ -1381,6 +1414,44 @@ class Runner:
         md = dataq.as_markdown(res)
         return {"ok": True, "summary": f"{len(res.get('rows') or [])} filas", "sql": sql, "table": md,
                 "content": md[:TOOL_RESULT_CHARS]}
+
+    def _db_connection(self, db, name):
+        c = remote_db.find(db, self.t.user_id, str(name or ""))
+        if c is None:
+            raise AgentError("No tienes ninguna base de datos con ese nombre. Conectadas: " + (", ".join(self.db_names) or "ninguna"))
+        return c
+
+    def tool_db_schema(self, call_id: str, args: dict) -> dict:
+        with SessionLocal() as db:
+            c = self._db_connection(db, args.get("connection"))
+            try:
+                res = remote_db.schema(db, c, args.get("table"))
+            except remote_db.RemoteDbError as e:
+                return {"ok": False, "summary": e.message[:300], "content": f"Error: {e.message}"}
+            name = c.name
+        md = remote_db.schema_markdown(res)
+        return {"ok": True, "summary": f"{name}: {len(res['tables'])} tablas", "content": md[:TOOL_RESULT_CHARS]}
+
+    def tool_db_query(self, call_id: str, args: dict) -> dict:
+        from ..audit import audit
+
+        sql = str(args.get("sql") or "")[:remote_db.MAX_SQL_CHARS]
+        with SessionLocal() as db:
+            c = self._db_connection(db, args.get("connection"))
+            user = db.get(User, self.t.user_id)
+            try:
+                res = remote_db.query(db, c, sql)
+            except remote_db.RemoteDbError as e:
+                audit(db, "databases.query", actor=user, target_type="db_connection", target_id=str(c.id), success=False,
+                      details={"name": c.name, "via": "assistant", "sql_chars": len(sql), "code": e.code})
+                return {"ok": False, "summary": f"Error SQL: {e.message}"[:300], "content": f"SQL error: {e.message}", "sql": sql}
+            audit(db, "databases.query", actor=user, target_type="db_connection", target_id=str(c.id),
+                  details={"name": c.name, "via": "assistant", "sql_chars": len(sql), "rows": res["row_count"],
+                           "truncated": res["truncated"], "ms": res["ms"]})
+            name = c.name
+        md = remote_db.as_markdown(res)
+        return {"ok": True, "summary": f"{name}: {res['row_count']} filas" + (" (hay más)" if res["truncated"] else ""), "sql": sql,
+                "table": md, "content": md[:TOOL_RESULT_CHARS]}
 
     def _remember_fallback(self) -> None:
         """«Recuerda que…» is a promise of the UI: if the model did not save it, save it here."""
@@ -2015,6 +2086,8 @@ class Runner:
     # -------------------------------------------------------------- tool plumbing
 
     def _tool_allowed(self, name: str) -> bool:
+        if name in ("db_schema", "db_query"):
+            return bool(self.db_names)
         if name in ("web_search", "fetch_url"):
             return self.flags["web"]
         if name in ("use_skill", "read_skill_file", "find_skills", "install_skill"):
@@ -2040,6 +2113,8 @@ class Runner:
                  + PLAN_TOOLS)
         if self.agents:
             specs = specs + [_delegate_spec(self.agents)]
+        if self.db_names:
+            specs = specs + DB_TOOLS
         return specs
 
     def tool_specs(self) -> list[dict]:
@@ -2328,6 +2403,7 @@ class Runner:
                           "auto_install": bool(get_setting(db, "skills_auto_install")),
                           "code": tools_on and bool(get_setting(db, "code_exec_enabled"))}
             self.small = (model.parameters_b or 99) < SMALL_MODEL_B
+            self.db_names = remote_db.names(db, user.id) if tools_on else []
             if self.small:  # small models: core tools only (see tool_specs)
                 self.flags.update(agents=False)  # run_code is filtered in tool_specs; ws_run stays for workspaces
             self.project_id = conv.project_id

@@ -97,6 +97,8 @@ scripts/sah.sh backup && git pull --ff-only && scripts/sah.sh build && scripts/s
   `facebook/mms-tts-eng` en Descubrir modelos. Se activa/desactiva en «Voz y conectores».
 * **Conectores**: solo llegan a direcciones públicas salvo las redes o servidores que añadas en «Redes privadas para
   conectores» (p. ej. `192.168.1.0/24` o `nas.laboratorio.local`). El propio Spark y sus contenedores nunca se permiten.
+  La misma lista decide qué servidores PostgreSQL privados pueden usarse en **Conocimiento → Bases de datos**: esas
+  conexiones se consultan en remoto (solo lectura, filas limitadas) y el Spark no descarga ni indexa la base de datos.
 * **Entrar con Google o Microsoft**: Ajustes → Acceso y correo → «Entrar con Google o Microsoft». Cada tarjeta trae los
   pasos y la dirección de redirección que hay que copiar en la consola del proveedor. Las cuentas nuevas siguen el modo
   de registro (con aprobación, abierto o cerrado).

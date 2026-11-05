@@ -30,6 +30,7 @@ const RUNNING_LABELS: Record<string, [string, string]> = {
   ws_list: ["Mirando archivos", "Looking at files"], ws_read: ["Leyendo archivo", "Reading file"], ws_write: ["Escribiendo archivo", "Writing file"],
   ws_append: ["Añadiendo al archivo", "Appending to file"], ws_edit: ["Editando archivo", "Editing file"], ws_run: ["Ejecutando en el workspace", "Running in the workspace"],
   update_plan: ["Actualizando el plan", "Updating the plan"],
+  db_schema: ["Mirando la base de datos", "Looking at the database"], db_query: ["Consultando la base de datos", "Querying the database"],
 };
 export const runningLabel = (t: { name?: string; label?: string }): string => {
   const k = RUNNING_LABELS[t.name ?? ""];

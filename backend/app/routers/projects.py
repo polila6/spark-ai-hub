@@ -319,24 +319,75 @@ def search_knowledge(body: SearchIn, p: Principal = Depends(current_principal), 
 
 class MemoryIn(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
+    category: str | None = Field(default=None, pattern="^(profile|preference|work|project|context|other)$")
+    importance: int | None = Field(default=None, ge=1, le=5)
+
+
+class MemoryImportIn(BaseModel):
+    text: str | None = Field(default=None, max_length=200_000)  # any text where each fact is a «- line»
+    data: dict | None = None  # or our own JSON export
 
 
 def _mem_pub(m: Memory) -> dict:
-    return {"id": str(m.id), "content": m.content, "source": m.source,
+    return {"id": str(m.id), "content": m.content, "source": m.source, "category": m.category or "other",
+            "importance": m.importance or 3, "mentions": m.mentions or 1,
             "conversation_id": str(m.conversation_id) if m.conversation_id else None,
             "created_at": m.created_at, "updated_at": m.updated_at}
 
 
 @router.get("/memories")
 def list_memories(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    return {"enabled": (p.user.preferences or {}).get("memory_enabled", True),
+    prefs = p.user.preferences or {}
+    return {"enabled": prefs.get("memory_enabled", True), "auto": prefs.get("memory_auto", True),
             "items": [_mem_pub(m) for m in db.scalars(select(Memory).where(Memory.owner_id == p.id)
                                                        .order_by(Memory.created_at.desc()))]}
 
 
+@router.get("/memories/export")
+def export_memories(format: str = "json", lang: str | None = None, p: Principal = Depends(current_principal),
+                    db: Session = Depends(get_db)):
+    """Everything the assistant remembers about you, to keep or to move to another AI: `json` (structured) or
+    `markdown` (a document to paste as personal context)."""
+    from fastapi.responses import JSONResponse, PlainTextResponse
+
+    from ..services import memory as mem
+
+    if format not in ("json", "markdown"):
+        raise HTTPException(422, detail={"code": "invalid_format", "message": "format must be json or markdown"})
+    mems = mem.list_for(db, p.id)
+    es = (lang or (p.user.preferences or {}).get("language") or "es") != "en"
+    if format == "markdown":
+        return PlainTextResponse(mem.export_markdown(p.user, mems, es), media_type="text/markdown; charset=utf-8",
+                                 headers={"Content-Disposition": 'attachment; filename="memory.md"'})
+    return JSONResponse(mem.export_json(p.user, mems), headers={"Content-Disposition": 'attachment; filename="memory.json"'})
+
+
+@router.post("/memories/import")
+def import_memories(body: MemoryImportIn, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Bring memories from another AI or from a previous export: new facts are added, ones you already have are skipped."""
+    from ..services import memory as mem
+
+    items = mem.parse_import(body.text, body.data)
+    if not items:
+        raise HTTPException(422, detail={"code": "nothing_to_import", "message": "No facts found: use «- fact» lines or a Spark AI Hub JSON export"})
+    existing = mem.list_for(db, p.id)
+    added = skipped = 0
+    for it in items:
+        if any(mem.similar(m.content, it["content"]) for m in existing):
+            skipped += 1
+            continue
+        m = Memory(owner_id=p.id, content=it["content"], source="import", category=it["category"], importance=it["importance"], mentions=1)
+        db.add(m)
+        existing.append(m)
+        added += 1
+    db.commit()
+    return {"added": added, "skipped": skipped}
+
+
 @router.post("/memories")
 def add_memory(body: MemoryIn, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    m = Memory(owner_id=p.id, content=body.content.strip(), source="user")
+    m = Memory(owner_id=p.id, content=body.content.strip(), source="user", category=body.category or "other",
+               importance=body.importance or 3)
     db.add(m)
     db.commit()
     return _mem_pub(m)
@@ -348,6 +399,12 @@ def edit_memory(mid: uuid.UUID, body: MemoryIn, p: Principal = Depends(current_p
     if not m or m.owner_id != p.id:
         raise not_found("memory")
     m.content = body.content.strip()
+    if body.category:
+        m.category = body.category
+    if body.importance:
+        m.importance = body.importance
+    if m.source != "user":
+        m.source = "user"  # once the person edits it, it is theirs: the assistant will not rewrite or forget it
     db.commit()
     return _mem_pub(m)
 

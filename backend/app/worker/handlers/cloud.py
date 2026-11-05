@@ -43,7 +43,7 @@ class FileProcess(Handler):
                 raise
             f.text_status = "ready" if res["status"] == "ready" else ("unsupported" if res["status"] == "unsupported" else "failed")
             f.text_chars = res["chars"]
-            f.meta = {**(f.meta or {}), "pages": res["pages"]}
+            f.meta = {**(f.meta or {}), "pages": res["pages"], **({"skipped_reason": res["reason"]} if res.get("reason") else {})}
             if res["status"] == "empty":
                 f.meta = {**f.meta, "extract_error": "no text layer (scanned document?)"}
             db.commit()

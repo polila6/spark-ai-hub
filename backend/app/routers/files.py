@@ -111,7 +111,7 @@ async def store_upload(db: Session, p: Principal, file: UploadFile, *, folder: s
                 res = await asyncio.to_thread(files_svc.process, f)
                 f.text_status = {"ready": "ready", "unsupported": "unsupported"}.get(res["status"], "failed")
                 f.text_chars = res["chars"]
-                f.meta = {**(f.meta or {}), "pages": res["pages"]}
+                f.meta = {**(f.meta or {}), "pages": res["pages"], **({"skipped_reason": res["reason"]} if res.get("reason") else {})}
             except Exception as e:  # noqa: BLE001
                 f.text_status, f.meta = "failed", {**(f.meta or {}), "extract_error": str(e)[:300]}
             db.commit()

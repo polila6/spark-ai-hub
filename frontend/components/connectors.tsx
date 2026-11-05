@@ -112,6 +112,7 @@ export function Connectors({ collections }: { collections: any[] }) {
               <Button size="sm" variant="ghost" onClick={async () => { if (!window.confirm(L("¿Eliminar el conector y los archivos que importó?", "Delete the connector and the files it imported?"))) return; await api(`/api/v1/connectors/${c.id}`, { method: "DELETE" }); mutate(); }}><Trash2 className="h-3.5 w-3.5" /></Button>
             </div>
             {c.status_message && <p className="w-full text-xs text-danger">{c.status_message}</p>}
+            {c.stats?.skipped > 0 && <p className="w-full text-xs text-muted">{L(`${c.stats.skipped} archivo(s) de base de datos o volcados grandes no se copian: conéctalos en «Bases de datos» para consultarlos en remoto.`, `${c.stats.skipped} database file(s) or large dumps are not copied: connect them under “Databases” to query them remotely.`)}</p>}
           </div>); })}
         {data && !data.connectors.length && <Notice tone="muted">{L("Aún no hay conectores. Elige arriba de dónde quieres traer documentos.", "No connectors yet. Pick above where to bring documents from.")}</Notice>}
       </CardBody>

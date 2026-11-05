@@ -34,6 +34,22 @@ MAGIC = [(b"%PDF-", {".pdf"}), (b"\x89PNG\r\n\x1a\n", {".png"}), (b"\xff\xd8\xff
          (b"GIF8", {".gif"}), (b"BM", {".bmp"}), (b"SQLite format 3\x00", {".sqlite", ".db"}),
          (b"PAR1", {".parquet"}), (b"PK\x03\x04", {".docx", ".pptx", ".xlsx", ".xlsm"})]
 MAX_TEXT_CHARS = 5_000_000
+# A database is queried, not read as text: dumps and big table exports are never chunked and embedded.
+DB_DUMP_EXT = {".sql", ".dump"}
+MAX_DUMP_BYTES = 2 * 1024 * 1024  # a script of a few schema statements is a normal code file; a dump is not
+TABULAR_EXT = {".csv", ".tsv", ".json", ".jsonl"}
+MAX_TABULAR_INDEX_BYTES = 20 * 1024 * 1024
+
+
+def skip_text_reason(ext: str, size: int | None) -> str | None:
+    """Why a file must not be turned into searchable text (None = fine). The data tools keep working on it."""
+    if ext in DB_DUMP_EXT and (size or 0) > MAX_DUMP_BYTES:
+        return ("Volcado de base de datos (más de 2 MB): no se indexa como texto. Conecta la base de datos en "
+                "«Conocimiento → Bases de datos» para consultarla en remoto.")
+    if ext in TABULAR_EXT and (size or 0) > MAX_TABULAR_INDEX_BYTES:
+        return ("Tabla muy grande (más de 20 MB): no se indexa como texto. Pregúntale al asistente con las herramientas de "
+                "datos (describe_data / query_data) o conecta la base de datos de origen.")
+    return None
 MAX_PAGES = 3000
 
 
@@ -198,6 +214,9 @@ def process(f: UserFile) -> dict:
     ext = path.suffix.lower()
     if f.kind not in ("document", "data") or ext in (".sqlite", ".db", ".parquet"):
         return {"status": "unsupported", "chars": 0, "pages": 0}
+    why = skip_text_reason(ext, path.stat().st_size)
+    if why:
+        return {"status": "unsupported", "chars": 0, "pages": 0, "reason": why}
     pages = extract(path, ext)
     total = 0
     clean = []

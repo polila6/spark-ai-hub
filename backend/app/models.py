@@ -726,7 +726,10 @@ class Memory(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     content: Mapped[str] = mapped_column(Text)
-    source: Mapped[str] = mapped_column(String(16), default="user")  # user | assistant | mcp
+    source: Mapped[str] = mapped_column(String(16), default="user")  # user | assistant | mcp | auto (learned from chats)
+    category: Mapped[str] = mapped_column(String(24), default="other", server_default="other")  # profile|preference|work|project|context|other
+    importance: Mapped[int] = mapped_column(Integer, default=3, server_default="3")  # 1 (detail) … 5 (essential)
+    mentions: Mapped[int] = mapped_column(Integer, default=1, server_default="1")  # how many chats confirmed it
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"),
                                                               nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -880,6 +883,27 @@ class KbConnector(Base):
     status_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     stats: Mapped[dict] = mapped_column(JSONB, default=dict)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DbConnection(Base):
+    """A remote database the user may query live (read-only, from the server's own side). Nothing is downloaded or indexed."""
+
+    __tablename__ = "db_connections"
+    __table_args__ = (UniqueConstraint("owner_id", "name", name="uq_db_connections_owner_name"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    kind: Mapped[str] = mapped_column(String(16), default="postgres")  # postgres
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(Integer, default=5432)
+    database: Mapped[str] = mapped_column(String(128))
+    username: Mapped[str] = mapped_column(String(128))
+    secret: Mapped[str | None] = mapped_column(Text, nullable=True)  # encrypted password (write-only through the API)
+    sslmode: Mapped[str] = mapped_column(String(16), default="require")
+    row_limit: Mapped[int] = mapped_column(Integer, default=500)  # most rows one query may return
+    timeout_s: Mapped[int] = mapped_column(Integer, default=20)  # statement timeout on the remote server
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
