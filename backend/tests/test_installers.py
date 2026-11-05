@@ -54,6 +54,20 @@ def test_ollama_prefers_a_quantisation_that_is_not_split():
     assert ev["recommended_params"]["split"] == ["q8_0"]
 
 
+MMPROJ = files(("mmproj-Model-BF16.gguf", 1_000_000_000))
+
+
+def test_a_vision_projector_is_not_a_model():
+    """Found on a real repository: its non-split mmproj-*.gguf was taken for a usable BF16 quantisation."""
+    fl = SHARDED + MMPROJ
+    assert list(installers.gguf_variants(fl)) == ["q8_0"]
+    quant, problem = installers.pick_gguf(fl, None)
+    assert quant == "q8_0" and problem
+    a = analyse("x/big-GGUF", None, fl, pipeline_tag=None)
+    ev = next(e for e in a["engines"] if e["engine"] == "ollama")
+    assert ev["verdict"] == "unsupported" and a["recommended_engine"] is None
+
+
 def test_a_split_gguf_is_reported_before_downloading_anything():
     quant, problem = installers.pick_gguf(SHARDED, None)
     assert quant == "q8_0" and problem and "split" in problem
@@ -137,8 +151,10 @@ def test_plan_falls_back_to_files_when_no_engine_takes_the_repo(monkeypatch):
 
 
 def test_split_gguf_blocks_ollama_but_installs_as_files(monkeypatch):
-    info = _info("x/big-GGUF", SHARDED, None, pipeline_tag=None)
-    blocked = _plan(monkeypatch, info)
+    info = _info("x/big-GGUF", SHARDED + MMPROJ, None, pipeline_tag=None)
+    auto = _plan(monkeypatch, info)  # nothing is chosen: no engine can take it, so it becomes plain files
+    assert auto["engine"] == "files" and auto["blockers"] == [] and any(w["code"] == "files_only" for w in auto["warnings"])
+    blocked = _plan(monkeypatch, info, engine="ollama")  # asking for Ollama anyway says why not
     assert blocked["engine"] == "ollama" and any("split" in b for b in blocked["blockers"]) and not blocked["overridable"]
     ok = _plan(monkeypatch, info, engine="files", include_patterns=["*Q8_0*"])
     assert ok["engine"] == "files" and ok["blockers"] == [] and ok["download_bytes"] == 25_000_000_000

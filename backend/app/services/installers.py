@@ -76,6 +76,8 @@ def gguf_variants(files: list[dict]) -> dict[str, dict]:
     """Quantisation → {bytes, split, files}. A quantisation is split when its GGUF comes in numbered shards."""
     out: dict[str, dict] = {}
     for f in _paths(files, (".gguf",)):
+        if "mmproj" in f["path"].rsplit("/", 1)[-1].lower():
+            continue  # a vision projector, not a model
         q = compat.gguf_quant(f["path"]) or "unknown"
         v = out.setdefault(q, {"bytes": 0, "split": False, "files": []})
         v["bytes"] += f.get("size") or 0

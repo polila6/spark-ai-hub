@@ -285,7 +285,8 @@ def analyse(
     verified_engines = verified_engines or set()
     has_config = config is not None
     st_files = [f for f in files if f["path"].endswith(".safetensors")]
-    gguf_files = [f for f in files if f["path"].endswith(".gguf")]
+    # mmproj-*.gguf is a vision projector that goes next to a model, not a model: never an Ollama model of its own
+    gguf_files = [f for f in files if f["path"].endswith(".gguf") and "mmproj" not in Path(f["path"]).name.lower()]
     pickle_files = [f for f in files if f["path"].endswith(PICKLE_EXT)]
     custom_code, _code_files = remote_code(config, names)
     scripts = extra_scripts(config, names)
@@ -377,6 +378,8 @@ def analyse(
         est = estimate(weights_bytes=by_quant[pref], params_b=params_b, quant=pref, config=config, context=context,
                        concurrency=concurrency)
         verdict, conf = "likely", 0.7
+        if split_q and not [q for q in by_quant if q not in split_q]:
+            verdict, conf = "unsupported", 0.9  # every quantisation is split: `ollama pull hf.co/...` cannot fetch them
         reasons = [f"GGUF files present ({', '.join(sorted(by_quant))}); Ollama can pull hf.co/{repo_id}:{pref.upper()}",
                    "Ollama/llama.cpp supports most GGUF architectures"]
         lim = list(common_warn)
