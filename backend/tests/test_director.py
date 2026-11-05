@@ -52,9 +52,26 @@ def test_capabilities_that_do_not_exist_are_never_turned_on():
     assert d.tools() == []
 
 
-def test_the_instant_level_offers_nothing_by_itself_and_never_asks_the_model():
-    d = D.decide(ask("Busca las últimas noticias y razona paso a paso", level=0), boom)
-    assert d.tools() == [] and not d.think and d.steps == 3
+def test_the_instant_level_never_asks_the_model_and_guesses_nothing():
+    d = D.decide(ask("¿Qué es una fotosíntesis?", level=0), boom)
+    assert d.tools() == [] and not d.think and d.steps == 3 and d.source == "rules"
+
+
+def test_an_explicit_request_is_honoured_at_any_level():
+    """Found in a real chat: «busca los resultados de las midterm» at the Instant level got no web, because the level
+    removed it. The slider limits thinking and steps; it never overrides what the message asks for."""
+    for level in (0, 1, 2, 3, 4):
+        d = D.decide(ask("busca los resultados electorales de las midterm de estados unidos y presentame un informe corto", level=level), boom)
+        assert d.web, level
+        assert not d.think or level >= 3
+    d = D.decide(ask("busca los resultados electorales", level=0), boom)
+    assert d.web and d.steps == 8  # room to search, read and answer
+    assert D.decide(ask("Resume https://example.org/a", level=0), boom).web
+    assert "code" in D.decide(ask("Haz una gráfica con pandas de este csv", level=0), boom).tools()
+    assert D.decide(ask("Busca noticias", level=0, allow={"web": "off"}), boom).web is False  # off still wins
+
+
+def test_forced_capabilities_stay_at_the_instant_level():
     assert D.decide(ask("Busca noticias", level=0, allow={"web": "on"}), boom).web
 
 

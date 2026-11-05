@@ -23,7 +23,8 @@ CAPS = ("think", "web", "research", "skills", "agents", "code")
 STATES = ("auto", "on", "off")
 DEFAULT_ALLOW = {"think": "auto", "web": "auto", "research": "off", "skills": "auto", "agents": "auto", "code": "auto"}
 LEVELS = ("instant", "fast", "balanced", "deep", "max")
-STEP_CAP = {0: 3, 1: 8}  # chat only: the fastest levels do not wander through long tool loops
+STEP_CAP = {0: 3, 1: 8}  # chat only, when no tool is offered: the fastest levels do not wander
+STEP_CAP_TOOLS = {0: 8, 1: 12}  # ...and when the message explicitly asked for one (search, read, answer needs room)
 LLM_TIMEOUT_TOKENS = 120
 
 
@@ -212,6 +213,8 @@ def decide(ask: Ask, complete: Callable[[list[dict]], str] | None = None) -> Dec
             d.web = d.web or "web" in avail
             d.agents = d.agents or "agents" in avail
         d.source, d.reason = source, reason
+        if d.steps and d.tools():  # a search needs room for: search, read, answer
+            d.steps = STEP_CAP_TOOLS.get(level, d.steps)
         d.ms = (time.perf_counter() - t0) * 1000
         return d
 
@@ -245,11 +248,11 @@ def decide(ask: Ask, complete: Callable[[list[dict]], str] | None = None) -> Dec
             want = {c for c in CAPS if op.get(c)}
             source, why = "llm", op["reason"] or "decidido por el director"
 
-    # the slider sets how far thinking goes
+    # the slider sets how far thinking goes; it never overrides what the message explicitly asks for («busca…», a URL, a file)
     if level == 0 or level == 1:
         want.discard("think")
     if level == 0:
-        want &= {"think"}  # nothing is offered unprompted at the instant level (forced capabilities still are)
+        want.discard("skills")  # (no guessing at the instant level: only what the words of the message demand)
     elif level >= 3 and not sig.trivial and "think" in candidates:
         want.add("think")
         why += " · nivel profundo: razona"
