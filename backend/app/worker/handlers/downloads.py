@@ -358,6 +358,10 @@ def _notify_ready(db, model) -> None:
     if model.owner_id and model.backend != "comfyui":
         from ...services import notify
 
+        if model.backend == "files":
+            notify.notify(db, model.owner_id, "model_ready", f"Archivos descargados: {model.alias}",
+                          "Están verificados y guardados en el Spark; no se cargan en ningún motor.", link=f"/models/{model.id}")
+            return
         notify.notify(db, model.owner_id, "model_ready", f"Modelo listo: {model.alias}",
                       "Ya puedes usarlo en el chat, en la API o compararlo.", link=f"/models/{model.id}")
 

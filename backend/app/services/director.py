@@ -82,9 +82,12 @@ class Decision:
 
 # ------------------------------------------------------------------ cheap rules
 
-_ACK = (r"hola|buenas|buenos d[ií]as|buenas tardes|buenas noches|hey|hi|hello|gracias|muchas gracias|thanks|thank you|vale|ok|okay|"
-        r"perfecto|genial|de acuerdo|entendido|adi[oó]s|hasta luego|bye|s[ií]|no|claro|estupendo|muy bien|bien")
-GREETING = re.compile(rf"^\W*(?:(?:{_ACK})(?![\w])[\s\W]*){{1,4}}$", re.I)
+_GREET = (r"hola|buenas|buenos d[ií]as|buenas tardes|buenas noches|hey|hi|hello|gracias|muchas gracias|thanks|thank you|"
+          r"adi[oó]s|hasta luego|bye")
+# «sí», «vale»… only close a conversation when nothing was asked: after a question they ANSWER it («¿busco en la web?» → «sí»)
+_CONFIRM = (r"vale|ok|okay|perfecto|genial|de acuerdo|entendido|claro|estupendo|muy bien|bien|s[ií]|no")
+GREETING = re.compile(rf"^\W*(?:(?:{_GREET}|{_CONFIRM})(?![\w])[\s\W]*){{1,4}}$", re.I)
+CONFIRM_WORD = re.compile(rf"(?<![\w])(?:{_CONFIRM})(?![\w])", re.I)
 URL = re.compile(r"https?://\S+|\bwww\.\S+", re.I)
 WEB_WORDS = re.compile(r"\b(busca|buscar|b[uú]scame|googlea|investiga en internet|en internet|en la web|online|noticias?|[uú]ltim[oa]s?|"
                        r"recientes?|actual(?:es|idad)?|hoy|ayer|esta semana|este mes|cotizaci[oó]n|precio(?:s)? (?:de|del|actual)|"
@@ -122,7 +125,7 @@ def classify(ask: Ask) -> Signals:
     s = Signals()
     if not text:
         return s
-    if GREETING.match(text) and not ask.attachments:
+    if GREETING.match(text) and not ask.attachments and not (ask.previous and CONFIRM_WORD.search(text)):
         s.trivial = s.confident = True
         s.why.append("saludo o confirmación")
         return s
@@ -196,12 +199,12 @@ def decide(ask: Ask, complete: Callable[[list[dict]], str] | None = None) -> Dec
     forced = {c for c in CAPS if allow[c] == "on" and c in avail}
     candidates = {c for c in CAPS if allow[c] == "auto" and c in avail}
     d = Decision(level=level)
-    d.steps = None if ask.workspace else STEP_CAP.get(level)
+    d.steps = None if ask.workspace or forced else STEP_CAP.get(level)  # forcing a capability means "do the work"
 
     def finish(want: set[str], source: str, reason: str) -> Decision:
         use = forced | (want & candidates)
-        if ask.workspace and "code" in avail and allow["code"] != "off":
-            use.add("code")  # the workspace's commands (ws_run) are the way it works; never taken away
+        if ask.workspace:  # a workspace task runs on its commands and delegates: none of that is taken away mid-task
+            use |= {c for c in ("code", "skills", "agents") if c in avail and allow[c] != "off"}
         d.think = "think" in use
         for c in ("web", "research", "skills", "agents", "code"):
             setattr(d, c, c in use)

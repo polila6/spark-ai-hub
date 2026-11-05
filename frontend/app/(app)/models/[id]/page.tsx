@@ -12,10 +12,10 @@ import { useMe, useToast } from "@/lib/providers";
 import { kTok } from "@/components/assistant";
 import { ModelLoadButtons, useMain } from "@/components/main-model";
 
-const VLLM_FIELDS: [string, string, string][] = [
+const vllmFields = (): [string, string, string][] => [
   ["max_model_len", "number", tr("Longitud máxima de contexto (tokens)", "Maximum context length (tokens)")],
   ["gpu_memory_utilization", "number", tr("Fracción de la memoria unificada total que vLLM preasigna (0.05–0.9)", "Share of the total unified memory that vLLM pre-allocates (0.05–0.9)")],
-  ["max_num_seqs", "number", "Secuencias concurrentes"],
+  ["max_num_seqs", "number", tr("Secuencias concurrentes", "Concurrent sequences")],
   ["kv_cache_dtype", "text", "auto | fp8"],
   ["tool_call_parser", "text", "hermes | llama3_json | mistral | openai | qwen3_coder | pythonic"],
   ["reasoning_parser", "text", "qwen3 | deepseek_r1 | openai_gptoss"],
@@ -159,7 +159,7 @@ export default function ModelPage({ params }: { params: Promise<{ id: string }> 
           <CardHeader title={t("models.runtime_params")} subtitle={m.backend === "vllm" ? tr("Se aplica en la próxima carga del modelo.", "Applied the next time the model is loaded.") : tr("keep_alive de Ollama (el planificador descarga modelos inactivos antes).", "Ollama keep_alive (the scheduler unloads idle models earlier).")} />
           <CardBody>
             <div className="grid gap-3 sm:grid-cols-3">
-              {(m.backend === "vllm" ? VLLM_FIELDS : [["keep_alive", "text", "p. ej. 60m"]] as any).map(([k, type, tip]: any) => (
+              {(m.backend === "vllm" ? vllmFields() : [["keep_alive", "text", "p. ej. 60m"]] as any).map(([k, type, tip]: any) => (
                 <Field key={k} label={k} tip={tip}><Input type={type} step="any" value={rp[k] ?? ""} onChange={(e) => setRp({ ...rp, [k]: type === "number" ? (e.target.value === "" ? undefined : Number(e.target.value)) : e.target.value || undefined })} /></Field>
               ))}
               {m.backend === "vllm" && <div className="flex items-end gap-4"><Switch checked={!!rp.enable_tool_calling} onChange={(v) => setRp({ ...rp, enable_tool_calling: v })} label="tool calling" /><Switch checked={!!rp.enforce_eager} onChange={(v) => setRp({ ...rp, enforce_eager: v })} label="enforce_eager" /></div>}

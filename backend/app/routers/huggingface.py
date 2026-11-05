@@ -1,6 +1,7 @@
 """Hugging Face explorer, installation assistant and download manager."""
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -192,6 +193,10 @@ def plan(body: PlanIn, p: Principal = Depends(require_researcher), db: Session =
         if not files and not why:
             hard.append("No file matches the selection")
     if engine == "files":
+        import hashlib
+
+        key = json.dumps([sorted(body.include_patterns or []), sorted(body.exclude_patterns or [])])
+        engine_ref = "files:" + hashlib.sha1(key.encode()).hexdigest()[:8]  # same repo, other patterns = another registration
         warnings.append({"level": "info", "code": "files_only",
                          "message": ("No engine loads this repository by itself, so it is installed as plain files. "
                                      if not body.engine and not detected else

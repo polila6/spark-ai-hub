@@ -35,7 +35,9 @@ export function parseHref(href: string | undefined, items: Deliverable[]): Deliv
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // what must never be touched: code blocks, inline code that is not a bare file name, existing links and URLs
-const PROTECTED = /(```[\s\S]*?```|\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/\S+)/g;
+const FENCED = /(```[\s\S]*?```)/g;
+// what must never be touched: existing links, URLs and inline code (a bare `file.md` is unwrapped first, see below)
+const PROTECTED = /(\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/\S+|`[^`\n]+`)/g;
 
 const NOUN = "informe|reporte|documento|resumen|an[aá]lisis|archivo|fichero|presentaci[oó]n|resultado|gr[aá]fico|gr[aá]fica|tabla|script|c[oó]digo|hoja de c[aá]lculo|excel|csv|pdf|plan|propuesta|art[ií]culo|memoria|borrador|report|document|summary|analysis|file|presentation|result|chart|graph|table|spreadsheet|draft|proposal|article";
 // JS `\b` only knows ASCII letters, so «aquí» / «está» need explicit Unicode boundaries
@@ -64,33 +66,42 @@ export function linkDeliverables(content: string, items: Deliverable[]): string 
   const used = new Set<string>();
   const key = (d: Deliverable) => `${d.kind}:${d.ref}`;
   const byLength = [...items].filter((d) => d.name.length >= 3).sort((a, b) => b.name.length - a.name.length);
-  const parts = content.split(PROTECTED);
-  const text = parts.map((seg, i) => {
-    if (i % 2 === 1) return seg; // protected piece
-    let s = seg;
+  const links: string[] = [];  // links are put in at the end, so a shorter name never matches inside a longer one's link
+  const mark = (d: Deliverable, label: string) => { links.push(`[${label}](${hrefOf(d)})`); return `\uE000${links.length - 1}\uE001`; };
+  // pass 1: exact names, only the first mention of each; `name` written as inline code is a plain mention of the file
+  const pieces = content.split(FENCED).flatMap((fence, f) => {
+    if (f % 2 === 1) return [{ text: fence, code: true }];
+    let seg = fence;
+    for (const d of byLength) seg = seg.replace(new RegExp("`" + esc(d.name) + "`", "gi"), d.name);
+    return seg.split(PROTECTED).map((t, i) => ({ text: t, code: i % 2 === 1 }));
+  });
+  const text = pieces.map((p) => {
+    if (p.code) return p.text;
+    let s = p.text;
     for (const d of byLength) {
-      const re = new RegExp(`\`?(?<![\\w/.\\-])${esc(d.name)}(?![\\w\\-])\`?`, "gi");
-      s = s.replace(re, (m) => { used.add(key(d)); return `[${m.replace(/`/g, "")}](${hrefOf(d)})`; });
+      if (used.has(key(d))) continue;
+      const re = new RegExp(`(?<![\\w/.\\-])${esc(d.name)}(?![\\w\\-])`, "i");
+      s = s.replace(re, (m) => { used.add(key(d)); return mark(d, m); });
     }
     return s;
   });
-  // second pass: hand-over lines without a file name
+  // pass 2: hand-over lines without a file name («aquí está el informe»)
   const open = items.filter((d) => !used.has(key(d)));
-  if (!open.length) return text.join("");
   let linked = 0;
-  const lines = text.map((seg, i) => {
-    if (i % 2 === 1 || linked >= 3) return seg;
-    return seg.split("\n").map((line) => {
+  const out = pieces.map((p, idx) => {
+    const t = text[idx];
+    if (p.code || linked >= 3 || !open.length) return t;
+    return t.split("\n").map((line) => {
       if (linked >= 3 || !CUE.test(line)) return line;
       const m = NOUN_PHRASE.exec(line);
       if (!m) return line;
       const pool = open.filter((d) => !used.has(key(d)));
       if (!pool.length) return line;
-      const best = pool.map((d, idx) => ({ d, score: affinity(m[0], d), idx })).sort((a, b) => b.score - a.score || b.idx - a.idx)[0];
+      const best = pool.map((d, i) => ({ d, score: affinity(m[0], d), i })).sort((x, y) => y.score - x.score || y.i - x.i)[0];
       if (best.score === 0 && items.length > 1) return line; // ambiguous: better no link than a wrong one
       used.add(key(best.d)); linked++;
-      return line.slice(0, m.index) + `[${m[0]}](${hrefOf(best.d)})` + line.slice(m.index + m[0].length);
+      return line.slice(0, m.index) + mark(best.d, m[0]) + line.slice(m.index + m[0].length);
     }).join("\n");
   });
-  return lines.join("");
+  return out.join("").replace(/\uE000(\d+)\uE001/g, (_, n) => links[Number(n)]);
 }

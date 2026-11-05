@@ -157,23 +157,47 @@ def _runner(monkeypatch, content, backend="vllm", **turn_kw):
 
 def test_the_runner_narrows_the_flags_and_the_thinking(monkeypatch):
     r, model, events = _runner(monkeypatch, "Hola, buenas", thinking=True, allow={"think": "auto"})
-    d = r._decide(None, SimpleNamespace(id="c"), model, [], False)
+    d = r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c"), model, [], False)
     assert not any(r.flags[k] for k in ("web", "skills", "agents", "code")) and r.t.thinking is False
     assert events[0]["type"] == "director" and events[0]["tools"] == [] and d.source == "rules"
 
 
 def test_the_runner_keeps_what_the_message_needs(monkeypatch):
     r, model, events = _runner(monkeypatch, "Busca las últimas noticias sobre vLLM")
-    r._decide(None, SimpleNamespace(id="c"), model, [], False)
+    r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c"), model, [], False)
     assert r.flags["web"] and not r.flags["code"] and r.max_steps >= 1
 
 
 def test_a_model_without_thinking_support_is_left_alone(monkeypatch):
     r, model, _ = _runner(monkeypatch, "Hola", backend="ollama", thinking=None)
-    r._decide(None, SimpleNamespace(id="c"), model, [], False)
+    r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c"), model, [], False)
     assert r.t.thinking is None
 
 
 def test_image_mode_skips_the_director(monkeypatch):
     r, model, events = _runner(monkeypatch, "un gato", mode="image")
-    assert r._decide(None, SimpleNamespace(id="c"), model, [], False) is None and events == []
+    assert r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c"), model, [], False) is None and events == []
+
+
+def test_a_yes_after_a_question_is_an_answer_not_small_talk():
+    d = D.decide(ask("sí", previous="¿Quieres que busque las novedades en la web?"), lambda _: '{"think":false,"web":true,"code":false,"skills":false,"agents":false,"research":false,"reason":"confirma buscar"}')
+    assert d.source == "llm" and d.web  # it asked the model, with the previous message as context
+    assert D.decide(ask("sí"), boom).tools() == []  # with nothing before it, it is just a reply
+    assert D.decide(ask("Hola", previous="…"), boom).tools() == []  # greetings stay small talk
+
+
+def test_a_workspace_task_keeps_its_commands_skills_and_agents():
+    d = D.decide(ask("continúa", workspace=True, level=1), boom)
+    assert {"code", "skills", "agents"} <= set(d.tools()) and d.steps is None
+
+
+def test_forcing_a_capability_lifts_the_step_cap():
+    assert D.decide(ask("Busca noticias", level=0, allow={"web": "on"}), boom).steps is None
+    assert D.decide(ask("Hola", level=0), boom).steps == 3
+
+
+def test_without_a_director_the_models_own_thinking_default_is_left_alone(monkeypatch):
+    r, model, _ = _runner(monkeypatch, "Hola", thinking=None)
+    r.t.director = False
+    r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c"), model, [], False)
+    assert r.t.thinking is None

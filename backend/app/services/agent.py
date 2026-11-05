@@ -895,7 +895,7 @@ class Runner:
         body = {"messages": messages, "max_tokens": director.LLM_TIMEOUT_TOKENS, "temperature": 0}
         if model.backend == "vllm":
             body["chat_template_kwargs"] = {"enable_thinking": False}
-        inst = scheduler.ensure_loaded(self.t.model_id, wait_s=1800)
+        inst = scheduler.ensure_loaded(self.t.model_id, wait_s=10)  # a cold model: no director, the answer will load it
         scheduler.begin_request(inst.id)
         try:
             r = llm.chat_once(model, body)
@@ -916,16 +916,16 @@ class Runner:
             previous = _message_text(last[-1]) if last else ""
         except Exception:  # noqa: BLE001
             pass
-        ask = director.Ask(content=self.t.content, level=self.t.effort, available=avail, workspace=ws_mode,
-                           allow=director.normalize_allow(self.t.allow, {"thinking": self.t.thinking, "web": self.t.web,
-                                                                         "research": self.t.research}),
+        allow = director.normalize_allow(self.t.allow, {"thinking": self.t.thinking, "web": self.t.web, "research": self.t.research})
+        ask = director.Ask(content=self.t.content, level=self.t.effort, available=avail, workspace=ws_mode, allow=allow,
                            attachments=[f.filename for f in files], previous=previous, es=self.t.lang != "en",
                            director=self.t.director and bool(get_setting(db, "director_enabled")))
+        db.commit()  # nothing to save: give the connection back instead of holding it while the model answers
         d = director.decide(ask, lambda msgs: self._director_complete(model, msgs))
         for cap in ("web", "skills", "agents", "code"):
             self.flags[cap] = self.flags[cap] and getattr(d, cap)
-        if model.backend == "vllm":
-            self.t.thinking = d.think
+        if model.backend == "vllm" and not (d.source == "fixed" and allow["think"] == "auto" and not d.think):
+            self.t.thinking = d.think  # (without a director, "auto" leaves the model's own default alone)
         self.t.research = d.research and self.flags["web"] and self.flags["agents"]
         if d.steps:
             self.max_steps = min(self.max_steps, d.steps)

@@ -12,7 +12,7 @@ import { useI18n, useL } from "@/lib/i18n";
 import { useMe, useToast } from "@/lib/providers";
 
 export function SetupGate() {
-  const { me } = useMe();
+  const { me, setPrefs } = useMe();
   const { data: pub, mutate } = useSWR(me?.role === "admin" ? "/api/v1/settings/public" : null);
   const { lang, setLang } = useI18n();
   const L = useL();
@@ -20,14 +20,16 @@ export function SetupGate() {
   const [step, setStep] = useState(0);
   const [org, setOrg] = useState("");
   const [busy, setBusy] = useState(false);
-  if (me?.role !== "admin" || !pub?.needs_setup) return null;
+  const [hidden, setHidden] = useState(false);
+  if (hidden || me?.role !== "admin" || !pub?.needs_setup) return null;
 
   async function finish(skip: boolean) {
     setBusy(true);
     try {
       await api("/api/v1/admin/setup", { method: "POST", json: skip ? {} : { default_language: lang, org_name: org.trim() } });
+      if (!skip) await setPrefs({ language: lang }).catch(() => {});  // the admin's own language too, or a reload would undo the choice
       await mutate();
-    } catch (e: any) { push("error", e.message); } finally { setBusy(false); }
+    } catch (e: any) { push("error", e.message); setHidden(true); } finally { setBusy(false); }  // a failing setup must not trap anyone
   }
   const steps = [L("Idioma", "Language"), L("Tu organización", "Your organisation"), L("Listo", "Done")];
   return (
