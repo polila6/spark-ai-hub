@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.17.0 — 2026-11-05
+Installing models is no longer all-or-nothing, and the hub opens on the chat.
+
+* **Custom-code warning fixed.** Only `auto_map` or `modeling_*.py`-style files count as code that `trust_remote_code` would run.
+  A loose script such as Qwen3-Coder's `qwen3coder_tool_parser.py` is now an information note and needs no approval.
+* **Install recipes** (`services/installers.py`): vLLM, Ollama, ComfyUI, ML worker and a new **Solo archivos** recipe that downloads
+  and registers whatever you choose without loading it into any engine. It is also the automatic fallback when no engine takes the
+  repository, instead of «no engine adapter».
+* **File choice**: `include_patterns` / `exclude_patterns` in the install dialog (Advanced options).
+* **Split GGUF** is detected up front (Ollama cannot pull it from Hugging Face): another quantisation is chosen when there is one,
+  otherwise the plan says so before anything is downloaded and offers «Solo archivos».
+* **Install anyway** (`force`, administrators and managers): goes past «unsupported» verdicts. Disk space, missing files and
+  Hugging Face access are never skipped.
+* **The hub opens on the chat.** The dashboard moved to `/dashboard` and stays first in the menu.
+
 ## 0.16.0 — 2026-11-04
 Content access on the institution's rules, without asking each person to accept.
 

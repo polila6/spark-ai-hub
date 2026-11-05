@@ -225,7 +225,7 @@ def _install(ctx: JobContext, model_id: uuid.UUID) -> None:
                       details={"backend": model.backend, "links": links})
         _notify_ready(db, model)
         db.commit()
-        smoke = ctx.params.get("smoke_test", True)
+        smoke = ctx.params.get("smoke_test", True) and model.backend != "files"  # plain files have nothing to run
         owner = model.owner_id
     ctx.progress(1.0, "Installed", force=True)
     ctx.set_result({"model_id": str(model_id), "installed": True})

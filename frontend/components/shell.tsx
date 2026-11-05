@@ -18,7 +18,7 @@ import { Badge, Button, cx, Modal, Skeleton } from "./ui";
 
 type Item = { href: string; key: string; icon: any; admin?: boolean; label?: [string, string] };
 const GROUPS: { key: string; label?: [string, string]; items: Item[] }[] = [
-  { key: "", items: [{ href: "/", key: "nav.dashboard", icon: LayoutDashboard }] },
+  { key: "", items: [{ href: "/dashboard", key: "nav.dashboard", icon: LayoutDashboard }] },
   { key: "space", label: ["Mi espacio", "My space"], items: [
     { href: "/playground", key: "nav.chat", label: ["Chat", "Chat"], icon: MessagesSquare },
     { href: "/projects", key: "nav.projects", label: ["Proyectos", "Projects"], icon: FolderKanban },

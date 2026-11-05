@@ -1,7 +1,6 @@
 """Hugging Face explorer, installation assistant and download manager."""
 from __future__ import annotations
 
-import fnmatch
 import uuid
 from datetime import datetime, timezone
 
@@ -24,7 +23,7 @@ from ..models import (
     User,
     Visibility,
 )
-from ..services import compat, hf, notify, registry, scheduler, storage
+from ..services import compat, hf, installers, notify, registry, scheduler, storage
 from ..services.jobs import create_job, request_cancel
 from ..settings_store import get_setting
 
@@ -87,9 +86,17 @@ def _security(info: dict) -> list[dict]:
     if lic in LICENSE_ATTENTION or lic.startswith(("cc-by-nc", "llama")):
         warnings.append({"level": "warning", "code": "license", "message": f"Licence '{lic}' requires review before use"})
     names = [f["path"] for f in info["files"]]
-    if any(n.endswith(".py") for n in names) or (info.get("config") or {}).get("auto_map"):
+    custom, code_files = compat.remote_code(info.get("config"), names)
+    if custom:
         warnings.append({"level": "danger", "code": "custom_code",
-                         "message": "Contains custom Python code; it will NOT run unless an admin approves trust_remote_code"})
+                         "message": "Contains custom Python code (auto_map"
+                                    + (f": {', '.join(code_files[:4])}" if code_files else "")
+                                    + "); it will NOT run unless an admin approves trust_remote_code"})
+    scripts = compat.extra_scripts(info.get("config"), names)
+    if scripts:
+        warnings.append({"level": "info", "code": "extra_scripts",
+                         "message": f"Includes Python scripts ({', '.join(scripts[:3])}); the hub's engines never run them, "
+                                    "so no approval is needed"})
     pick = [n for n in names if n.endswith(compat.PICKLE_EXT)]
     if pick:
         warnings.append({"level": "danger" if not any(n.endswith((".safetensors", ".gguf")) for n in names) else "info",
@@ -114,6 +121,7 @@ def model_details(owner: str, name: str, p: Principal = Depends(current_principa
     except hf.HfError as e:
         raise _hferr(e)
     info["analysis"] = _analysis(db, info)
+    info["installers"] = installers.listing(info["analysis"], info["files"], info.get("config"))
     info["warnings"] = _security(info)
     info["registered"] = [registry.model_public(m) for m in db.scalars(
         select(RegisteredModel).where(RegisteredModel.repo_id == repo))]
@@ -138,33 +146,13 @@ def model_refs(owner: str, name: str, p: Principal = Depends(current_principal),
 class PlanIn(BaseModel):
     repo_id: str = Field(max_length=200)
     revision: str | None = Field(default=None, max_length=64)
-    engine: str | None = Field(default=None, pattern="^(vllm|ollama|comfyui|mlworker)$")
+    engine: str | None = Field(default=None, pattern="^(vllm|ollama|comfyui|mlworker|files)$")
     gguf_quant: str | None = Field(default=None, max_length=32)
     context_length: int | None = Field(default=None, ge=256, le=1_048_576)
     concurrency: int = Field(default=1, ge=1, le=64)
-    include_patterns: list[str] | None = None
-
-
-def _select_files(info: dict, engine: str, gguf_quant: str | None, include: list[str] | None) -> list[dict]:
-    files = info["files"]
-    if include:
-        return [f for f in files if any(fnmatch.fnmatch(f["path"], pat) for pat in include)]
-    if engine == "vllm" or engine == "mlworker":
-        has_st = any(f["path"].endswith(".safetensors") for f in files)
-        keep = []
-        for f in files:
-            n = f["path"]
-            if n.endswith(compat.PICKLE_EXT) and has_st:
-                continue
-            if n.endswith((".gguf", ".onnx", ".msgpack", ".h5", ".ot")) or n.startswith(("onnx/", "openvino/")):
-                continue
-            if n.endswith(compat.PICKLE_EXT) and not has_st:
-                continue  # never download pickles by default
-            keep.append(f)
-        return keep
-    if engine == "comfyui":
-        return [f for f in files if f["path"].endswith(".safetensors") and "/" not in f["path"]][:1]
-    return files
+    include_patterns: list[str] | None = Field(default=None, max_length=50)
+    exclude_patterns: list[str] | None = Field(default=None, max_length=50)
+    force: bool = False  # administrators/managers: go ahead past compatibility verdicts (never past disk or access limits)
 
 
 @router.post("/api/v1/huggingface/plan")
@@ -176,42 +164,68 @@ def plan(body: PlanIn, p: Principal = Depends(require_researcher), db: Session =
     except hf.HfError as e:
         raise _hferr(e)
     analysis = _analysis(db, info, body.context_length, body.concurrency)
-    engine = body.engine or analysis.get("recommended_engine")
+    listing = installers.listing(analysis, info["files"], info.get("config"))
+    detected = analysis.get("recommended_engine")
+    # No engine takes it by itself → still installable as plain files (the way out for sharded GGUF, adapters, etc.)
+    engine = body.engine or detected or "files"
     ev = next((e for e in analysis["engines"] if e["engine"] == engine), None)
-    if engine == "ollama":
-        quant = (body.gguf_quant or (ev or {}).get("recommended_params", {}).get("quant") or "Q4_K_M").upper()
-        variants = (ev or {}).get("recommended_params", {}).get("variants", {})
-        size = int((variants.get(quant.lower()) or 0) * 1e9)
-        files = [f for f in info["files"] if f["path"].endswith(".gguf") and quant.lower() in f["path"].lower()]
-        size = size or sum(f.get("size") or 0 for f in files)
-        engine_ref = f"hf.co/{repo}:{quant}"
+    force = bool(body.force and p.is_manager)
+    hard: list[str] = []
+    soft: list[str] = []
+    warnings = _security(info)
+    engine_ref = None
+    why = installers.prerequisite(engine, info["files"], info.get("config"))
+    if why:
+        hard.append(why)
+    if engine == "ollama" and not why:
+        quant, problem = installers.pick_gguf(info["files"], body.gguf_quant,
+                                              ((ev or {}).get("recommended_params") or {}).get("quant"))
+        chosen = installers.gguf_variants(info["files"])[quant]
+        files = [f for f in info["files"] if f["path"] in set(chosen["files"])]
+        size = chosen["bytes"]
+        engine_ref = f"hf.co/{repo}:{quant.upper()}"
+        if problem:
+            hard.append(problem)
     else:
-        files = _select_files(info, engine or "", None, body.include_patterns)
+        files = [] if why else installers.select_files(info["files"], engine, body.include_patterns, body.exclude_patterns)
         size = sum(f.get("size") or 0 for f in files)
-        engine_ref = None
+        if not files and not why:
+            hard.append("No file matches the selection")
+    if engine == "files":
+        warnings.append({"level": "info", "code": "files_only",
+                         "message": ("No engine loads this repository by itself, so it is installed as plain files. "
+                                     if not body.engine and not detected else
+                                     "Installed as plain files: ") + "they are downloaded and checked, not loaded into any engine."})
     avail = storage.available_for_downloads(db)
     steps = [
         {"step": "inspect", "status": "done", "detail": f"{len(info['files'])} files, sha {info['sha'][:12]}"},
         {"step": "formats", "status": "done", "detail": analysis.get("quantization") or "unknown precision"},
-        {"step": "engine", "status": "done" if engine else "blocked", "detail": engine or "no compatible engine"},
+        {"step": "engine", "status": "blocked" if why else "done", "detail": engine},
         {"step": "memory", "status": "done", "detail": (ev or {}).get("estimate", {}).get("total_gb")},
         {"step": "disk", "status": "ok" if size <= avail else "blocked",
          "detail": f"{size / 1e9:.2f} GB needed, {max(avail, 0) / 1e9:.0f} GB available above threshold"},
     ]
-    blockers = []
-    if not engine:
-        blockers.append("No engine adapter supports this repository")
     if size > avail:
-        blockers.append("Insufficient disk space above the safety threshold")
-    if ev and ev["verdict"] == "unsupported":
-        blockers.append("Engine verdict: unsupported — " + "; ".join(ev["reasons"][-2:]))
+        hard.append("Insufficient disk space above the safety threshold")
+    if engine not in ("files",) and not why:
+        if ev and ev["verdict"] == "unsupported":
+            soft.append("Engine verdict: unsupported — " + "; ".join(ev["reasons"][-2:]))
+        elif ev is None:
+            soft.append(f"The hub has no compatibility analysis for {engine} on this repository")
     if info.get("gated") and not _token(db):
-        blockers.append("Gated repository and no Hugging Face token configured (Settings → Hugging Face)")
+        hard.append("Gated repository and no Hugging Face token configured (Settings → Hugging Face)")
+    if force and soft:
+        warnings.append({"level": "warning", "code": "forced",
+                         "message": "Forced installation (compatibility not guaranteed): " + "; ".join(soft)})
+    blockers = hard if force else hard + soft
     return {
         "repo_id": repo, "revision": info["sha"], "requested_revision": body.revision or "main",
-        "engine": engine, "engine_ref": engine_ref, "verdict": ev["verdict"] if ev else analysis["overall"],
+        "engine": engine, "engine_ref": engine_ref,
+        "verdict": ev["verdict"] if ev else ("files" if engine == "files" else analysis["overall"]),
         "analysis": analysis, "engine_analysis": ev, "files": files, "download_bytes": size,
-        "warnings": _security(info), "steps": steps, "blockers": blockers,
+        "warnings": warnings, "steps": steps, "blockers": blockers, "soft_blockers": soft, "forced": force and bool(soft),
+        "overridable": bool(soft) and not hard and p.is_manager and not force,
+        "installers": listing,
         "requires_admin_approval": p.user.role not in (Role.admin, Role.manager),
         "license": info.get("license"), "gated": info.get("gated"), "pipeline_tag": info.get("pipeline_tag"),
     }
@@ -226,6 +240,8 @@ class InstallIn(PlanIn):
 
 
 def _modality(pipeline_tag: str | None, engine: str) -> str:
+    if engine == "files":
+        return "files"
     if engine == "comfyui":
         return "video" if pipeline_tag in ("text-to-video", "image-to-video") else "image"
     if pipeline_tag in ("feature-extraction", "sentence-similarity"):
@@ -292,7 +308,7 @@ def install(body: InstallIn, request: Request, p: Principal = Depends(require_re
     model.modality = modality
     model.architecture = ", ".join(cfg.get("architectures") or []) or None
     model.quantization = pl["analysis"].get("quantization")
-    model.format = "gguf" if engine == "ollama" else "safetensors"
+    model.format = {"ollama": "gguf", "files": "files"}.get(engine, "safetensors")
     model.parameters_b = round(info["parameters"] / 1e9, 3) if info.get("parameters") else None
     model.context_length = cfg.get("max_position_embeddings") or (cfg.get("text_config") or {}).get("max_position_embeddings")
     model.license = info.get("license")
@@ -331,7 +347,7 @@ def install(body: InstallIn, request: Request, p: Principal = Depends(require_re
     db.commit()
     job_id = None
     if p.is_manager:
-        job_id = _start_download(db, task, p.user, body.smoke_test)
+        job_id = _start_download(db, task, p.user, body.smoke_test and engine != "files")
     else:
         size_gb = pl["download_bytes"] / 1e9
         notify.notify_managers(db, "model_request", f"Solicitud de modelo: {pl['repo_id']}",

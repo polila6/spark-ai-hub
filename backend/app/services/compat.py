@@ -61,6 +61,23 @@ BYTES_PER_PARAM = {
     "q5_0": 0.69, "q6_k": 0.82, "q8_0": 1.06, "f16": 2.0,
 }
 PICKLE_EXT = (".bin", ".pt", ".pth", ".ckpt", ".pkl", ".pickle")
+# Files that transformers/vLLM import when a model is loaded with trust_remote_code (the names Hugging Face generates).
+REMOTE_CODE_PREFIXES = ("modeling_", "configuration_", "tokenization_", "processing_", "image_processing_",
+                        "feature_extraction_", "video_processing_")
+SPLIT_GGUF = re.compile(r"-\d{5}-of-\d{5}")
+
+
+def remote_code(config: dict | None, names: list[str]) -> tuple[bool, list[str]]:
+    """Does loading this repository run its own Python? Only `auto_map` (or the modelling files it points to) does.
+    Other .py files (vLLM tool-call parsers, conversion or demo scripts) are never imported by the engines."""
+    code = [n for n in names if n.endswith(".py") and "/" not in n and Path(n).name.startswith(REMOTE_CODE_PREFIXES)]
+    return bool((config or {}).get("auto_map")) or bool(code), code
+
+
+def extra_scripts(config: dict | None, names: list[str]) -> list[str]:
+    """Python files that are in the repository but are not loaded by trust_remote_code."""
+    _, code = remote_code(config, names)
+    return [n for n in names if n.endswith(".py") and n not in code]
 VLLM_QUANT_OK = {"fp8", "awq", "gptq", "compressed-tensors", "modelopt", "modelopt_fp4", "mxfp4", "nvfp4", "w8a8"}
 
 
@@ -270,12 +287,13 @@ def analyse(
     st_files = [f for f in files if f["path"].endswith(".safetensors")]
     gguf_files = [f for f in files if f["path"].endswith(".gguf")]
     pickle_files = [f for f in files if f["path"].endswith(PICKLE_EXT)]
-    custom_code = bool((config or {}).get("auto_map")) or any(n.endswith(".py") for n in names)
+    custom_code, _code_files = remote_code(config, names)
+    scripts = extra_scripts(config, names)
     archs = (config or {}).get("architectures") or []
     quant = detect_quantization(repo_id, config, names)
     common_warn: list[str] = []
     if custom_code:
-        common_warn.append("Repository contains custom Python code (auto_map/*.py): requires explicit trust_remote_code approval")
+        common_warn.append("Repository contains custom Python code (auto_map/modeling_*.py): requires explicit trust_remote_code approval")
     if pickle_files and not st_files and not gguf_files:
         common_warn.append("Only pickle-based weights (.bin/.pt/.ckpt): executable on load — not loaded by default")
 
@@ -353,7 +371,9 @@ def analyse(
         for f in gguf_files:
             q = gguf_quant(f["path"]) or "unknown"
             by_quant[q] = by_quant.get(q, 0) + (f.get("size") or 0)
-        pref = next((q for q in ("q4_k_m", "q5_k_m", "q8_0", "q4_0", "q6_k") if q in by_quant), next(iter(by_quant)))
+        split_q = {gguf_quant(f["path"]) or "unknown" for f in gguf_files if SPLIT_GGUF.search(f["path"])}
+        whole = [q for q in by_quant if q not in split_q] or list(by_quant)
+        pref = next((q for q in ("q4_k_m", "q5_k_m", "q8_0", "q4_0", "q6_k") if q in whole), whole[0])
         est = estimate(weights_bytes=by_quant[pref], params_b=params_b, quant=pref, config=config, context=context,
                        concurrency=concurrency)
         verdict, conf = "likely", 0.7
@@ -366,11 +386,13 @@ def analyse(
         if "ollama" in verified_engines:
             verdict, conf = "verified", 0.98
             reasons.insert(0, "Smoke test passed on this DGX Spark")
-        if any("-00001-of-" in f["path"] for f in gguf_files):
-            lim.append("Split GGUF detected; Ollama pull of split files may require merge")
+        if split_q:
+            lim.append(f"Split GGUF ({', '.join(sorted(split_q))}): Ollama cannot pull split files from Hugging Face"
+                       + ("" if whole and whole[0] not in split_q else " — install as files instead"))
         verdicts.append(EngineVerdict("ollama", verdict, conf, reasons, lim, asdict(est),
                                       {"quant": pref.upper(), "num_ctx": est.context_length,
-                                       "variants": {k: round(v / GB, 2) for k, v in by_quant.items()}}))
+                                       "variants": {k: round(v / GB, 2) for k, v in by_quant.items()},
+                                       "split": sorted(split_q)}))
 
     # ---- ComfyUI (image/video)
     if pipeline_tag in ("text-to-image", "image-to-image", "text-to-video", "image-to-video") or library == "diffusers":
@@ -428,6 +450,7 @@ def analyse(
         "quantization": quant,
         "architectures": archs,
         "custom_code": custom_code,
+        "scripts": scripts,
         "pickle_only": bool(pickle_files and not st_files and not gguf_files),
         "disk_gb_total": round(total_disk, 2),
         "engines": [asdict(v) for v in verdicts],

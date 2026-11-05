@@ -52,7 +52,10 @@ requires a custom vLLM image per NVIDIA (flagged as a limitation by the rules en
 | safetensors + `config.json` with architecture registered in the pinned vLLM image | vLLM | FP8/NVFP4/MXFP4/AWQ/GPTQ/compressed-tensors; bnb-4bit → experimental |
 | `*.gguf` | Ollama (`hf.co/<repo>:<QUANT>`) | Ollama verifies layer sha256 |
 | `.bin/.pt/.pth/.ckpt/.pkl` only | none | pickle = executable; not downloaded by default |
-| `auto_map` / `*.py` | experimental | needs admin approval of `trust_remote_code` |
+| `auto_map` / `modeling_*.py` | experimental | needs admin approval of `trust_remote_code` |
+| other `*.py` (tool-call parsers, scripts) | no effect | the engines never import them; shown as an info note |
+| split GGUF (`-00001-of-0000N`) | not via Ollama | Ollama cannot pull them from Hugging Face; install as «Solo archivos» |
+| anything no engine takes | files only | downloaded, checked and registered without loading it |
 | diffusion single-file safetensors | ComfyUI | only via registered workflows of the same family |
 | Whisper / VITS (transformers) | ML worker | audio adapters |
 | timm image classifiers (safetensors) | ML worker | Scientific Lab `image_classifier` adapter |

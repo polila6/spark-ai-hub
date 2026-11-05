@@ -5,7 +5,7 @@ const SHOTS = process.env.SAH_SHOTS ?? "/shots";
 
 async function login(page: Page) {
   // Session comes from global-setup storageState; just open the dashboard.
-  await page.goto("/");
+  await page.goto("/dashboard");
   await expect(page.getByRole("heading", { name: "Panel de control" })).toBeVisible({ timeout: 30_000 });
 }
 

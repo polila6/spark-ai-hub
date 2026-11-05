@@ -64,7 +64,7 @@ redaction processor (`hf_…`, `sah-…`, bearer tokens, passwords) — unit-tes
 
 ## Code execution & containers
 
-* HF custom code (`auto_map`, `*.py`) is flagged; `trust_remote_code` is passed to vLLM only after explicit admin approval
+* HF custom code (`auto_map`, `modeling_*.py` and the like) is flagged; other `.py` files are only noted, because no engine imports them; `trust_remote_code` is passed to vLLM only after explicit admin approval
   per model, and then runs inside the `sah-vllm` container (no egress, read-only weights, no-new-privileges).
 * Scientific adapters are code shipped with the hub; uploaded artifacts are data. The ML worker runs as uid 1000,
   `cap_drop: ALL`, no egress, read-only models/datasets.

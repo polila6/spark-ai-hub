@@ -43,8 +43,15 @@ function InstallDialog({ repo, info, open, onOpenChange }: any) {
   const { t } = useI18n();
   const { me } = useMe();
   const { push } = useToast();
-  const engines = info?.analysis?.engines?.map((e: any) => e.engine) ?? [];
-  const [engine, setEngine] = useState<string>(info?.analysis?.recommended_engine ?? engines[0] ?? "");
+  const installers: any[] = info?.installers ?? [];
+  const [engine, setEngine] = useState<string>(info?.analysis?.recommended_engine ?? "files");
+  const current = installers.find((i) => i.engine === engine);
+  const [include, setInclude] = useState("");
+  const [exclude, setExclude] = useState("");
+  const [force, setForce] = useState(false);
+  const isManager = me?.role === "admin" || me?.role === "manager";
+  const patterns = (v: string) => v.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
+  const filters = () => ({ include_patterns: patterns(include).length ? patterns(include) : undefined, exclude_patterns: patterns(exclude).length ? patterns(exclude) : undefined });
   const [quant, setQuant] = useState("");
   const [ctx, setCtx] = useState("");
   const [plan, setPlan] = useState<any>(null);
@@ -54,17 +61,19 @@ function InstallDialog({ repo, info, open, onOpenChange }: any) {
   const [alias, setAlias] = useState("");
   const [vis, setVis] = useState(me?.role === "admin" || me?.role === "manager" ? "public" : "private");
   const [reason, setReason] = useState("");
-  const variants = info?.analysis?.engines?.find((e: any) => e.engine === "ollama")?.recommended_params?.variants ?? {};
-  async function makePlan() {
+  const ollama = info?.analysis?.engines?.find((e: any) => e.engine === "ollama")?.recommended_params ?? {};
+  const variants = ollama.variants ?? {};
+  const split: string[] = ollama.split ?? [];
+  async function makePlan(forceNow: boolean = force) {
     setBusy(true); setErr(null);
     try {
-      setPlan(await api("/api/v1/huggingface/plan", { method: "POST", json: { repo_id: repo, engine, gguf_quant: quant || undefined, context_length: ctx ? Number(ctx) : undefined } }));
+      setPlan(await api("/api/v1/huggingface/plan", { method: "POST", json: { repo_id: repo, engine, gguf_quant: quant || undefined, context_length: ctx ? Number(ctx) : undefined, force: forceNow || undefined, ...filters() } }));
     } catch (e) { setErr(e); } finally { setBusy(false); }
   }
   async function install() {
     setBusy(true); setErr(null);
     try {
-      const r = await api("/api/v1/huggingface/install", { method: "POST", json: { repo_id: repo, revision: plan.revision, engine, gguf_quant: quant || undefined, context_length: ctx ? Number(ctx) : undefined, alias: alias || undefined, visibility: vis, accept_license: accept, reason } });
+      const r = await api("/api/v1/huggingface/install", { method: "POST", json: { repo_id: repo, revision: plan.revision, engine, gguf_quant: quant || undefined, context_length: ctx ? Number(ctx) : undefined, force: force || undefined, ...filters(), alias: alias || undefined, visibility: vis, accept_license: accept, reason } });
       push("ok", r.status === "started" ? `Descarga iniciada (${r.alias})` : `${t("models.awaiting")}: ${r.alias}`);
       onOpenChange(false);
     } catch (e) { setErr(e); } finally { setBusy(false); }
@@ -73,11 +82,25 @@ function InstallDialog({ repo, info, open, onOpenChange }: any) {
   return (
     <Modal open={open} onOpenChange={onOpenChange} title={`${t("discover.install")} ${repo}`} description={t("discover.plan")} wide>
       <div className="grid gap-3 sm:grid-cols-3">
-        <Field label={t("discover.engine")}><Select value={engine} onChange={(e) => { setEngine(e.target.value); setPlan(null); }}>{engines.map((x: string) => <option key={x}>{x}</option>)}</Select></Field>
-        {engine === "ollama" && <Field label="GGUF"><Select value={quant} onChange={(e) => { setQuant(e.target.value); setPlan(null); }}><option value="">auto</option>{Object.entries(variants).map(([k, v]: any) => <option key={k} value={k.toUpperCase()}>{k.toUpperCase()} · {v} GB</option>)}</Select></Field>}
+        <Field label="Cómo instalarlo" hint={current?.summary}>
+          <Select value={engine} onChange={(e) => { setEngine(e.target.value); setPlan(null); setForce(false); }}>
+            {installers.map((i: any) => <option key={i.engine} value={i.engine} disabled={!i.usable}>
+              {i.label}{i.recommended ? " · recomendado" : ""}{!i.usable ? " · no aplicable" : i.needs_force ? " · requiere forzar" : ""}</option>)}
+          </Select>
+        </Field>
+        {engine === "ollama" && <Field label="GGUF"><Select value={quant} onChange={(e) => { setQuant(e.target.value); setPlan(null); }}><option value="">auto</option>{Object.entries(variants).map(([k, v]: any) => <option key={k} value={k.toUpperCase()}>{k.toUpperCase()} · {v} GB{split.includes(k) ? " · troceado" : ""}</option>)}</Select></Field>}
         {engine === "vllm" && <Field label="Context (max_model_len)"><Input type="number" value={ctx} placeholder="8192" onChange={(e) => { setCtx(e.target.value); setPlan(null); }} /></Field>}
       </div>
-      <div className="mt-3"><Button onClick={makePlan} loading={busy && !plan}>{t("discover.plan")}</Button></div>
+      {current && !current.usable && <div className="mt-2"><Notice tone="warn">{current.unusable_reason}</Notice></div>}
+      <details className="mt-3 rounded-xl border border-border p-3 text-sm">
+        <summary className="cursor-pointer font-medium">Opciones avanzadas: elegir qué archivos descargar</summary>
+        <p className="mt-2 text-xs text-muted">Un patrón por línea o separados por comas (<code>*.safetensors</code>, <code>config.json</code>, <code>Q4_K_M/*</code>). Si no pones nada, se descarga lo que necesita el motor elegido. Con «Solo archivos» se baja todo salvo los duplicados .bin.</p>
+        <div className="mt-2 grid gap-3 sm:grid-cols-2">
+          <Field label="Descargar solo"><Textarea rows={2} value={include} placeholder="*.safetensors&#10;config.json" onChange={(e) => { setInclude(e.target.value); setPlan(null); }} /></Field>
+          <Field label="Excluir"><Textarea rows={2} value={exclude} placeholder="onnx/*&#10;*.md" onChange={(e) => { setExclude(e.target.value); setPlan(null); }} /></Field>
+        </div>
+      </details>
+      <div className="mt-3"><Button onClick={() => makePlan()} loading={busy && !plan}>{t("discover.plan")}</Button></div>
       {err && <div className="mt-3"><ErrorBox error={err} /></div>}
       {plan && (
         <div className="mt-4 space-y-3">
@@ -88,9 +111,11 @@ function InstallDialog({ repo, info, open, onOpenChange }: any) {
               </li>
             ))}
           </ol>
-          <p className="text-xs text-muted">Revisión fijada: <code className="font-mono">{plan.revision}</code> · {bytes(plan.download_bytes)} · {plan.files.length} archivos · veredicto <StatusBadge state={plan.verdict} /></p>
+          <p className="text-xs text-muted">Revisión fijada: <code className="font-mono">{plan.revision}</code> · {bytes(plan.download_bytes)} · {plan.files.length} archivos · {plan.engine === "files" ? "solo archivos" : <>veredicto <StatusBadge state={plan.verdict} /></>}</p>
           {plan.warnings.map((w: any, i: number) => <Notice key={i} tone={w.level === "danger" ? "danger" : w.level === "warning" ? "warn" : "info"} icon={<ShieldAlert className="h-4 w-4" />}>{w.message}</Notice>)}
           {plan.blockers.map((b: string, i: number) => <Notice key={i} tone="danger" icon={<AlertTriangle className="h-4 w-4" />}>{b}</Notice>)}
+          {plan.blockers.length > 0 && !plan.overridable && plan.engine !== "files" && <Notice tone="info">Si ningún motor lo admite, elige «Solo archivos» en «Cómo instalarlo»: se descarga y se registra sin cargarlo en ningún motor.</Notice>}
+          {(plan.overridable || plan.forced) && isManager && <Switch checked={force} onChange={(v: boolean) => { setForce(v); makePlan(v); }} label="Instalar de todos modos (ignora el veredicto de compatibilidad; el disco y los permisos se siguen respetando)" />}
           {plan.requires_admin_approval && <>
             <Notice tone="info">Tu petición se enviará a los administradores y gestores. Te avisaremos (🔔 y correo) cuando se apruebe y cuando el modelo esté listo. Puedes seguirla en «Solicitudes».</Notice>
             <Field label="¿Para qué lo necesitas? (lo verá quien revise la solicitud)"><Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="p. ej. Transcribir entrevistas del proyecto X en valenciano" /></Field>
