@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.19.3 — 2026-11-06
+Answers appear at the model's own rhythm, a readable agent menu, and API clients can control reasoning.
+
+* **Streaming like ChatGPT** (`lib/fade-words.ts`): nothing is held back any more. Each word is on screen as soon as the model
+  produces it and fades in as it appears; a burst of words is staggered over a fraction of a second instead of popping. This replaces
+  the 0.19.2 paced reveal, which lagged behind the model.
+* **Agent menu** (`components/agent-picker.tsx`): a menu of its own instead of the browser's select, readable in both themes, with each
+  agent's description.
+* **`reasoning_effort` is honoured** on `/v1/chat/completions` (and `reasoning: {effort}`): «none»/«minimal» turn a reasoning model's
+  thinking off, anything else on. It used to be ignored, so tools like Hermes could not shorten the model's reasoning. New admin
+  setting `api_default_thinking` (auto | off | on, Settings → System) for clients that say nothing. An explicit
+  `chat_template_kwargs.enable_thinking` always wins.
+
 ## 0.19.2 — 2026-11-06
 Answers flow instead of popping in.
 

@@ -230,6 +230,8 @@ def put_settings(body: dict, request: Request, p: Principal = Depends(require_ad
             if not isinstance(v, list) or not all(isinstance(x, str) and re.fullmatch(r"[\w.-]+/[\w.-]+(/[\w./-]+)?", x)
                                                   for x in v) or len(v) > 20:
                 raise HTTPException(422, detail={"code": "invalid", "message": "skill_sources: list of owner/repo[/path]"})
+        if k == "api_default_thinking" and v not in ("auto", "off", "on"):
+            raise HTTPException(422, detail={"code": "invalid", "message": "api_default_thinking must be auto|off|on"})
         if k == "default_language" and v not in ("es", "en"):
             raise HTTPException(422, detail={"code": "invalid", "message": "default_language must be es|en"})
         if k == "org_name":

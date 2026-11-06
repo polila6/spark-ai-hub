@@ -226,3 +226,9 @@ Audited as `models.main`, `models.main_pending`, `models.main_pending_cancel`.
 
 Pagination: `limit`/`offset` on large lists. Errors: `{"error": {"code", "message", ...}, "request_id"}`; every response
 carries `X-Request-ID` for log correlation.
+
+## Reasoning control for OpenAI-compatible clients
+On models served with a reasoning parser (e.g. Qwen3.x), `POST /v1/chat/completions` accepts `reasoning_effort` (or
+`reasoning: {"effort": ...}`): `none` / `minimal` turn the model's thinking off, `low` … `xhigh` leave it on. `chat_template_kwargs:
+{"enable_thinking": true|false}` is also honoured and wins over both. For clients that send neither, the administrator can set the
+default in Settings → System → «Razonamiento por defecto en la API» (`api_default_thinking`: `auto`, `off`, `on`).

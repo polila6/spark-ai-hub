@@ -33,6 +33,37 @@ def supports_tools(model: RegisteredModel) -> bool:
     return "tools" in set(model.capabilities or [])
 
 
+OFF_EFFORT = {"none", "minimal", "off", "disabled", "false"}
+ON_EFFORT = {"low", "medium", "high", "xhigh", "max", "on", "enabled", "true"}
+
+
+def apply_reasoning_defaults(model: RegisteredModel, body: dict, default: str = "auto") -> dict:
+    """OpenAI-compatible clients (Hermes, OpenCode…) cannot send a vLLM `enable_thinking`, but many send `reasoning_effort`
+    (or `reasoning: {effort}`): «none»/«minimal» turn the model's thinking off, anything else on. When the client says nothing,
+    the hub's `api_default_thinking` setting (auto = the model's own default, off, on) decides. An explicit
+    chat_template_kwargs.enable_thinking from the client always wins. Only for vLLM models served with a reasoning parser."""
+    if model.backend != "vllm":
+        return body
+    params = (model.runtime_config.params if model.runtime_config else {}) or {}
+    if not params.get("reasoning_parser"):
+        return body
+    ck = body.get("chat_template_kwargs")
+    if isinstance(ck, dict) and isinstance(ck.get("enable_thinking"), bool):
+        return body
+    effort = body.get("reasoning_effort")
+    if effort is None and isinstance(body.get("reasoning"), dict):
+        effort = body["reasoning"].get("effort")
+    think = None
+    if isinstance(effort, str):
+        e = effort.strip().lower()
+        think = False if e in OFF_EFFORT else True if e in ON_EFFORT else None
+    if think is None and default in ("off", "on"):
+        think = default == "on"
+    if think is None:
+        return body
+    return {**body, "chat_template_kwargs": {**(ck if isinstance(ck, dict) else {}), "enable_thinking": think}}
+
+
 def system_first(messages: list) -> list:
     """Many chat templates reject a system message anywhere but first (Claude Code and others send them mid-conversation):
     gather them all at the start, in order, without losing any."""

@@ -7,19 +7,26 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { hubFile, useFileViewer } from "@/components/file-viewer";
 import { deliverablesOf, linkDeliverables, parseHref } from "@/lib/deliverables";
-import { useSmoothText } from "@/lib/smooth-text";
+import { countWords, rehypeFadeWords } from "@/lib/fade-words";
 
 const urlTransform = (u: string) => (u.startsWith("sah:") ? u : defaultUrlTransform(u));
 
 export function AnswerMarkdown({ content, tools, components, onCanvas, onWs, streaming }: {
   content: string; tools?: any[]; components?: any; onCanvas?: (id: string, v?: number) => void; onWs?: (path: string) => void;
-  streaming?: boolean;  // the answer is still arriving: it is revealed at an even pace, with a soft cursor at the end
+  streaming?: boolean;  // the answer is still arriving: each new word fades in, with a soft cursor at the end
 }) {
   const viewer = useFileViewer();
   const router = useRouter();
   const items = useMemo(() => deliverablesOf(tools), [tools]);
-  const smooth = useSmoothText(content, !!streaming);
-  const text = useMemo(() => linkDeliverables(smooth.text, items), [smooth.text, items]);
+  const text = useMemo(() => linkDeliverables(content, items), [content, items]);
+  // words that arrive while the answer streams fade in as they appear (lib/fade-words.ts); what was already there does not
+  const fade = useRef<{ delays: number[]; init: boolean }>({ delays: [], init: false });
+  if (!fade.current.init) {
+    fade.current.init = true;
+    if (streaming) fade.current.delays = Array(countWords(content)).fill(-1);
+  }
+  const startLen = fade.current.delays.length;
+  const animate = !!streaming || fade.current.delays.length > 0;
   const act = useRef({ viewer, router, onCanvas, onWs });
   act.current = { viewer, router, onCanvas, onWs };
   const A = useMemo(() => function Link({ href, children }: any) {
@@ -36,8 +43,9 @@ export function AnswerMarkdown({ content, tools, components, onCanvas, onWs, str
       className="cursor-pointer text-blue-500 underline decoration-blue-500/40 underline-offset-2 hover:text-blue-400 hover:decoration-blue-400">{children}</button>;
   }, [items]);
   return (
-    <div className={smooth.active ? "answer-md stream-caret" : "answer-md"}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={urlTransform} components={{ ...components, a: A }}>{text}</ReactMarkdown>
+    <div className={streaming ? "answer-md stream-caret" : "answer-md"}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={animate ? [[rehypeFadeWords, { state: fade.current, startLen }]] : []}
+        urlTransform={urlTransform} components={{ ...components, a: A }}>{text}</ReactMarkdown>
     </div>
   );
 }

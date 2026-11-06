@@ -164,6 +164,7 @@ async def chat_completions(request: Request, db: Session = Depends(get_db)):
     except EngineError as e:
         _record(p, "chat.completions", model.alias, 502, None, t0)
         raise GatewayError(502, f"Engine failed to load model: {e.message}", "server_error", "engine_error")
+    body = llm.apply_reasoning_defaults(model, body, str(get_setting(db, "api_default_thinking") or "auto"))
     scheduler.begin_request(inst.id)
     if body.get("stream"):
         def gen():

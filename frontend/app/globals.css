@@ -44,6 +44,10 @@ body { font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiase
 .answer-md > :first-child { margin-top: 0; }
 .answer-md > :last-child { margin-bottom: 0; }
 /* a soft cursor at the end of an answer while it is being written */
+/* each word that arrives while an answer streams fades in (see lib/fade-words.ts) */
+.tok { animation: tok-in 0.32s ease-out both; animation-delay: var(--d, 0ms); }
+@keyframes tok-in { from { opacity: 0; filter: blur(3px); } to { opacity: 1; filter: blur(0); } }
+@media (prefers-reduced-motion: reduce) { .tok { animation: none; } }
 .stream-caret > :last-child:not(ul):not(ol):not(pre):not(table)::after,
 .stream-caret > ul:last-child > li:last-child::after,
 .stream-caret > ol:last-child > li:last-child::after {

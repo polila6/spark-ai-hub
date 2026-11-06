@@ -6,6 +6,7 @@ import {
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { AgentPicker } from "@/components/agent-picker";
 import { AnswerMarkdown } from "@/components/deliverable-link";
 import { effortBody, effortFrom, EffortSlider, PermChips, useEffort } from "@/components/effort";
 import remarkGfm from "remark-gfm";
@@ -584,20 +585,7 @@ function Chat() {
             ) : (
               <>
                 {agentData?.settings?.enabled !== false && availableAgents.length > 0 && (
-                  <label className="inline-flex h-7 max-w-[210px] items-center gap-1 rounded-full border border-border px-2 text-xs text-muted"
-                    title={L("El agente elegido realizará la tarea principal; el asistente puede coordinar otros agentes si hacen falta", "The selected agent handles the main task; the assistant may coordinate other agents when needed")}>
-                    <Bot className={cx("h-3.5 w-3.5 shrink-0", preferredAgent && "text-accent")} />
-                    <Select aria-label={L("Agente preferido", "Preferred agent")} className="h-6 min-w-0 max-w-[170px] border-0 bg-transparent px-1 text-xs shadow-none"
-                      value={preferredAgent} disabled={!!status} onChange={(e) => choosePreferredAgent(e.target.value)}>
-                      <option value="">{L("Automático", "Automatic")}</option>
-                      <optgroup label={L("Agentes del hub", "Hub agents")}>
-                        {availableAgents.filter((a: any) => a.builtin).map((a: any) => <option key={a.id} value={a.name}>{a.name}</option>)}
-                      </optgroup>
-                      {availableAgents.some((a: any) => !a.builtin) && <optgroup label={L("Agentes personalizados", "Custom agents")}>
-                        {availableAgents.filter((a: any) => !a.builtin).map((a: any) => <option key={a.id} value={a.name}>{a.name}{a.mine ? L(" (mío)", " (mine)") : ""}</option>)}
-                      </optgroup>}
-                    </Select>
-                  </label>
+                  <AgentPicker value={preferredAgent} agents={availableAgents} disabled={!!status} onChange={choosePreferredAgent} />
                 )}
                 <Chip on={tools} onChange={setTools} icon={Wrench} label={L("Herramientas", "Tools")} tip={L("Archivos, código, imágenes, agentes y skills", "Files, code, images, agents and skills")} />
                 <PermChips value={effort} onChange={setEffort} canThink={sel?.backend === "vllm"} canWeb={!!(tools && sel?.tools_enabled && pub?.web_search_enabled !== false)}
