@@ -525,10 +525,13 @@ async def _tail(cid, request: Request, start_at: int):
     """SSE: replay the turn's events from `start_at`, then follow until done/error. Leaving does not cancel."""
     idx = start_at
     last_beat = time.time()
+    quiet = 0  # consecutive polls without news: the text of an answer is followed closely, a long tool run is not
     while True:
         if await request.is_disconnected():
             return
         evs = await asyncio.to_thread(turns.events, cid, idx)
+        if evs:
+            quiet = 0
         for ev in evs:
             idx += 1
             yield f"data: {json.dumps({**ev, 'seq': idx}, ensure_ascii=False, default=str)}\n\n"
@@ -547,7 +550,9 @@ async def _tail(cid, request: Request, start_at: int):
             if time.time() - last_beat > 15:
                 last_beat = time.time()
                 yield ": keep-alive\n\n"
-            await asyncio.sleep(0.3)
+            quiet += 1
+            # ~25 polls a second while words are flowing (the browser shows each one as the model produces it), 3 a second when idle
+            await asyncio.sleep(0.04 if quiet < 50 else 0.3)
 
 
 @router.get("/conversations/{cid}/stream")

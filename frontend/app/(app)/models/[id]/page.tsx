@@ -146,7 +146,8 @@ export default function ModelPage({ params }: { params: Promise<{ id: string }> 
                 })}
               </div>
             )}
-            {me?.role === "admin" && <Switch checked={m.pinned} onChange={(v) => patch({ pinned: v })} label={t("models.pin")} />}
+            {me?.role === "admin" && <div className="space-y-1"><Switch checked={m.pinned} onChange={(v) => patch({ pinned: v })} label={t("models.pin")} />
+              <p className="max-w-xl text-xs text-muted">{tr("No se descarga por inactividad ni se retira para dejar sitio a otros, y se vuelve a cargar sola si se reinicia el equipo. Puedes fijar varios (el principal para el chat y otro para una herramienta como Hermes), siempre que quepan juntos en memoria.", "It is not unloaded when idle nor removed to make room for others, and it loads again by itself after a restart. You can keep several (the main one for chat and another for a tool such as Hermes) as long as they fit in memory together.")}</p></div>}
             {canManage && <Switch checked={m.status === "disabled"} onChange={(v) => patch({ disabled: v })} label={t("state.disabled")} />}
             {me?.role === "admin" && m.custom_code && <Button size="sm" variant={m.trust_remote_code_approved ? "outline" : "danger"} onClick={async () => { await api(`/api/v1/models/${id}/approve-remote-code?approve=${!m.trust_remote_code_approved}`, { method: "POST" }); mutate(); }}>
               {m.trust_remote_code_approved ? tr("Revocar código remoto", "Revoke remote code") : tr("Aprobar código remoto (aislado)", "Approve remote code (isolated)")}</Button>}

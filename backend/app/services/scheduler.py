@@ -706,36 +706,66 @@ def plan_load(db: Session, model: RegisteredModel) -> dict:
     return out
 
 
+def resident_targets(db: Session) -> list[RegisteredModel]:
+    """Models that must stay loaded: the general one (preferred_resident_model) and every pinned one, the general one first.
+    Nothing is kept in on-demand mode."""
+    if get_setting(db, "scheduler_mode") == "on_demand":
+        return []
+    out: list[RegisteredModel] = []
+    pref = get_setting(db, "preferred_resident_model")
+    if pref:
+        m = db.scalar(select(RegisteredModel).where(RegisteredModel.alias == pref))
+        if m is not None:
+            out.append(m)
+    for m in db.scalars(select(RegisteredModel).where(RegisteredModel.pinned.is_(True), RegisteredModel.backend.in_(("vllm", "ollama")))
+                        .order_by(RegisteredModel.alias)):
+        if all(m.id != x.id for x in out):
+            out.append(m)
+    return [m for m in out if m.status in (ModelStatus.installed, ModelStatus.ready, ModelStatus.loading, ModelStatus.busy)]
+
+
+def resident_fit(db: Session, extra: RegisteredModel | None = None) -> tuple[bool, str, list[dict]]:
+    """Do the models that must stay loaded (plus `extra`, about to be pinned) fit together in what the hub may hand out?
+    A vLLM model reserves gpu_memory_utilization × the machine's memory, so two big ones rarely fit side by side."""
+    models = resident_targets(db)
+    if extra is not None and all(extra.id != m.id for m in models):
+        models.append(extra)
+    items = [{"alias": m.alias, "gb": round(model_memory_gb(db, m), 1)} for m in models]
+    total = round(sum(i["gb"] for i in items), 1)
+    cap = round(budget(db)["schedulable_gb"], 1)
+    if total <= cap + 0.01:
+        return True, "", items
+    detail = ", ".join(f"{i['alias']} {i['gb']:.0f} GB" for i in items)
+    return False, (f"No caben juntos: reservarían {total:.0f} GB ({detail}) y el hub puede repartir {cap:.0f} GB. Baja la "
+                   f"gpu_memory_utilization de alguno (pestaña Parámetros del modelo) o quita otro fijado. / "
+                   f"They do not fit together: they would reserve {total:.0f} GB ({detail}) and the hub can hand out {cap:.0f} GB. "
+                   "Lower the gpu_memory_utilization of one of them or unpin another."), items
+
+
 def ensure_resident() -> str | None:
-    """Keep the general model (preferred_resident_model, hybrid mode) loaded: after boots, crashes or manual unloads.
-    Runs from the worker loop; a failed attempt backs off for 10 minutes."""
+    """Keep the general model and every pinned model loaded: after boots, crashes or manual unloads. Runs from the worker
+    loop, one model at a time (big loads never overlap); a failed attempt backs off for 10 minutes per model, and a model that
+    died for lack of memory is left for a person to load."""
     import threading
 
     with SessionLocal() as db:
-        if get_setting(db, "scheduler_mode") == "on_demand":
-            return None
-        alias = get_setting(db, "preferred_resident_model")
-        if not alias:
-            return None
-        m = db.scalar(select(RegisteredModel).where(RegisteredModel.alias == alias))
-        if not m or m.status not in (ModelStatus.installed, ModelStatus.ready, ModelStatus.loading, ModelStatus.busy):
-            return None
-        if db.scalar(select(RuntimeInstance.id).where(RuntimeInstance.model_id == m.id)):
-            return None
-        mid = m.id
-    if memguard.oom_flagged(mid):
-        return None  # it died for lack of memory last time: a person loads it again when the machine is quiet
-    r = get_redis()
-    if not r.set("sah:resident:attempt", alias, nx=True, ex=600):
+        loaded = {mid for (mid,) in db.execute(select(RuntimeInstance.model_id)) if mid is not None}
+        todo = [(m.id, m.alias) for m in resident_targets(db) if m.id not in loaded and not memguard.oom_flagged(m.id)]
+    if not todo:
         return None
+    r = get_redis()
+    for mid, alias in todo:
+        if not r.set(f"sah:resident:attempt:{alias}", alias, nx=True, ex=600):
+            continue
 
-    def run():
-        try:
-            ensure_loaded(mid, wait_s=1800)
-            r.delete("sah:resident:attempt")
-            log.info("scheduler.resident_loaded", model=alias)
-        except Exception as e:  # noqa: BLE001 - keep the back-off key: retry in 10 min
-            log.warning("scheduler.resident_failed", model=alias, error=str(getattr(e, "message", e))[:300])
+        def run(mid=mid, alias=alias):
+            try:
+                ensure_loaded(mid, wait_s=1800)
+                r.delete(f"sah:resident:attempt:{alias}")
+                log.info("scheduler.resident_loaded", model=alias)
+            except Exception as e:  # noqa: BLE001 - keep the back-off key: retry in 10 min
+                log.warning("scheduler.resident_failed", model=alias, error=str(getattr(e, "message", e))[:300])
 
-    threading.Thread(target=run, daemon=True).start()
-    return alias
+        threading.Thread(target=run, daemon=True).start()
+        return alias
+    return None

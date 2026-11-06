@@ -214,6 +214,10 @@ def patch_model(model_id: uuid.UUID, body: ModelPatch, request: Request, p: Prin
         raise HTTPException(403, detail={"code": "admin_required", "message": "Only admins publish models to everyone"})
     if "pinned" in ch and not p.is_admin:
         raise HTTPException(403, detail={"code": "admin_required", "message": "Only admins pin models"})
+    if ch.get("pinned") and not m.pinned and m.backend in ("vllm", "ollama"):
+        fits, why, items = scheduler.resident_fit(db, m)
+        if not fits:  # keeping it loaded together with the others would not fit in memory
+            raise HTTPException(409, detail={"code": "pin_does_not_fit", "message": why, "models": items})
     if "alias" in ch and ch["alias"] != m.alias:
         if db.scalar(select(RegisteredModel.id).where(RegisteredModel.alias == ch["alias"])):
             raise HTTPException(409, detail={"code": "alias_taken", "message": "Alias already in use"})

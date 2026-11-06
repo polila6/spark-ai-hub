@@ -105,6 +105,13 @@ THINK_WORDS = re.compile(r"\b(demuestra|demostrar|prueba que|razona|paso a paso|
                          r"step by step|why does|design|architecture|optimi[sz]e)\b", re.I)
 RESEARCH_WORDS = re.compile(r"\b(investiga a fondo|investigaci[oó]n (?:a fondo|profunda|exhaustiva)|estado del arte|revisi[oó]n bibliogr[aá]fica|"
                             r"informe (?:completo|detallado|exhaustivo) sobre|deep research|literature review|in-depth report)\b", re.I)
+# «sin buscar nada en internet», «no busques en la web», «without searching the web»: asking NOT to use the web
+NO_WEB = re.compile(r"\b(?:sin|nunca|no)\s+(?:(?:vayas a|tienes que|hace falta|necesitas|quiero que|te pido que|debes|puedes)\s+)?"
+                    r"(?:buscar|busques|b[uú]squedas?|navegar|navegues|usar\s+(?:la\s+)?(?:web|internet)|usar\s+el\s+navegador|"
+                    r"consultar\s+(?:la\s+)?(?:web|internet)|acceso\s+a\s+internet)\b(?:\s+nada)?(?:\s+en\s+(?:internet|la\s+web|l[ií]nea|online))?|"
+                    r"\bsin\s+(?:internet|la\s+web|conexi[oó]n)\b|"
+                    r"\b(?:don'?t|do\s+not|without|no)\s+(?:use\s+|using\s+|need\s+to\s+)?(?:search\w*|brows\w+|the\s+web|the\s+internet|internet)\b"
+                    r"(?:\s+(?:the\s+)?(?:web|internet|online))?", re.I)
 DOC_WORDS = re.compile(r"\b(mis? (?:documentos?|archivos?|notas|papers?|art[ií]culos|informes?|datos|ficheros|pdfs?)|(?:en|de) (?:mi|el|nuestro) "
                        r"(?:proyecto|repositorio|carpeta|drive|base de conocimiento|colecci[oó]n)|seg[uú]n (?:mis|mi|el|los) (?:documentos?|archivos?|notas|informe)|"
                        r"en los (?:documentos|archivos|papers)|(?:este|ese|el) (?:archivo|documento|pdf|excel|csv)|adjunt\w+|"
@@ -116,6 +123,8 @@ SKILL_WORDS = re.compile(r"\b(docx|pptx|xlsx|word|powerpoint|presentaci[oó]n|in
 
 @dataclass
 class Signals:
+    no_web: bool = False  # the message asks NOT to use the internet
+    url: bool = False  # it contains an address: reading it needs the web even if searching is ruled out
     trivial: bool = False
     docs: bool = False
     web: bool = False
@@ -138,9 +147,13 @@ def classify(ask: Ask) -> Signals:
         s.why.append("saludo o confirmación")
         return s
     if URL.search(text):
-        s.web, s.confident = True, True
+        s.web, s.confident, s.url = True, True, True
         s.why.append("incluye una dirección web")
         text = URL.sub(" ", text)  # the words inside an address say nothing about what is wanted
+    if NO_WEB.search(text):
+        s.no_web = True
+        s.why.append("pides no usar internet")
+        text = NO_WEB.sub(" ", text)  # what is left may still ask for other things
     if WEB_WORDS.search(text):
         s.web, s.confident = True, True
         s.why.append("pide información actual")
@@ -266,6 +279,8 @@ def decide(ask: Ask, complete: Callable[[list[dict]], str] | None = None) -> Dec
             want = {c for c in CAPS if op.get(c)}
             source, why = "llm", op["reason"] or "decidido por el director"
 
+    if sig.no_web and not sig.url:
+        want -= {"web", "research"}  # «sin buscar en internet» is an instruction (a chip set to «siempre» still wins)
     # the slider sets how far thinking goes; it never overrides what the message explicitly asks for («busca…», a URL, a file)
     if level == 0 or level == 1:
         want.discard("think")

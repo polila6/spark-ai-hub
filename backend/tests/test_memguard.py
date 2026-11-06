@@ -148,22 +148,120 @@ def test_a_small_model_is_not_slowed_down_by_any_of_this(monkeypatch):
 
 def test_the_resident_loop_leaves_a_model_that_ran_out_of_memory_alone(monkeypatch):
     model = SimpleNamespace(id="m1", alias="big", status=ModelStatus.installed)
-    answers = iter([model, None])
 
     class Db:
-        def scalar(self, q):
-            return next(answers)
+        def execute(self, q):
+            return []
 
     @contextmanager
     def session():
         yield Db()
 
     monkeypatch.setattr(scheduler, "SessionLocal", session)
-    monkeypatch.setattr(scheduler, "get_setting", lambda db, k: {"scheduler_mode": "hybrid", "preferred_resident_model": "big"}.get(k))
+    monkeypatch.setattr(scheduler, "resident_targets", lambda db: [model])
     monkeypatch.setattr(G, "oom_flagged", lambda mid: True)
     started = []
     monkeypatch.setattr(scheduler, "get_redis", lambda: started.append("redis") or FakeRedis())
     assert scheduler.ensure_resident() is None and started == []  # not even an attempt
+
+
+# ------------------------------------------------------------------ several models kept loaded
+
+
+class Model:
+    def __init__(self, alias, pinned=False, status=ModelStatus.installed, backend="vllm"):
+        self.id, self.alias, self.pinned, self.status, self.backend = alias, alias, pinned, status, backend
+
+
+def test_the_general_model_comes_first_and_every_pinned_one_is_kept_without_repeats(monkeypatch):
+    general, harness, extra = Model("general"), Model("harness", True), Model("extra", True)
+
+    class Db:
+        def scalar(self, q):
+            return general
+
+        def scalars(self, q):
+            return [harness, general, extra]  # the general model is also pinned: it must not appear twice
+
+    settings = {"scheduler_mode": "hybrid", "preferred_resident_model": "general"}
+    monkeypatch.setattr(scheduler, "get_setting", lambda db, k: settings.get(k))
+    assert [m.alias for m in scheduler.resident_targets(Db())] == ["general", "harness", "extra"]
+    settings["scheduler_mode"] = "on_demand"
+    assert scheduler.resident_targets(Db()) == []  # on demand: nothing is kept
+
+
+def test_models_still_downloading_or_disabled_are_not_kept(monkeypatch):
+    ok, down, off = Model("ok", True), Model("down", True, ModelStatus.downloading), Model("off", True, ModelStatus.disabled)
+
+    class Db:
+        def scalar(self, q):
+            return None
+
+        def scalars(self, q):
+            return [ok, down, off]
+
+    monkeypatch.setattr(scheduler, "get_setting", lambda db, k: {"scheduler_mode": "hybrid"}.get(k))
+    assert [m.alias for m in scheduler.resident_targets(Db())] == ["ok"]
+
+
+def test_two_big_models_do_not_fit_together_and_the_message_says_how_much(monkeypatch):
+    a, b = Model("qwen3.5", True), Model("flash-next")
+    monkeypatch.setattr(scheduler, "resident_targets", lambda db: [a])
+    monkeypatch.setattr(scheduler, "model_memory_gb", lambda db, m, p=None: {"qwen3.5": 48.0, "flash-next": 91.0}[m.alias])
+    monkeypatch.setattr(scheduler, "budget", lambda db: {"schedulable_gb": 107.7})
+    ok, msg, items = scheduler.resident_fit(None, b)
+    assert not ok and "139 GB" in msg and "108 GB" in msg and "qwen3.5 48 GB" in msg and "gpu_memory_utilization" in msg
+    assert [i["alias"] for i in items] == ["qwen3.5", "flash-next"]
+    monkeypatch.setattr(scheduler, "model_memory_gb", lambda db, m, p=None: {"qwen3.5": 48.0, "flash-next": 40.0}[m.alias])
+    assert scheduler.resident_fit(None, b)[0]  # lowering the second one's reservation makes both fit
+    assert scheduler.resident_fit(None, a)[0]  # a model already kept is not counted twice
+
+
+def test_pinning_a_model_that_would_not_fit_is_refused_before_anything_changes(monkeypatch):
+    from fastapi import HTTPException
+
+    from app.routers import models as R
+
+    m = Model("harness")
+    m.runtime_config = None
+    monkeypatch.setattr(R, "_get_visible", lambda db, p, mid: m)
+    monkeypatch.setattr(R, "_can_manage", lambda p, mm: True)
+    monkeypatch.setattr(R.scheduler, "resident_fit", lambda db, mm: (False, "No caben juntos", [{"alias": "x", "gb": 91}]))
+    with pytest.raises(HTTPException) as e:
+        R.patch_model("id", R.ModelPatch(pinned=True), None, SimpleNamespace(is_admin=True), None)
+    assert e.value.status_code == 409 and e.value.detail["code"] == "pin_does_not_fit" and not m.pinned
+
+
+def test_missing_resident_models_are_loaded_one_at_a_time(monkeypatch):
+    a, b, c = Model("a"), Model("b"), Model("c")
+
+    class Db:
+        def execute(self, q):
+            return [("a",)]  # a is already loaded
+
+    @contextmanager
+    def session():
+        yield Db()
+
+    r = FakeRedis()
+    loaded = []
+
+    class SyncThread:
+        def __init__(self, target, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(scheduler, "SessionLocal", session)
+    monkeypatch.setattr(scheduler, "resident_targets", lambda db: [a, b, c])
+    monkeypatch.setattr(G, "oom_flagged", lambda mid: False)
+    monkeypatch.setattr(scheduler, "get_redis", lambda: r)
+    monkeypatch.setattr(scheduler, "ensure_loaded", lambda mid, wait_s=0: loaded.append(mid))
+    monkeypatch.setattr("threading.Thread", SyncThread)
+    assert scheduler.ensure_resident() == "b" and loaded == ["b"]  # only one per pass: big loads never overlap
+    r.kv["sah:resident:attempt:b"] = "b"  # b's attempt is still in its back-off window
+    assert scheduler.ensure_resident() == "c" and loaded == ["b", "c"]
 
 
 def test_the_hint_for_a_memory_kill_is_about_memory_not_about_remote_code():

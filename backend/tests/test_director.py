@@ -267,3 +267,46 @@ def test_a_chosen_agent_keeps_its_tools(monkeypatch):
 def test_the_word_program_alone_is_not_a_request_to_run_code():
     assert "code" not in D.decide(ask("para que sirve el programa hermes", level=1), boom).tools()
     assert "code" in D.decide(ask("hazme un programa que ordene una lista", level=1), boom).tools()
+
+
+def test_asking_not_to_use_the_internet_is_respected():
+    """Found while testing: «sin buscar nada en internet» was read as a request to search, and the model went browsing."""
+    for text in ("Explícame qué es una red neuronal, sin buscar nada en internet.", "No busques en la web, responde con lo que sabes",
+                 "Sin usar internet: ¿cuál es la capital de Portugal?", "Explain neural networks without searching the web",
+                 "Please don't search the internet for this", "no uses internet, dime qué es MuJoCo"):
+        d = D.decide(ask(text, level=1), boom)
+        assert not d.web and not d.research, text
+    assert D.decide(ask("Busca en internet las últimas noticias de vLLM", level=1), boom).web  # unchanged
+    assert D.decide(ask("No encuentro el archivo, busca en internet cómo se instala MuJoCo", level=1), boom).web  # a different «no»
+    assert D.decide(ask("Resume https://example.org sin buscar nada más en internet", level=1), boom).web  # an address is still an address
+    assert D.decide(ask("sin buscar en internet", level=1, allow={"web": "on"}), boom).web  # the chip set to «siempre» wins
+
+
+# ------------------------------------------------------------------ the stream that carries the words to the screen
+
+
+def test_the_event_stream_follows_closely_while_words_flow_and_relaxes_when_quiet(monkeypatch):
+    import asyncio
+
+    from app.routers import playground as P
+
+    polls = [[{"type": "delta", "content": "a"}], []] + [[]] * 59 + [[{"type": "done"}]]
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    class Req:
+        async def is_disconnected(self):
+            return False
+
+    monkeypatch.setattr(P.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(P.turns, "events", lambda cid, idx: polls.pop(0) if polls else [])
+    monkeypatch.setattr(P.turns, "active", lambda cid: {"status": "running"})
+
+    async def run():
+        return [x async for x in P._tail("c1", Req(), 0)]
+
+    out = asyncio.run(run())
+    assert len(out) == 2 and '"delta"' in out[0] and '"done"' in out[1]
+    assert sleeps[0] == 0.04 and sleeps.count(0.04) == 49 and sleeps[-1] == 0.3  # 40 ms at first, 300 ms after a long silence

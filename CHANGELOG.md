@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.4 — 2026-11-06
+Several models always ready, and the words reach the screen as the model writes them.
+
+* **Keep several models loaded** (a main one for chat, others for a tool such as Hermes): «Mantener siempre cargado» on any model.
+  Pinned models are never unloaded for being idle nor evicted to make room, and now **load again by themselves after a restart or a
+  crash** (one at a time, protected by the memory guard; before it only the general model did). Pinning is refused up front if the
+  pinned models would not fit in memory together, saying how much each reserves and what to lower.
+* **Words arrive at the model's pace**: the chat stream polled for new text every 300 ms, so text came in bursts of ~50 characters;
+  it now follows every 40 ms while words flow (3 times a second when idle).
+* **The director respects «sin buscar nada en internet»** (and «no busques», «without searching the web»): it used to read it as an
+  order to search. A web address in the message still lets it read that page.
+
 ## 0.19.3 — 2026-11-06
 Answers appear at the model's own rhythm, a readable agent menu, and API clients can control reasoning.
 
