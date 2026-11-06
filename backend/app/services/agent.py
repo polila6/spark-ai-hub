@@ -1007,8 +1007,12 @@ class Runner:
                  (f"You are the Spark AI Hub assistant, the private AI platform{' of ' + org if org else ''}. You run "
                   "locally on an NVIDIA DGX Spark; conversations never leave this machine."),
                  f"{'Fecha' if es else 'Date'}: {_now_str()}. {'Usuario' if es else 'User'}: {user.display_name or user.username}.",
-                 "Responde en el idioma del usuario. Usa Markdown (tablas, listas, bloques de código, LaTeX con $...$)."
-                 if es else "Answer in the user's language. Use Markdown (tables, lists, code blocks, LaTeX with $...$)."]
+                 "Responde en el idioma del usuario. Usa Markdown (tablas, listas, bloques de código, LaTeX con $...$). "
+                 "No inventes: si no estás seguro de un dato concreto (una persona, una obra, una fecha, una cifra, una cita), "
+                 "dilo claramente en lugar de responder con seguridad, y ofrece buscarlo."
+                 if es else "Answer in the user's language. Use Markdown (tables, lists, code blocks, LaTeX with $...$). "
+                 "Do not make things up: if you are not sure of a specific fact (a person, a work, a date, a figure, a quote), "
+                 "say so plainly instead of answering with confidence, and offer to look it up."]
         if tools_on:
             docs = self.flags.get("docs", True)
             lines.append(

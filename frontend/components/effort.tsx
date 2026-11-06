@@ -11,7 +11,8 @@ export type PermState = "auto" | "on" | "off";
 export type Effort = { level: number; director: boolean; allow: { think: PermState; web: PermState; research: PermState } };
 export const DEFAULT_EFFORT: Effort = { level: 2, director: true, allow: { think: "auto", web: "auto", research: "off" } };
 
-export const useEffort = (key = "sah-effort") => usePersisted<Effort>(key, DEFAULT_EFFORT);
+// (v2: everybody starts again at «Equilibrado»; a slider left at «Instantáneo» by accident made answers invent facts)
+export const useEffort = (key = "sah-effort-v2") => usePersisted<Effort>(key, DEFAULT_EFFORT);
 
 /** Fields of a message request for this setting (the old booleans are kept for older servers). */
 export function effortBody(e: Effort) {

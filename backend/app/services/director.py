@@ -107,11 +107,19 @@ RESEARCH_WORDS = re.compile(r"\b(investiga a fondo|investigaci[oó]n (?:a fondo|
                             r"informe (?:completo|detallado|exhaustivo) sobre|deep research|literature review|in-depth report)\b", re.I)
 # «sin buscar nada en internet», «no busques en la web», «without searching the web»: asking NOT to use the web
 NO_WEB = re.compile(r"\b(?:sin|nunca|no)\s+(?:(?:vayas a|tienes que|hace falta|necesitas|quiero que|te pido que|debes|puedes)\s+)?"
-                    r"(?:buscar|busques|b[uú]squedas?|navegar|navegues|usar\s+(?:la\s+)?(?:web|internet)|usar\s+el\s+navegador|"
-                    r"consultar\s+(?:la\s+)?(?:web|internet)|acceso\s+a\s+internet)\b(?:\s+nada)?(?:\s+en\s+(?:internet|la\s+web|l[ií]nea|online))?|"
+                    r"(?:buscar|busques|b[uú]squedas?|navegar|navegues|us(?:ar|es)\s+(?:la\s+)?(?:web|internet)|us(?:ar|es)\s+el\s+navegador|"
+                    r"consult(?:ar|es)\s+(?:la\s+)?(?:web|internet)|acceso\s+a\s+internet)\b(?:\s+nada)?(?:\s+en\s+(?:internet|la\s+web|l[ií]nea|online))?|"
                     r"\bsin\s+(?:internet|la\s+web|conexi[oó]n)\b|"
                     r"\b(?:don'?t|do\s+not|without|no)\s+(?:use\s+|using\s+|need\s+to\s+)?(?:search\w*|brows\w+|the\s+web|the\s+internet|internet)\b"
                     r"(?:\s+(?:the\s+)?(?:web|internet|online))?", re.I)
+# Facts about specific people, works, dates or figures are where a model most often invents things with total confidence
+# («¿quién fue Chiquito de la Calzada?» answered with an invented 18th-century engineer): they are checked, at every level.
+FACT_WORDS = re.compile(r"\b(?:qui[eé]n(?:es)?\s+(?:es|era|fue|fueron|son|ser[aá]|invent[oó]|escribi[oó]|descubri[oó]|gan[oó]|dirige|dirigi[oó]|compuso|pint[oó]|cre[oó])|"
+                        r"who\s+(?:is|was|were|invented|wrote|discovered|won|directed|composed|painted|created)|biograf[ií]a\s+de|"
+                        r"cu[aá]ndo\s+(?:naci[oó]|muri[oó]|se\s+fund[oó]|se\s+estren[oó]|ocurri[oó])|d[oó]nde\s+(?:naci[oó]|vive|vivi[oó]|est[aá])|"
+                        r"en\s+qu[eé]\s+a[nñ]o\s+(?:naci[oó]|muri[oó]|se\s+|ocurri[oó]|gan[oó])|cu[aá]ntos?\s+(?:habitantes|a[nñ]os\s+tiene|mide|pesa)|"
+                        r"(?:[uú]ltima|primera)\s+(?:palabra|frase|l[ií]nea)\s+de|cita\s+(?:textual|exacta))\b|"
+                        r"\b(?:qu[eé]|what)\s+(?:es|fue|son|significa|is|are|does)\s+(?:(?:el|la|los|las|un|una|the|a|an)\s+)?(?-i:[A-ZÁÉÍÓÚÑ][\w'’.-]+)", re.I)
 DOC_WORDS = re.compile(r"\b(mis? (?:documentos?|archivos?|notas|papers?|art[ií]culos|informes?|datos|ficheros|pdfs?)|(?:en|de) (?:mi|el|nuestro) "
                        r"(?:proyecto|repositorio|carpeta|drive|base de conocimiento|colecci[oó]n)|seg[uú]n (?:mis|mi|el|los) (?:documentos?|archivos?|notas|informe)|"
                        r"en los (?:documentos|archivos|papers)|(?:este|ese|el) (?:archivo|documento|pdf|excel|csv)|adjunt\w+|"
@@ -165,6 +173,9 @@ def classify(ask: Ask) -> Signals:
         s.why.append("se refiere a tus documentos")
     elif ask.project:
         s.docs = True  # a project chat: its documents may matter, but that is for the model to judge (not confident)
+    if FACT_WORDS.search(text):
+        s.web = s.confident = True
+        s.why.append("dato sobre una persona, obra, fecha o cifra concreta: se comprueba")
     if RESEARCH_WORDS.search(text):
         s.research = s.web = s.agents = s.confident = True
         s.why.append("pide una investigación a fondo")
@@ -190,7 +201,8 @@ PROMPT = ("You route requests for an assistant. Decide which capabilities the us
           '{"think":bool,"docs":bool,"web":bool,"code":bool,"skills":bool,"agents":bool,"research":bool,"reason":"<=8 words"}. '
           "think: multi-step reasoning, maths, debugging, planning. docs: ONLY when the message is about the user's own "
           "documents, files, notes, attachments or project (never for general knowledge or for programs, people or topics "
-          "that need not be in their files). web: current or external facts, or a URL. code: run "
+          "that need not be in their files). web: current or external facts, or a URL, and ANY fact about a specific person, place, work, date, number or quote "
+          "(a model invents these with confidence: when in doubt about a named entity choose web). code: run "
           "code, analyse data files, make charts or files. skills: office documents or specialised procedures. agents: only "
           "big parallel jobs. research: only an explicit in-depth research report. Everything false for chit-chat, simple "
           "questions, translation, rewriting, or explanations from general knowledge. Only choose among the available ones.")

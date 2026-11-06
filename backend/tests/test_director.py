@@ -310,3 +310,17 @@ def test_the_event_stream_follows_closely_while_words_flow_and_relaxes_when_quie
     out = asyncio.run(run())
     assert len(out) == 2 and '"delta"' in out[0] and '"done"' in out[1]
     assert sleeps[0] == 0.04 and sleeps.count(0.04) == 49 and sleeps[-1] == 0.3  # 40 ms at first, 300 ms after a long silence
+
+
+def test_facts_about_a_specific_person_work_or_date_are_checked_even_at_the_fast_levels():
+    """Found in a real chat: «¿quién fue Chiquito de la Calzada?» at the Instant level got an invented 18th-century engineer."""
+    for text in ("quien fue chiquito de la calzada?", "¿Quién es Gregorio Sánchez?", "who was Alan Turing", "cuándo murió Cervantes",
+                 "y cual es la ultima palabra de el Quijote", "qué es Hermes", "What is Kimodo?", "biografía de Ada Lovelace",
+                 "¿Cuántos habitantes tiene Valencia?"):
+        for level in (0, 1):
+            d = D.decide(ask(text, level=level), boom)
+            assert d.web, (text, level)
+    for text in ("Explícame qué es la fotosíntesis", "qué es una red neuronal", "Hola, gracias", "reescribe este párrafo con otro tono"):
+        assert not D.decide(ask(text, level=0), boom).web, text  # general knowledge and small talk stay quick
+    assert not D.decide(ask("quién fue Cervantes, sin buscar nada en internet", level=1), boom).web  # an explicit «no» still wins
+    assert D.decide(ask("quién fue Cervantes", level=0, allow={"web": "off"}), boom).web is False

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.19.6 — 2026-11-06
+Answers about people and facts are checked instead of invented.
+
+* **Facts are verified at every level.** «¿Quién fue Chiquito de la Calzada?» at the Instant level got an invented 18th-century
+  engineer, with sources and dates, because nothing was offered to check it. Questions about a specific person, work, date or figure
+  («quién fue/es…», «cuándo murió…», «última palabra de…», «qué es <Nombre>», «cuántos habitantes…») now always get the web, even at
+  Instant/Fast; general knowledge and small talk stay quick. An explicit «sin buscar en internet» still wins.
+* The assistant is told not to make things up: if it is not sure of a specific name, date, figure or quote it must say so and offer to look.
+* The director's model prompt now treats any fact about a named entity as a web question when in doubt.
+* The effort slider starts again at «Equilibrado» for everybody (a slider left at «Instantáneo» by accident was behind several bad answers).
+
 ## 0.19.5 — 2026-11-06
 Select several and act on all of them, and the GPU panel works again.
 
