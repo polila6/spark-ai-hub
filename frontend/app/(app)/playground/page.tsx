@@ -1,12 +1,13 @@
 "use client";
 import {
-  Bookmark, Bot, Brain, ChevronDown, Eye, Globe, Download, FileText, FolderKanban, Image as ImageIcon, ListPlus, Loader2, MessageSquarePlus, MessagesSquare,
+  Bookmark, Bot, Brain, CheckSquare, ChevronDown, Eye, Globe, Download, FileText, FolderKanban, Image as ImageIcon, ListPlus, Loader2, MessageSquarePlus, MessagesSquare,
   Paintbrush, Paperclip, Search, Send, SlidersHorizontal, Sparkles, Square, Table2, Telescope, Trash2, Volume2, Wrench, X,
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { AgentPicker } from "@/components/agent-picker";
+import { BulkBar, BulkDeleteConfirm, SelectBox, useBulk, useSelection } from "@/components/bulk";
 import { AnswerMarkdown } from "@/components/deliverable-link";
 import { effortBody, effortFrom, EffortSlider, PermChips, useEffort } from "@/components/effort";
 import remarkGfm from "remark-gfm";
@@ -149,6 +150,12 @@ function Chat() {
   const { data: agentData } = useSWR("/api/v1/agents");
   const [projectId, setProjectId] = useState<string>(sp.get("project") ?? "");
   const { data: convs, mutate: mutConvs } = useSWR(`/api/v1/playground/conversations${projectId ? `?project_id=${projectId}` : ""}`);
+  // select several chats and act on them at once (delete) instead of opening each one
+  const [selecting, setSelecting] = useState(false);
+  const convIds = useMemo(() => (convs?.mine ?? []).map((c: any) => c.id as string), [convs]);
+  const chatSel = useSelection(convIds);
+  const [delChats, setDelChats] = useState(false);
+  const bulkChats = useBulk("/api/v1/playground/conversations/bulk", () => { mutConvs(); });
   const chatModels = useMemo(() => (models ?? []).filter((m: any) => m.capabilities?.includes("chat") && ["installed", "ready", "loading", "busy"].includes(m.status)), [models]);
   const [cid, setCid] = useState<string | null>(null);
   const { data: canvases, mutate: mutCanvases } = useSWR(cid ? `/api/v1/canvas?conversation_id=${cid}` : null);
@@ -469,27 +476,54 @@ function Chat() {
     <div className={cx("grid h-[calc(100dvh-10.5rem)] gap-4 lg:h-[calc(100vh-7.5rem)]", canvas ? "lg:grid-cols-[230px_minmax(0,1fr)_minmax(0,1.1fr)]" : options ? "lg:grid-cols-[230px_minmax(0,1fr)] xl:grid-cols-[230px_minmax(0,1fr)_280px]" : "lg:grid-cols-[230px_minmax(0,1fr)]")}>
       <h1 className="sr-only">{L("Chat", "Chat")}</h1>
       {drawer && <div className="fixed inset-0 z-[60] bg-black/40 lg:hidden" onClick={() => setDrawer(false)} />}
-      <Card className={cx("flex-col overflow-hidden lg:flex", drawer ? "fixed inset-y-0 left-0 z-[61] flex w-[85vw] max-w-sm rounded-none" : "hidden")} onClick={(e) => { if ((e.target as HTMLElement).closest("li button")) setDrawer(false); }}>
+      <Card className={cx("flex-col overflow-hidden lg:flex", drawer ? "fixed inset-y-0 left-0 z-[61] flex w-[85vw] max-w-sm rounded-none" : "hidden")} onClick={(e) => { if (!selecting && (e.target as HTMLElement).closest("li button")) setDrawer(false); }}>
         <div className="space-y-2 border-b border-border p-3">
           <Button variant="primary" className="w-full" onClick={newChat}><MessageSquarePlus className="h-4 w-4" />{t("play.new")}</Button>
-          <div className="relative"><Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-subtle" /><Input className="h-8 pl-8 text-xs" placeholder={L("Buscar en tus chats…", "Search your chats…")} value={q} onChange={(e) => setQ(e.target.value)} /></div>
+          <div className="flex items-center gap-1.5">
+            <div className="relative min-w-0 flex-1"><Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-subtle" /><Input className="h-8 pl-8 text-xs" placeholder={L("Buscar en tus chats…", "Search your chats…")} value={q} onChange={(e) => setQ(e.target.value)} /></div>
+            <Tip text={selecting ? L("Salir de la selección", "Leave selection") : L("Seleccionar varios chats para borrarlos de una vez (también Ctrl/Cmd-clic en un chat)", "Select several chats to delete them at once (also Ctrl/Cmd-click a chat)")}>
+              <Button size="icon" variant={selecting ? "outline" : "ghost"} className="h-8 w-8 shrink-0" aria-pressed={selecting} aria-label={L("Seleccionar chats", "Select chats")}
+                onClick={() => { setSelecting(!selecting); chatSel.clear(); }}><CheckSquare className="h-4 w-4" /></Button>
+            </Tip>
+          </div>
           {(projects?.length ?? 0) > 0 && <Select className="h-8 text-xs" aria-label={L("Proyecto", "Project")} value={projectId} onChange={(e) => { setProjectId(e.target.value); setCid(null); setMsgs([]); setPreferredAgent(""); }}>
             <option value="">{L("Todos los chats (sin proyecto)", "All chats (no project)")}</option>
             {(projects ?? []).map((p: any) => <option key={p.id} value={p.id}>📁 {p.name}</option>)}
           </Select>}
         </div>
+        {selecting && q.trim().length <= 1 && (
+          <div className="space-y-2 border-b border-border px-3 py-2">
+            <label className="flex items-center gap-2 text-xs text-muted">
+              <SelectBox checked={chatSel.all} indeterminate={chatSel.some} onChange={() => chatSel.toggleAll()} label={L("Seleccionar todos los chats", "Select all chats")} />
+              {chatSel.count ? L(`${chatSel.count} seleccionados`, `${chatSel.count} selected`) : L("Marca los chats (Mayús para un rango)", "Tick the chats (Shift for a range)")}
+            </label>
+            {chatSel.count > 0 && <BulkBar count={chatSel.count} onClear={chatSel.clear} noun={[L("chat", "chat"), L("chats", "chats")]}
+              actions={[{ key: "delete", label: L("Borrar", "Delete"), icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, onClick: () => setDelChats(true) }]} />}
+          </div>
+        )}
         <ul className="flex-1 space-y-0.5 overflow-y-auto p-2">
           {q.trim().length > 1 ? (found ?? []).map((r: any) => (
             <li key={r.id}><button className="w-full rounded-lg px-2 py-1.5 text-left hover:bg-elevated" onClick={() => openConv(r.id)}><p className="truncate text-sm">{r.title}</p><p className="line-clamp-2 text-[11px] text-muted">{r.snippet}</p></button></li>
           )) : convs?.mine?.map((c: any) => (
-            <li key={c.id} className={cx("group flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm", cid === c.id ? "bg-accent/12" : "hover:bg-elevated")}>
-              <button className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left" onClick={() => openConv(c.id)} title={c.title}>{activeIds.has(c.id) && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-info" />}<span className="truncate">{c.project_id && !projectId ? "📁 " : ""}{c.title}</span></button>
-              <a className="opacity-0 group-hover:opacity-100" href={`/api/v1/playground/conversations/${c.id}/export?fmt=md`} aria-label={t("common.export")}><Download className="h-3.5 w-3.5 text-muted" /></a>
-              <button className="opacity-0 group-hover:opacity-100" aria-label={t("common.delete")} onClick={async () => { await api(`/api/v1/playground/conversations/${c.id}`, { method: "DELETE" }); if (cid === c.id) { setCid(null); setMsgs([]); } mutConvs(); }}><Trash2 className="h-3.5 w-3.5 text-muted" /></button>
+            <li key={c.id} className={cx("group flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm", chatSel.has(c.id) ? "bg-accent/20" : cid === c.id ? "bg-accent/12" : "hover:bg-elevated")}>
+              {selecting && <SelectBox checked={chatSel.has(c.id)} onChange={(_, shift) => chatSel.toggle(c.id, shift)} label={L(`Seleccionar «${c.title}»`, `Select “${c.title}”`)} />}
+              <button className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left" title={c.title}
+                onClick={(e) => { if (selecting) chatSel.toggle(c.id, e.shiftKey); else if (e.ctrlKey || e.metaKey) { setSelecting(true); chatSel.toggle(c.id); } else openConv(c.id); }}>{activeIds.has(c.id) && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-info" />}<span className="truncate">{c.project_id && !projectId ? "📁 " : ""}{c.title}</span></button>
+              <a className={cx("opacity-0 group-hover:opacity-100", selecting && "hidden")} href={`/api/v1/playground/conversations/${c.id}/export?fmt=md`} aria-label={t("common.export")}><Download className="h-3.5 w-3.5 text-muted" /></a>
+              <button className={cx("opacity-0 group-hover:opacity-100", selecting && "hidden")} aria-label={t("common.delete")} onClick={async () => { await api(`/api/v1/playground/conversations/${c.id}`, { method: "DELETE" }); if (cid === c.id) { setCid(null); setMsgs([]); } mutConvs(); }}><Trash2 className="h-3.5 w-3.5 text-muted" /></button>
             </li>
           ))}
           {q.trim().length > 1 && found && !found.length && <p className="px-2 py-4 text-center text-xs text-muted">{L("Sin resultados", "No results")}</p>}
         </ul>
+        <BulkDeleteConfirm open={delChats} onOpenChange={setDelChats} busy={bulkChats.busy} noun={[L("chat", "chat"), L("chats", "chats")]}
+          names={(convs?.mine ?? []).filter((c: any) => chatSel.has(c.id)).map((c: any) => c.title)}
+          onConfirm={async () => {
+            const ids = chatSel.list();
+            const r = await bulkChats.run({ ids, action: "delete" }, (n) => L(`${n} chats borrados`, `${n} chats deleted`));
+            if (r && cid && ids.includes(cid) && !r.skipped.some((s) => s.id === cid)) { setCid(null); setMsgs([]); }  // the one being read is gone
+            chatSel.clear(); setDelChats(false);
+            if (r && r.skipped.length === 0) setSelecting(false);
+          }} />
       </Card>
 
       <Card className={cx("relative flex min-h-0 flex-col overflow-hidden", drag && "ring-2 ring-accent")}

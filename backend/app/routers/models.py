@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -15,8 +16,10 @@ from ..deps import (Principal, current_principal, not_found, require_admin, requ
 from ..engines import EngineError, get_engine
 from ..models import ModelInstallation, ModelStatus, RegisteredModel, RuntimeInstance, SharedResource, Visibility
 from ..services import compat, llm, registry, scheduler
+from ..settings_store import get_setting
 
 router = APIRouter(prefix="/api/v1/models", tags=["models"])
+NOT_ALLOWED = "No encontrado o sin permiso"
 
 VLLM_PARAM_KEYS = {"max_model_len", "gpu_memory_utilization", "max_num_seqs", "dtype", "kv_cache_dtype",
                    "quantization", "trust_remote_code", "enable_tool_calling", "tool_call_parser", "reasoning_parser",
@@ -477,9 +480,14 @@ def share_model(model_id: uuid.UUID, body: ShareIn, request: Request, p: Princip
     return {"ok": True}
 
 
-@router.delete("/{model_id}")
-def delete_model(model_id: uuid.UUID, request: Request, p: Principal = Depends(require_researcher),
-                 db: Session = Depends(get_db), delete_files: bool = True):
+class BulkIn(BaseModel):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    action: Literal["delete"]
+    delete_files: bool = True
+
+
+def _remove_model(db: Session, p: Principal, model_id: uuid.UUID, delete_files: bool) -> tuple[str, dict]:
+    """The deletion of one model with every check (permissions, active jobs, loaded). Returns (alias, what was removed)."""
     m = _get_visible(db, p, model_id)
     if not _can_manage(p, m):
         raise HTTPException(403, detail={"code": "forbidden", "message": "Only owner/admin can delete"})
@@ -494,6 +502,7 @@ def delete_model(model_id: uuid.UUID, request: Request, p: Principal = Depends(r
             raise HTTPException(409, detail={"code": e.code, "message": e.message})
         db.expire_all()
         m = db.get(RegisteredModel, model_id)
+    alias = m.alias
     registry.mark(db, m, ModelStatus.removing, None, actor_id=p.id)
     db.commit()
     removed = {"removed": []}
@@ -507,8 +516,47 @@ def delete_model(model_id: uuid.UUID, request: Request, p: Principal = Depends(r
     db.query(SharedResource).filter(SharedResource.resource_type == "model", SharedResource.resource_id == m.id).delete()
     db.delete(m)
     db.commit()
+    return alias, removed
+
+
+@router.post("/bulk")
+def bulk_models(body: BulkIn, request: Request, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    """Delete several models at once. Every one goes through the same checks as deleting it alone; the pinned ones and the main
+    model are also left alone here (unpin them first: a mass delete must not take the always-loaded model by surprise). What
+    cannot be deleted is reported in `skipped` with the reason; the others go ahead."""
+    done, skipped, handled = 0, [], []
+    for mid in dict.fromkeys(body.ids):
+        try:
+            m = _get_visible(db, p, mid)
+        except HTTPException:
+            m = None
+        if m is None or not _can_manage(p, m):
+            skipped.append({"id": str(mid), "name": None, "reason": NOT_ALLOWED})  # missing, hidden or not yours: one answer
+            continue
+        if m.pinned or get_setting(db, "preferred_resident_model") == m.alias:
+            skipped.append({"id": str(mid), "name": m.alias, "reason": "está fijado como siempre cargado o es el modelo general: quítale la fijación antes"})
+            continue
+        try:
+            alias, _removed = _remove_model(db, p, mid, body.delete_files)
+        except HTTPException as e:
+            d = e.detail if isinstance(e.detail, dict) else {}
+            reason = {"in_use": "lo usan trabajos activos", "forbidden": NOT_ALLOWED}.get(d.get("code"), d.get("message") or "no se pudo borrar")
+            skipped.append({"id": str(mid), "name": m.alias, "reason": reason})
+            continue
+        handled.append(alias)
+        done += 1
+    audit(db, "models.bulk_delete", actor=p.user, request=request, target_type="model",
+          details={"requested": len(set(body.ids)), "done": done, "skipped": len(skipped), "delete_files": body.delete_files,
+                   "aliases": handled[:200]})
+    return {"done": done, "skipped": skipped}
+
+
+@router.delete("/{model_id}")
+def delete_model(model_id: uuid.UUID, request: Request, p: Principal = Depends(require_researcher),
+                 db: Session = Depends(get_db), delete_files: bool = True):
+    alias, removed = _remove_model(db, p, model_id, delete_files)
     audit(db, "models.delete", actor=p.user, request=request, target_type="model", target_id=str(model_id),
-          details={"alias": m.alias, **removed})
+          details={"alias": alias, **removed})
     return {"ok": True, **removed}
 
 

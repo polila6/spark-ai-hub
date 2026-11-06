@@ -7,7 +7,7 @@ import { Guide } from "@/components/guide";
 import { MemoryPanel } from "@/components/memory";
 import { Badge, Card, CardBody, CardHeader, Empty, Notice, PageHeader, Progress, Skeleton, StatusBadge, Tip } from "@/components/ui";
 import { ago, bytes, num, pct, rate } from "@/lib/format";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, tr } from "@/lib/i18n";
 
 const ENGINE_NAMES: Record<string, string> = { ollama: "Ollama", vllm: "vLLM", comfyui: "ComfyUI", mlworker: "ML worker" };
 
@@ -54,7 +54,7 @@ export default function Dashboard() {
               spark={<Spark data={series} dataKey="mem_used_percent" color="rgb(var(--info))" domain={[0, 100]} />} />
             <Metric label={t("dash.gpu")} icon={<Zap className="h-4 w-4" />} unavailable={!g?.available}
               value={g?.available ? pct(g.utilization_percent) : unav}
-              sub={g?.available ? `${num(g.temperature_c, 0, " °C")} · ${num(g.power_w, 1, " W")} · ${num(g.sm_clock_mhz, 0, " MHz")}` : g?.reason}
+              sub={g?.available ? `${num(g.temperature_c, 0, " °C")} · ${num(g.power_w, 1, " W")} · ${num(g.sm_clock_mhz, 0, " MHz")}` : g?.nvml_lost ? tr("El monitor perdió el acceso a la GPU; se reinicia solo en un par de minutos (la GPU está bien)", "The monitor lost access to the GPU; it restarts itself in a couple of minutes (the GPU is fine)") : g?.reason}
               spark={<Spark data={series} dataKey="gpu_util" color="rgb(var(--warn))" domain={[0, 100]} />} />
             <Metric label={t("dash.disk")} icon={<HardDrive className="h-4 w-4" />} value={pct(disk?.used_percent)}
               sub={`${bytes(disk?.free_bytes)} libres de ${bytes(disk?.total_bytes)} · R ${rate(m.disk_io?.read_bps)} · W ${rate(m.disk_io?.write_bps)}`}

@@ -121,8 +121,11 @@ def gpu() -> dict:
                            capture_output=True, text=True, timeout=8)
     except (subprocess.TimeoutExpired, OSError) as e:
         return {"available": False, "reason": str(e)}
-    if r.returncode != 0:
-        return {"available": False, "reason": r.stderr.strip()[:200]}
+    if r.returncode != 0 or "failed to initialize nvml" in (r.stdout + r.stderr).lower():
+        # nvidia-smi writes «Failed to initialize NVML: Unknown Error» to stdout: do not show an empty reason
+        msg = (r.stderr.strip() or r.stdout.strip())[:200] or "nvidia-smi failed"
+        # inside a container this means the container lost its access to the GPU (it works on the host): a restart gets it back
+        return {"available": False, "reason": msg, "nvml_lost": "nvml" in msg.lower()}
     vals = [v.strip() for v in r.stdout.strip().splitlines()[0].split(",")]
 
     def num(v):

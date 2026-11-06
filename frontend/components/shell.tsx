@@ -138,6 +138,9 @@ function Bell_() {
               <p className="mt-1 text-[10px] text-subtle">{new Date(n.created_at).toLocaleString()}</p>
             </DM.Item>
           ))}
+          <DM.Item onSelect={() => router.push("/notifications")} className="mt-1 cursor-pointer rounded-lg border-t border-border px-3 py-2 text-center text-xs font-medium text-accent outline-none data-[highlighted]:bg-elevated">
+            {L("Ver todas y gestionarlas", "See all and manage them")}
+          </DM.Item>
         </DM.Content>
       </DM.Portal>
     </DM.Root>

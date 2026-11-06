@@ -1,9 +1,10 @@
 "use client";
-import { FolderKanban, MessageSquarePlus, Share2, Trash2, Upload, X } from "lucide-react";
+import { CheckSquare, FolderKanban, MessageSquarePlus, Share2, Trash2, Upload, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
 import useSWR from "swr";
+import { BulkBar, BulkDeleteConfirm, SelectBox, useBulk, useSelection } from "@/components/bulk";
 import { hubFile, useFileViewer } from "@/components/file-viewer";
 import { TextStatus, UploadDialog } from "@/components/files";
 import { Guide } from "@/components/guide";
@@ -28,6 +29,12 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [share, setShare] = useState(false);
   const [sh, setSh] = useState({ username: "", permission: "read" });
   const [err, setErr] = useState<any>(null);
+  // select several of the project's chats and delete them at once
+  const [selecting, setSelecting] = useState(false);
+  const [delChats, setDelChats] = useState(false);
+  const chatList: any[] = p?.conversations_list ?? [];
+  const chatSel = useSelection(chatList.map((c: any) => c.id as string));
+  const bulkChats = useBulk("/api/v1/playground/conversations/bulk", () => { mutate(); });
   useEffect(() => { if (p) setF({ name: p.name, description: p.description, instructions: p.instructions, default_model: p.default_model ?? "" }); }, [p]);
   if (error) return <ErrorBox error={error} />;
   if (!p || !f) return null;
@@ -55,9 +62,39 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             )}
           </Card>
           <Card>
-            <CardHeader title={L("Tus chats en este proyecto", "Your chats in this project")} />
-            {!p.conversations_list?.length ? <Empty title={L("Sin chats todavía", "No chats yet")} /> : (
-              <ul className="divide-y divide-border/60">{p.conversations_list.map((c: any) => <li key={c.id}><Link href={`/playground?c=${c.id}`} className="flex justify-between px-5 py-2.5 text-sm hover:bg-elevated"><span className="truncate">{c.title}</span><span className="text-xs text-subtle">{ago(c.updated_at, lang)}</span></Link></li>)}</ul>
+            <CardHeader title={L("Tus chats en este proyecto", "Your chats in this project")}
+              actions={chatList.length > 0 ? <Button size="sm" variant={selecting ? "outline" : "ghost"} aria-pressed={selecting} onClick={() => { setSelecting(!selecting); chatSel.clear(); }}><CheckSquare className="h-3.5 w-3.5" />{selecting ? L("Listo", "Done") : L("Seleccionar", "Select")}</Button> : undefined} />
+            {!chatList.length ? <Empty title={L("Sin chats todavía", "No chats yet")} /> : (
+              <>
+                {selecting && (
+                  <div className="space-y-2 border-b border-border px-5 py-2">
+                    <label className="flex items-center gap-2 text-xs text-muted">
+                      <SelectBox checked={chatSel.all} indeterminate={chatSel.some} onChange={() => chatSel.toggleAll()} label={L("Seleccionar todos los chats", "Select all chats")} />
+                      {chatSel.count ? L(`${chatSel.count} seleccionados`, `${chatSel.count} selected`) : L("Marca los chats (Mayús para un rango)", "Tick the chats (Shift for a range)")}
+                    </label>
+                    <BulkBar count={chatSel.count} onClear={chatSel.clear} noun={[L("chat", "chat"), L("chats", "chats")]}
+                      actions={[{ key: "delete", label: L("Borrar", "Delete"), icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, onClick: () => setDelChats(true) }]} />
+                  </div>
+                )}
+                <ul className="divide-y divide-border/60">{chatList.map((c: any) => <li key={c.id} className={chatSel.has(c.id) ? "bg-accent/10" : undefined}>
+                  {selecting ? (
+                    <div role="button" tabIndex={0} className="flex cursor-pointer items-center gap-3 px-5 py-2.5 text-sm hover:bg-elevated" onClick={(e) => chatSel.toggle(c.id, e.shiftKey)}
+                      onKeyDown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); chatSel.toggle(c.id); } }}>
+                      <SelectBox checked={chatSel.has(c.id)} onChange={(_, shift) => chatSel.toggle(c.id, shift)} label={L(`Seleccionar «${c.title}»`, `Select “${c.title}”`)} />
+                      <span className="min-w-0 flex-1 truncate">{c.title}</span><span className="text-xs text-subtle">{ago(c.updated_at, lang)}</span>
+                    </div>
+                  ) : (
+                    <Link href={`/playground?c=${c.id}`} className="flex justify-between px-5 py-2.5 text-sm hover:bg-elevated"><span className="truncate">{c.title}</span><span className="text-xs text-subtle">{ago(c.updated_at, lang)}</span></Link>
+                  )}
+                </li>)}</ul>
+                <BulkDeleteConfirm open={delChats} onOpenChange={setDelChats} busy={bulkChats.busy} noun={[L("chat", "chat"), L("chats", "chats")]}
+                  names={chatList.filter((c: any) => chatSel.has(c.id)).map((c: any) => c.title)}
+                  onConfirm={async () => {
+                    const r = await bulkChats.run({ ids: chatSel.list(), action: "delete" }, (n) => L(`${n} chats borrados`, `${n} chats deleted`));
+                    chatSel.clear(); setDelChats(false);
+                    if (r && r.skipped.length === 0) setSelecting(false);
+                  }} />
+              </>
             )}
           </Card>
         </div>

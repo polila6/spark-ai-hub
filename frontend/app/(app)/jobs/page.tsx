@@ -1,13 +1,14 @@
 "use client";
-import { ListChecks, RotateCcw, X } from "lucide-react";
-import { Suspense, useEffect, useState } from "react";
+import { Ban, ListChecks, RotateCcw, X } from "lucide-react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
+import { BulkBar, BulkDeleteConfirm, DeleteIcon, SelectBox, useBulk, useSelection } from "@/components/bulk";
 import { Guide } from "@/components/guide";
 import { Badge, Button, Card, CardBody, CardHeader, Empty, Modal, PageHeader, Progress, Select, Skeleton, StatusBadge, Switch, Table, Td } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ago, bytes, dt, duration } from "@/lib/format";
-import { useI18n, tr } from "@/lib/i18n";
+import { useI18n, useL, tr } from "@/lib/i18n";
 import { useMe, useToast } from "@/lib/providers";
 
 function JobDetail({ id, onClose }: { id: string; onClose: () => void }) {
@@ -63,17 +64,33 @@ function JobsInner() {
     es.onmessage = () => mutate();
     return () => es.close();
   }, [mutate]);
+  // several jobs at once: cancel the running ones, delete the finished ones (the server skips what does not apply and says why)
+  const L = useL();
+  const ids = useMemo<string[]>(() => (data?.items ?? []).map((j: any) => j.id), [data]);
+  const sel = useSelection(ids);
+  const bulk = useBulk("/api/v1/jobs/bulk", () => { sel.clear(); mutate(); });
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const titleOf = (id: string) => { const j = data?.items?.find((x: any) => x.id === id); return j?.title || id.slice(0, 8); };
   return (
     <div>
       <PageHeader title={t("jobs.title")} subtitle={t("jobs.subtitle")} icon={<ListChecks className="h-5 w-5" />}
         actions={<><Select className="w-40" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">{t("common.all")}</option>{["queued", "running", "completed", "failed", "cancelled", "interrupted"].map((s) => <option key={s} value={s}>{t(`state.${s}`)}</option>)}</Select>
           {me?.role === "admin" && <Switch checked={all} onChange={setAll} label={t("jobs.all_users")} />}</>} />
       <Guide id="jobs" />
+      <BulkBar count={sel.count} onClear={sel.clear} noun={[L("trabajo seleccionado", "job selected"), L("trabajos seleccionados", "jobs selected")]} actions={[
+        { key: "cancel", label: L("Cancelar los que estén en marcha", "Cancel the running ones"), icon: <Ban className="h-3.5 w-3.5" />, disabled: bulk.busy,
+          onClick: () => bulk.run({ ids: sel.list(), action: "cancel" }, (n) => L(`${n} cancelados`, `${n} cancelled`)) },
+        { key: "delete", label: L("Borrar los terminados", "Delete the finished ones"), icon: DeleteIcon, danger: true, disabled: bulk.busy, onClick: () => setConfirmDelete(true) },
+      ]} />
+      <BulkDeleteConfirm open={confirmDelete} onOpenChange={setConfirmDelete} names={sel.list().map(titleOf)} noun={[L("trabajo", "job"), L("trabajos", "jobs")]} busy={bulk.busy}
+        extra={L("Solo se borran los que ya terminaron; los archivos que generaron se conservan.", "Only finished jobs are deleted; the files they produced are kept.")}
+        onConfirm={async () => { await bulk.run({ ids: sel.list(), action: "delete" }, (n) => L(`${n} borrados`, `${n} deleted`)); setConfirmDelete(false); }} />
       <Card>
         {!data ? <Skeleton className="h-40" /> : data.items.length === 0 ? <Empty /> : (
-          <Table head={[t("common.name"), t("jobs.type"), t("jobs.class"), t("common.status"), t("jobs.progress"), t("common.created"), tr("duración", "duration")]}>
+          <Table head={[<SelectBox key="all" checked={sel.all} indeterminate={sel.some} onChange={() => sel.toggleAll()} label={L("Seleccionar todos", "Select all")} />, t("common.name"), t("jobs.type"), t("jobs.class"), t("common.status"), t("jobs.progress"), t("common.created"), tr("duración", "duration")]}>
             {data.items.map((j: any) => (
-              <tr key={j.id} className="cursor-pointer hover:bg-elevated/40" onClick={() => setOpen(j.id)}>
+              <tr key={j.id} className={`cursor-pointer hover:bg-elevated/40 ${sel.has(j.id) ? "bg-accent/5" : ""}`} onClick={() => setOpen(j.id)}>
+                <Td className="w-8"><SelectBox checked={sel.has(j.id)} onChange={(_, shift) => sel.toggle(j.id, shift)} label={L("Seleccionar este trabajo", "Select this job")} /></Td>
                 <Td><span className="font-medium">{j.title || j.id.slice(0, 8)}</span>{j.message && <div className="max-w-sm truncate text-[11px] text-muted">{j.message}</div>}{j.error && <div className="max-w-sm truncate text-[11px] text-danger">{j.error}</div>}</Td>
                 <Td><Badge>{j.type}</Badge></Td><Td className="text-xs text-muted">{j.sched_class}</Td>
                 <Td><StatusBadge state={j.status} /></Td>

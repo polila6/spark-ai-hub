@@ -4,6 +4,7 @@ Cost is kept low: one /proc + nvidia-smi read every 5 s, one DB row per minute.
 """
 from __future__ import annotations
 
+import os
 import signal
 import statistics
 import threading
@@ -22,6 +23,15 @@ from .services import orchestrator, telemetry
 from .settings_store import get_setting
 
 SAMPLE_S = 5
+NVML_LOST_SAMPLES = 24  # 2 minutes without GPU readings because the container lost the GPU
+NVML_MIN_UPTIME_S = 180  # a fresh start that still cannot see the GPU is not restarted again at once (no restart loop)
+
+
+def should_restart_for_gpu(consecutive_lost: int, uptime_s: float, restarted_recently: bool) -> bool:
+    """The monitor container can lose its access to the GPU («Failed to initialize NVML: Unknown Error», e.g. after systemd
+    reloads cgroups); the host is fine and a restart gets it back. Exit (Docker restarts us) after 2 minutes of it, but never
+    in a loop."""
+    return consecutive_lost >= NVML_LOST_SAMPLES and uptime_s >= NVML_MIN_UPTIME_S and not restarted_recently
 _stop = threading.Event()
 HUB_SERVICES = {"postgres", "redis", "backend", "worker", "frontend", "proxy", "engine-manager", "ollama", "monitor"}
 
@@ -95,6 +105,9 @@ def evaluate_alerts(snap: dict, containers: list[dict] | None) -> None:
                f"Memory available {avail / 1e9:.1f} GB ({100 * avail / total:.1f}%), PSI some avg60={psi}",
                avail / total < 0.06 or (psi is not None and psi > 20))
         g = snap.get("gpu") or {}
+        _alert(db, "gpu_telemetry", "gpu", "warning",
+               f"GPU readings unavailable: {g.get('reason') or 'no data'}" + (" (the monitor restarts itself)" if g.get("nvml_lost") else ""),
+               g.get("available") is False)
         gt = g.get("temperature_c")
         if gt is not None:  # only when telemetry is reliable
             _alert(db, "gpu_temp", "temperature", "critical", f"GPU temperature {gt:.0f} °C ≥ {temp_c:.0f} °C", gt >= temp_c)
@@ -136,11 +149,18 @@ def main() -> None:
     last_containers = 0.0
     telemetry.snapshot(str(s.data_root))  # prime rate counters
     log.info("monitor.start")
+    started = time.time()
+    gpu_lost = 0
     while not _stop.wait(SAMPLE_S):
         try:
             open("/tmp/monitor-alive", "w").write(str(time.time()))
             snap = telemetry.snapshot(str(s.data_root))
             snap["measured"] = True
+            gpu_lost = gpu_lost + 1 if (snap.get("gpu") or {}).get("nvml_lost") else 0
+            if should_restart_for_gpu(gpu_lost, time.time() - started, bool(r.get("sah:monitor:gpu_restart"))):
+                r.set("sah:monitor:gpu_restart", "1", ex=1800)  # at most once every 30 minutes
+                log.error("monitor.gpu_lost_restarting", reason=(snap.get("gpu") or {}).get("reason"))
+                os._exit(75)  # restart: unless-stopped brings the container back with its GPU access
             r.set("sah:metrics:latest", orjson.dumps(snap), ex=60)
             r.lpush("sah:metrics:recent", orjson.dumps(_compact([snap]) | {"ts": snap["ts"]}))
             r.ltrim("sah:metrics:recent", 0, 719)  # 1 h at 5 s

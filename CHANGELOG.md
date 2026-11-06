@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.19.5 — 2026-11-06
+Select several and act on all of them, and the GPU panel works again.
+
+* **Bulk actions** (`POST …/bulk`, shared UI in `components/bulk.tsx`): checkboxes (shift-click selects a range), a bar with the
+  actions and a confirmation that names what will be deleted. **Jobs** (cancel the running, delete the finished), **model library**
+  (delete, with «also delete the files»; pinned models and the general one are left alone and say so), **My files**,
+  **notifications** (new page `/notifications`: mark read/unread, delete, «delete read») and **chats** (a «Seleccionar» mode in the chat
+  list and in a project's chats). Every item is checked with the rules of its single endpoint; a refused one is reported with the reason
+  and never stops the rest; missing and foreign ids get the same answer; one audit event per call.
+* **GPU in the panel**: the monitor container can lose its access to the GPU («Failed to initialize NVML: Unknown Error», the host is
+  fine) and the panel then said «no disponible» with an empty reason. The reason is now shown, an alert is raised, and the monitor
+  restarts itself after two minutes of it (never in a loop).
+* Fix: a stuck «in use» counter could keep an idle embedding model loaded for an hour; cleared by hand this time (structural fix pending).
+
 ## 0.19.4 — 2026-11-06
 Several models always ready, and the words reach the screen as the model writes them.
 

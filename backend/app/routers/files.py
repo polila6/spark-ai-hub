@@ -4,13 +4,15 @@ from __future__ import annotations
 import asyncio
 import uuid
 from pathlib import Path
+from typing import Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from ..audit import audit
 from ..db import get_db
 from ..deps import Principal, current_principal, not_found, require_researcher
 from ..models import KbDocument, Project, SchedClass, SharedResource, UserFile
@@ -143,6 +145,36 @@ async def upload_file(file: UploadFile = File(...), folder: str = Form(default="
         db.commit()
     f = await store_upload(db, p, file, folder=folder, project_id=pid, collection_ids=cids, index=add_to_knowledge)
     return files_svc.public(f)
+
+
+class BulkIn(BaseModel):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    action: Literal["delete"]
+
+
+@router.post("/bulk")
+def bulk_files(body: BulkIn, request: Request, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Delete several of your own files at once (the same as deleting each one). Anything that is not yours, or does not exist,
+    is reported in `skipped` with one and the same reason."""
+    done, skipped, handled = 0, [], []
+    for fid in dict.fromkeys(body.ids):
+        try:
+            f = own_file(db, p, fid)
+        except HTTPException:
+            skipped.append({"id": str(fid), "name": None, "reason": "No encontrado o sin permiso"})
+            continue
+        name = f.filename
+        try:
+            _remove_file(db, f)
+        except Exception as e:  # noqa: BLE001 — one file that cannot be removed must not stop the others
+            db.rollback()
+            skipped.append({"id": str(fid), "name": name, "reason": f"no se pudo borrar ({type(e).__name__})"})
+            continue
+        handled.append(str(fid))
+        done += 1
+    audit(db, "files.bulk_delete", actor=p.user, request=request, target_type="file",
+          details={"requested": len(set(body.ids)), "done": done, "skipped": len(skipped), "ids": handled[:200]})
+    return {"done": done, "skipped": skipped}
 
 
 @router.get("")
@@ -283,13 +315,16 @@ def reprocess(fid: uuid.UUID, p: Principal = Depends(current_principal), db: Ses
     return {"job_id": str(j.id)}
 
 
-@router.delete("/{fid}")
-def delete_file(fid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    f = own_file(db, p, fid)
+def _remove_file(db: Session, f: UserFile) -> None:
     for path in (files_svc.abs_path(f), files_svc.text_path(f), files_svc.pages_path(f)):
         path.unlink(missing_ok=True)
     db.delete(f)
     db.commit()
+
+
+@router.delete("/{fid}")
+def delete_file(fid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    _remove_file(db, own_file(db, p, fid))
     return {"ok": True}
 
 

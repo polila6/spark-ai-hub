@@ -110,6 +110,47 @@ def list_conversations(p: Principal = Depends(current_principal), db: Session = 
     return {"mine": [_conv_pub(c) for c in rows], "shared": [_conv_pub(c) for c in shared]}
 
 
+class ConvBulkIn(BaseModel):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    action: str = Field(pattern="^delete$")
+
+
+@router.post("/conversations/bulk")
+def bulk_conversations(body: ConvBulkIn, request: Request, p: Principal = Depends(current_principal),
+                       db: Session = Depends(get_db)):
+    """Delete several of the person's chats at once, with the rules of the single delete: only their own (anything else is
+    «no encontrado», the same as an id that does not exist) and, unlike a single delete, a chat that is answering right now
+    is left alone. -> {done, skipped: [{id, name, reason}]}"""
+    from ..audit import audit
+
+    ids = list(dict.fromkeys(body.ids))
+    done: list[str] = []
+    skipped: list[dict] = []
+    for cid in ids:
+        c = db.get(Conversation, cid)
+        if c is None or c.owner_id != p.id:
+            skipped.append({"id": str(cid), "name": None, "reason": "no encontrado"})
+            continue
+        name = c.title
+        info = turns.active(c.id)
+        if info and info.get("status") == "running":
+            skipped.append({"id": str(cid), "name": name, "reason": "responde ahora"})
+            continue
+        try:
+            turns.forget(c.id, p.id)
+            db.delete(c)
+            db.commit()
+            sandbox.forget_conversation_files(cid)
+            done.append(str(cid))
+        except Exception as e:  # noqa: BLE001 - one chat that fails never stops the others
+            db.rollback()
+            log.warning("playground.bulk_delete_failed conversation=%s: %s", cid, e)
+            skipped.append({"id": str(cid), "name": name, "reason": "error al borrar"})
+    audit(db, "playground.bulk_delete", actor=p.user, request=request, target_type="conversation",
+          details={"action": body.action, "done": len(done), "skipped": len(skipped), "ids": [str(i) for i in ids]})
+    return {"done": len(done), "skipped": skipped}
+
+
 @router.get("/search")
 def search_conversations(q: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db), limit: int = 30):
     """Full-text search over the user's own chats (titles and messages), newest first, with a snippet."""

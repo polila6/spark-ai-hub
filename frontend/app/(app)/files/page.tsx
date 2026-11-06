@@ -3,6 +3,7 @@ import { Download, FileText, Folder, FolderOpen, Image as ImageIcon, MessageSqua
 import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 import useSWR from "swr";
+import { BulkBar, BulkDeleteConfirm, DeleteIcon, SelectBox, useBulk, useSelection } from "@/components/bulk";
 import { hubFile, useFileViewer } from "@/components/file-viewer";
 import { TextStatus, UploadDialog } from "@/components/files";
 import { Guide, StepsEmpty } from "@/components/guide";
@@ -33,11 +34,23 @@ export default function FilesPage() {
   const { data: acct } = useSWR("/api/v1/account/summary");
   const folderNames = useMemo(() => (folders ?? []).map((f: any) => f.folder).filter(Boolean).sort(), [folders]);
   const dragRef = useRef(0);
+  // several files at once: delete them without opening each one
+  const ids = useMemo<string[]>(() => (data ?? []).map((f: any) => f.id), [data]);
+  const sel = useSelection(ids);
+  const bulk = useBulk("/api/v1/files/bulk", () => { sel.clear(); mutate(); mutF(); });
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const nameOf = (id: string) => (data ?? []).find((f: any) => f.id === id)?.filename ?? id.slice(0, 8);
   return (
     <div onDragEnter={() => { dragRef.current++; setOpen(true); }}>
       <PageHeader title={L("Mis archivos", "My files")} subtitle={L("Tu disco privado en el Spark", "Your private drive on the Spark")} icon={<FolderOpen className="h-5 w-5" />}
         actions={<Button variant="primary" onClick={() => setOpen(true)}><Upload className="h-4 w-4" />{L("Subir", "Upload")}</Button>} />
       <Guide id="files" />
+      <BulkBar count={sel.count} onClear={sel.clear} noun={[L("archivo seleccionado", "file selected"), L("archivos seleccionados", "files selected")]} actions={[
+        { key: "delete", label: L("Borrar", "Delete"), icon: DeleteIcon, danger: true, disabled: bulk.busy, onClick: () => setConfirmDelete(true) },
+      ]} />
+      <BulkDeleteConfirm open={confirmDelete} onOpenChange={setConfirmDelete} names={sel.list().map(nameOf)} noun={[L("archivo", "file"), L("archivos", "files")]} busy={bulk.busy}
+        extra={L("Dejarán de estar disponibles en el chat y en la base de conocimiento.", "They will no longer be available in the chat or the knowledge base.")}
+        onConfirm={async () => { await bulk.run({ ids: sel.list(), action: "delete" }, (n) => L(`${n} borrados`, `${n} deleted`)); setConfirmDelete(false); }} />
       {acct && <Card className="mb-4 p-4"><div className="mb-1.5 flex justify-between text-xs"><span className="text-muted">{L("Espacio usado", "Space used")}</span><span>{bytes(acct.used_bytes)} / {acct.quota_gb} GB</span></div>
         <Progress value={(acct.used_bytes / (acct.quota_gb * 1e9)) * 100} tone={acct.used_bytes / (acct.quota_gb * 1e9) > 0.85 ? "warn" : "accent"} /></Card>}
       <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
@@ -60,11 +73,12 @@ export default function FilesPage() {
               steps={[L("Pulsa «Subir» o arrastra archivos aquí.", "Click “Upload” or drag files here."), L("Déjalos en la base de conocimiento para que el chat pueda buscar en ellos.", "Keep them in the knowledge base so the chat can search them."), L("Abre el chat y pregunta por su contenido.", "Open the chat and ask about their content.")]}
               action={<Button variant="primary" onClick={() => setOpen(true)}><Upload className="h-4 w-4" />{L("Subir archivos", "Upload files")}</Button>} />
           ) : (
-            <Table head={[L("Nombre", "Name"), L("Carpeta", "Folder"), L("Tamaño", "Size"), L("Texto", "Text"), L("Conocimiento", "Knowledge"), L("Fecha", "Date"), ""]}>
+            <Table head={[<SelectBox key="all" checked={sel.all} indeterminate={sel.some} onChange={() => sel.toggleAll()} label={L("Seleccionar todos", "Select all")} />, L("Nombre", "Name"), L("Carpeta", "Folder"), L("Tamaño", "Size"), L("Texto", "Text"), L("Conocimiento", "Knowledge"), L("Fecha", "Date"), ""]}>
               {data?.map((f: any) => {
                 const Icon = KIND_ICON[f.kind] ?? FileText;
                 return (
-                  <tr key={f.id}>
+                  <tr key={f.id} className={sel.has(f.id) ? "bg-accent/5" : undefined}>
+                    <Td className="w-8"><SelectBox checked={sel.has(f.id)} onChange={(_, shift) => sel.toggle(f.id, shift)} label={L("Seleccionar este archivo", "Select this file")} /></Td>
                     <Td><button className="flex items-center gap-2 text-left font-medium hover:text-accent" onClick={() => viewer.open(hubFile(f), (data ?? []).map(hubFile))}><Icon className="h-4 w-4 shrink-0 text-subtle" /><span className="max-w-[280px] truncate">{f.filename}</span></button></Td>
                     <Td className="text-xs text-muted">{f.folder || "—"}</Td>
                     <Td className="text-xs">{bytes(f.size_bytes)}</Td>

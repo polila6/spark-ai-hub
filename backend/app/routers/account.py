@@ -24,14 +24,62 @@ router = APIRouter(prefix="/api/v1", tags=["account"])
 
 
 @router.get("/notifications")
-def list_notifications(p: Principal = Depends(session_principal), db: Session = Depends(get_db), limit: int = 50):
-    rows = db.scalars(select(Notification).where(Notification.user_id == p.id)
-                      .order_by(Notification.created_at.desc()).limit(min(limit, 200))).all()
+def list_notifications(p: Principal = Depends(session_principal), db: Session = Depends(get_db), limit: int = 50,
+                       offset: int = 0, filter: str = "all"):
+    """The person's notifications, newest first. `filter` = all | unread; `offset`/`limit` page through them (the bell menu
+    keeps asking for the latest 30). `total` counts what matches the filter, `unread` all the unread ones."""
+    if filter not in ("all", "unread"):
+        raise HTTPException(422, detail={"code": "invalid_filter", "message": "filter must be all or unread"})
+    where = [Notification.user_id == p.id]
+    if filter == "unread":
+        where.append(Notification.read_at.is_(None))
+    rows = db.scalars(select(Notification).where(*where).order_by(Notification.created_at.desc(), Notification.id.desc())
+                      .offset(max(0, offset)).limit(max(1, min(limit, 200)))).all()
+    total = db.scalar(select(func.count()).select_from(Notification).where(*where)) or 0
     unread = db.scalar(select(func.count()).select_from(Notification).where(Notification.user_id == p.id,
                                                                              Notification.read_at.is_(None))) or 0
-    return {"unread": unread, "items": [{"id": n.id, "kind": n.kind, "title": n.title, "body": n.body, "link": n.link,
-                                          "data": n.data, "read": n.read_at is not None, "created_at": n.created_at}
-                                         for n in rows]}
+    return {"unread": unread, "total": total, "offset": max(0, offset),
+            "items": [{"id": n.id, "kind": n.kind, "title": n.title, "body": n.body, "link": n.link,
+                       "data": n.data, "read": n.read_at is not None, "created_at": n.created_at} for n in rows]}
+
+
+def _owned_notifications(db: Session, user_id, ids: list[int]) -> dict[int, Notification]:
+    return {n.id: n for n in db.scalars(select(Notification).where(Notification.user_id == user_id, Notification.id.in_(ids)))}
+
+
+class NotificationBulkIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=200)
+    action: str = Field(pattern="^(read|unread|delete)$")
+
+
+@router.post("/notifications/bulk")
+def bulk_notifications(body: NotificationBulkIn, request: Request, p: Principal = Depends(session_principal),
+                       db: Session = Depends(get_db)):
+    """Mark several notifications as read / unread, or delete them. Ids that are not the person's own are skipped with the same
+    reason as ids that do not exist. -> {done, skipped: [{id, name, reason}]}"""
+    ids = list(dict.fromkeys(body.ids))
+    rows = _owned_notifications(db, p.id, ids)
+    skipped = [{"id": str(i), "name": None, "reason": "no encontrada"} for i in ids if i not in rows]
+    if body.action == "delete":
+        for n in rows.values():
+            db.delete(n)
+    else:
+        stamp = datetime.now(timezone.utc) if body.action == "read" else None
+        for n in rows.values():
+            n.read_at = stamp if body.action == "read" else None
+    db.commit()
+    audit(db, "notifications.bulk", actor=p.user, request=request, target_type="notification",
+          details={"action": body.action, "done": len(rows), "skipped": len(skipped), "ids": ids})
+    return {"done": len(rows), "skipped": skipped}
+
+
+@router.post("/notifications/delete-read")
+def delete_read_notifications(request: Request, p: Principal = Depends(session_principal), db: Session = Depends(get_db)):
+    """Delete every notification the person has already read."""
+    n = db.execute(delete(Notification).where(Notification.user_id == p.id, Notification.read_at.is_not(None))).rowcount
+    db.commit()
+    audit(db, "notifications.delete_read", actor=p.user, request=request, target_type="notification", details={"done": n})
+    return {"done": n, "skipped": []}
 
 
 @router.post("/notifications/{nid}/read")

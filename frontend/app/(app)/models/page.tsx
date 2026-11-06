@@ -1,15 +1,16 @@
 "use client";
-import { Boxes, Download, Pause, Pin, RefreshCw, Star, X } from "lucide-react";
+import { Boxes, Download, Pause, Pin, RefreshCw, Star, Trash2, X } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
+import { BulkBar, SelectBox, useBulk, useSelection } from "@/components/bulk";
 import { Guide } from "@/components/guide";
 import { MainModelCard, ModelLoadButtons, useMain } from "@/components/main-model";
 import { MemoryPanel, useMemory } from "@/components/memory";
-import { Badge, Button, Card, Empty, ErrorBox, Notice, PageHeader, Progress, Select, Skeleton, StatusBadge, Table, Tabs, Td } from "@/components/ui";
+import { Badge, Button, Card, Empty, ErrorBox, Modal, Notice, PageHeader, Progress, Select, Skeleton, StatusBadge, Switch, Table, Tabs, Td } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ago, bytes, num, params, rate } from "@/lib/format";
-import { useI18n, tr } from "@/lib/i18n";
+import { useI18n, useL, tr } from "@/lib/i18n";
 import { useMe, useToast } from "@/lib/providers";
 
 function ModelsTab() {
@@ -22,6 +23,15 @@ function ModelsTab() {
   const favs: string[] = me?.preferences?.favorite_models ?? [];
   const { main, refreshMain } = useMain();
   const { mem } = useMemory();
+  // several models at once: delete (each one goes through the same checks as deleting it alone; the pinned ones are skipped)
+  const L = useL();
+  const ids = useMemo<string[]>(() => (data ?? []).map((m: any) => m.id), [data]);
+  const sel = useSelection(ids);
+  const bulk = useBulk("/api/v1/models/bulk", () => { sel.clear(); mutate(); refreshMain(); });
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [withFiles, setWithFiles] = useState(true);
+  const chosen = (data ?? []).filter((m: any) => sel.has(m.id));
+  const pinnedChosen = chosen.filter((m: any) => m.pinned || m.id === main?.id).length;
   async function act(id: string, path: string, label: string) {
     setBusy(id + path);
     try {
@@ -42,18 +52,35 @@ function ModelsTab() {
         </Select>
         <Button variant="ghost" size="sm" onClick={() => mutate()}><RefreshCw className="h-3.5 w-3.5" />{t("common.refresh")}</Button>
       </div>
+      <BulkBar count={sel.count} onClear={sel.clear} noun={[L("modelo seleccionado", "model selected"), L("modelos seleccionados", "models selected")]} actions={[
+        { key: "delete", label: L("Borrar", "Delete"), icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, disabled: bulk.busy, onClick: () => setConfirmDelete(true) },
+      ]} />
+      <Modal open={confirmDelete} onOpenChange={setConfirmDelete} title={L(`Borrar ${chosen.length} ${chosen.length === 1 ? "modelo" : "modelos"}`, `Delete ${chosen.length} ${chosen.length === 1 ? "model" : "models"}`)}>
+        <div className="space-y-3 text-sm">
+          <p className="text-muted">{chosen.slice(0, 8).map((m: any) => `«${m.alias}»`).join(", ")}{chosen.length > 8 ? L(` y ${chosen.length - 8} más`, ` and ${chosen.length - 8} more`) : ""}. {L("No se puede deshacer.", "This cannot be undone.")}</p>
+          <Switch checked={withFiles} onChange={setWithFiles} label={L("Borrar también los archivos del disco (libera el espacio)", "Also delete the files on disk (frees the space)")} />
+          {!withFiles && <p className="text-xs text-muted">{L("Se quitan del registro pero los archivos se quedan en el disco.", "They leave the registry but the files stay on disk.")}</p>}
+          {pinnedChosen > 0 && <Notice tone="warn">{L(`${pinnedChosen} están fijados como siempre cargados (o son el principal) y se omitirán: quítales la fijación antes si quieres borrarlos.`, `${pinnedChosen} are pinned as always loaded (or are the main model) and will be skipped: unpin them first if you want to delete them.`)}</Notice>}
+          {chosen.some((m: any) => m.runtime) && <p className="text-xs text-muted">{L("Los que estén cargados en memoria se descargan antes de borrarse.", "Those loaded in memory are unloaded before they are deleted.")}</p>}
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setConfirmDelete(false)}>{t("common.cancel")}</Button>
+          <Button variant="danger" loading={bulk.busy} onClick={async () => { await bulk.run({ ids: sel.list(), action: "delete", delete_files: withFiles }, (n) => L(`${n} borrados`, `${n} deleted`)); setConfirmDelete(false); }}>{t("common.confirm")}</Button>
+        </div>
+      </Modal>
       {error && <ErrorBox error={error} />}
       {isLoading && <Skeleton className="h-40" />}
       {data && data.length === 0 && <Card><Empty hint={tr("Instala modelos desde «Descubrir modelos»", "Install models from “Discover models”")} action={<Link href="/discover"><Button variant="primary" size="sm">{t("nav.discover")}</Button></Link>} /></Card>}
       {data && data.length > 0 && (
         <Card>
-          <Table head={["", t("common.model"), t("common.status"), t("models.backend"), t("models.memory"), t("common.size"), t("common.visibility"), t("common.actions")]}>
+          <Table head={[<SelectBox key="all" checked={sel.all} indeterminate={sel.some} onChange={() => sel.toggleAll()} label={L("Seleccionar todos", "Select all")} />, "", t("common.model"), t("common.status"), t("models.backend"), t("models.memory"), t("common.size"), t("common.visibility"), t("common.actions")]}>
             {data.map((m: any) => {
               const inst = mem?.instances?.find((i: any) => i.model_id === m.id);
               const loaded = !!m.runtime;
               const fav = favs.includes(m.id);
               return (
-                <tr key={m.id} className="hover:bg-elevated/40">
+                <tr key={m.id} className={`hover:bg-elevated/40 ${sel.has(m.id) ? "bg-accent/5" : ""}`}>
+                  <Td className="w-8"><SelectBox checked={sel.has(m.id)} onChange={(_, shift) => sel.toggle(m.id, shift)} label={L("Seleccionar este modelo", "Select this model")} /></Td>
                   <Td><button aria-label={t("models.favorite")} onClick={() => setPrefs({ favorite_models: fav ? favs.filter((x) => x !== m.id) : [...favs, m.id] })}><Star className={`h-4 w-4 ${fav ? "fill-warn text-warn" : "text-subtle"}`} /></button></Td>
                   <Td>
                     <Link href={`/models/${m.id}`} className="font-medium hover:text-accent">{m.alias}</Link>

@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from ..audit import audit
@@ -41,6 +42,50 @@ def list_jobs(p: Principal = Depends(current_principal), db: Session = Depends(g
     total = db.scalar(select(func.count()).select_from(q.subquery()))
     rows = db.scalars(q.limit(limit).offset(offset)).all()
     return {"total": total, "items": [job_public(j, include_params=False) for j in rows]}
+
+
+class BulkIn(BaseModel):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    action: Literal["cancel", "delete"]
+
+
+NOT_YOURS = "No encontrado o sin permiso"
+
+
+@router.post("/bulk")
+def bulk_jobs(body: BulkIn, request: Request, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Cancel or delete several jobs at once. Each job is checked like the single endpoints (owner, or administrator); one that
+    cannot be handled is reported in `skipped` with the reason and the others go ahead. Deleting is for finished jobs only:
+    its events and scratch folder go with it, the files it produced stay in the person's media."""
+    import shutil
+
+    from ..config import get_settings
+
+    done, skipped, handled = 0, [], []
+    for jid in dict.fromkeys(body.ids):
+        j = db.get(Job, jid)
+        if not j or (j.owner_id != p.id and not p.is_admin):
+            skipped.append({"id": str(jid), "name": None, "reason": NOT_YOURS})  # the same answer for «missing» and «not yours»
+            continue
+        name = j.title or str(j.id)[:8]
+        if body.action == "cancel":
+            if j.status in TERMINAL:
+                skipped.append({"id": str(jid), "name": name, "reason": "ya había terminado"})
+                continue
+            request_cancel(db, j)
+        else:
+            if j.status not in TERMINAL:
+                skipped.append({"id": str(jid), "name": name, "reason": "sigue en marcha: cancélalo antes"})
+                continue
+            db.execute(delete(JobEvent).where(JobEvent.job_id == j.id))
+            shutil.rmtree(get_settings().jobs_dir / str(j.id), ignore_errors=True)
+            db.delete(j)  # artifacts keep existing (their job_id becomes empty): they are the person's files
+            db.commit()
+        handled.append(str(jid))
+        done += 1
+    audit(db, f"jobs.bulk_{body.action}", actor=p.user, request=request, target_type="job",
+          details={"requested": len(set(body.ids)), "done": done, "skipped": len(skipped), "ids": handled[:200]})
+    return {"done": done, "skipped": skipped}
 
 
 @router.get("/{job_id}")
