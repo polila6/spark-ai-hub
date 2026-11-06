@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.2 — 2026-11-06
+Answers flow instead of popping in.
+
+* **Smooth streaming** (`lib/smooth-text.ts`): the server still sends text in bursts, but the screen reveals it word by word at an even
+  pace that speeds up when the backlog grows (it never lags more than about a second) and finishes by itself when the answer ends.
+  A soft cursor blinks at the end while it is being written. Applies to the chat, projects and the workspace assistant, and to the
+  reasoning panel. Text that is already there (history, a reloaded page) appears at once, and so does everything with
+  «reduce motion» enabled in the system.
+
 ## 0.19.1 — 2026-11-06
 A big model load can no longer take the machine down, and the chat stops rummaging in your files.
 

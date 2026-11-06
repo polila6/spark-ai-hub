@@ -26,7 +26,7 @@ export function WsMessage({ m, onOpen, queued }: { m: ChatMsg; onOpen: (p: strin
     <div>
       <LiveActivity tools={m.tools} reasoning={m.reasoning} activity={m.activity} running={!!m.pending} queued={queued} onOpen={onOpen}
         seconds={m.metrics?.latency_ms != null ? m.metrics.latency_ms / 1000 : undefined} />
-      {m.content && <div className="prose-chat" data-quote-scope><AnswerMarkdown content={m.content} tools={m.tools} components={MD} onWs={onOpen} /></div>}
+      {m.content && <div className="prose-chat" data-quote-scope><AnswerMarkdown content={m.content} streaming={!!m.pending} tools={m.tools} components={MD} onWs={onOpen} /></div>}
     </div>
   );
 }

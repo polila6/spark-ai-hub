@@ -12,6 +12,7 @@ import {
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { AgentReport, CodeRun, kTok, WebSources } from "@/components/assistant";
 import { directorText } from "@/components/effort";
+import { useSmoothText } from "@/lib/smooth-text";
 import { cx } from "@/components/ui";
 import { tr, useL } from "@/lib/i18n";
 
@@ -223,7 +224,8 @@ function Thinking({ text, live }: { text: string; live: boolean }) {
   const stick = useRef(true);
   const isOpen = open ?? live;
   const CAP = 12000;
-  const shown = all || text.length <= CAP ? text : text.slice(-CAP);
+  const flow = useSmoothText(text, live).text;  // the reasoning flows in like the answer does
+  const shown = all || flow.length <= CAP ? flow : flow.slice(-CAP);
   useEffect(() => { const el = box.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [shown, isOpen]);
   return (
     <div className="border-t border-border/60 px-3 py-2">

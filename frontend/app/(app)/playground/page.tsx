@@ -545,7 +545,7 @@ function Chat() {
                     <LiveActivity tools={m.tools} reasoning={m.reasoning} activity={m.activity} running={!!m.pending} queued={last && m.pending ? queuedCount : undefined}
                       seconds={m.metrics?.latency_ms != null ? m.metrics.latency_ms / 1000 : undefined} />
                     {m.tools?.filter(hasOutput).map((tr) => <ToolCard key={tr.id} t={tr} onEdit={editImage} onCanvas={(id, v) => setCanvas({ id, v })} />)}
-                    <div className="prose-chat" data-quote-scope>{m.content && <AnswerMarkdown content={m.content} tools={m.tools} components={MD_COMPONENTS} onCanvas={(id, v) => setCanvas({ id, v })} />}</div>
+                    <div className="prose-chat" data-quote-scope>{m.content && <AnswerMarkdown content={m.content} streaming={!!m.pending} tools={m.tools} components={MD_COMPONENTS} onCanvas={(id, v) => setCanvas({ id, v })} />}</div>
                     {!m.pending && <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:group-hover/msg:opacity-100">
                       {m.model_alias && <span className="text-[10px] text-subtle">{m.model_alias}</span>}<Metrics m={m.metrics} />{voice?.enabled && voice?.read_aloud && m.content && <SpeakButton text={m.content} lang={lang} />}</div>}
                   </>
