@@ -256,6 +256,7 @@ def test_missing_resident_models_are_loaded_one_at_a_time(monkeypatch):
     monkeypatch.setattr(scheduler, "SessionLocal", session)
     monkeypatch.setattr(scheduler, "resident_targets", lambda db: [a, b, c])
     monkeypatch.setattr(G, "oom_flagged", lambda mid: False)
+    monkeypatch.setattr(G, "cancelled_flagged", lambda mid: False)
     monkeypatch.setattr(scheduler, "get_redis", lambda: r)
     monkeypatch.setattr(scheduler, "ensure_loaded", lambda mid, wait_s=0: loaded.append(mid))
     monkeypatch.setattr("threading.Thread", SyncThread)

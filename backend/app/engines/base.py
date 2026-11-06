@@ -22,6 +22,13 @@ class EngineError(Exception):
         self.message, self.remediation, self.status = message, remediation, status
 
 
+class LoadCancelled(EngineError):
+    """A person stopped a model load that was in progress (nothing failed: the model goes back to «installed»)."""
+
+    def __init__(self, message: str = "Load cancelled"):
+        super().__init__(message, status=409)
+
+
 @dataclass
 class Health:
     ok: bool

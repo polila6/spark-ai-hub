@@ -6,8 +6,8 @@ import time
 
 import httpx
 
-from ..services import compat, orchestrator, registry
-from .base import EngineAdapter, EngineError, Health, LoadResult
+from ..services import compat, memguard, orchestrator, registry
+from .base import EngineAdapter, EngineError, Health, LoadCancelled, LoadResult
 
 
 def container_host(alias: str) -> str:
@@ -101,6 +101,8 @@ class VllmAdapter(EngineAdapter):
         # A container still starting for this model (e.g. the worker restarted mid-load) is waited for, not restarted:
         # a first start can spend a long time autotuning kernels. Unloads remove the container, so it is current.
         running = any(i.get("model") == model.alias and i.get("state") == "running" for i in self.instances())
+        if memguard.cancel_requested(model.id):
+            raise LoadCancelled()
         if not running:
             try:
                 orchestrator.start_vllm(body)
@@ -109,6 +111,12 @@ class VllmAdapter(EngineAdapter):
         deadline = time.time() + float(params.get("load_timeout_s") or 1800)
         while time.time() < deadline:
             time.sleep(5)
+            if memguard.cancel_requested(model.id):  # a person stopped the load: free the container and the memory at once
+                try:
+                    orchestrator.stop_vllm(model.alias)
+                except orchestrator.OrchestratorError:
+                    pass
+                raise LoadCancelled()
             info = next((i for i in self.instances() if i.get("model") == model.alias), {})
             if info.get("state") in ("exited", "dead"):
                 logs = orchestrator.engine_logs("vllm", 60, model=model.alias)

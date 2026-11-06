@@ -315,6 +315,20 @@ def unload_model(model_id: uuid.UUID, request: Request, p: Principal = Depends(r
     return {"ok": True, "was_loaded": done}
 
 
+@router.post("/{model_id}/cancel-load")
+def cancel_model_load(model_id: uuid.UUID, request: Request, p: Principal = Depends(require_researcher), db: Session = Depends(get_db)):
+    """Stop a model load that is in progress (the container is stopped and its memory comes back; the model is not retried by itself)."""
+    m = _get_visible(db, p, model_id)
+    if m.pinned and not p.is_manager:
+        raise HTTPException(403, detail={"code": "pinned", "message": "Only administrators/managers can stop the load of the general model"})
+    try:
+        out = scheduler.cancel_load(m.id, actor_id=p.id)
+    except scheduler.SchedulingError as e:
+        raise HTTPException(409, detail={"code": e.code, "message": e.message})
+    audit(db, "models.cancel_load", actor=p.user, request=request, target_type="model", target_id=str(m.id))
+    return {"ok": True, **out}
+
+
 CONTEXT_PRESETS = (8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576)
 
 

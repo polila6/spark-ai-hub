@@ -29,6 +29,8 @@ BOOT_GRACE_S = 60.0
 OOM_TTL_S = 7 * 24 * 3600
 HELD_KEY = "sah:memguard:held"
 OOM_KEY = "sah:oom:{}"
+CANCEL_REQ_KEY = "sah:loadcancel:{}"  # a person asked to stop this load
+CANCELLED_KEY = "sah:cancelled:{}"  # a person stopped it: it is not loaded again until a person loads it
 _STARTED = time.monotonic()
 
 
@@ -189,4 +191,35 @@ def oom_flagged(model_id) -> bool:
 def clear_oom(model_id) -> None:
     from ..redis_client import get_redis
 
-    get_redis().delete(OOM_KEY.format(model_id))
+    r = get_redis()
+    r.delete(OOM_KEY.format(model_id))
+    r.delete(CANCELLED_KEY.format(model_id))  # it loaded: whatever stopped it before is over
+
+
+# ---- a person interrupts a load: the loader notices the request, and the resident loop does not start it again by itself
+
+def request_cancel(model_id) -> None:
+    from ..redis_client import get_redis
+
+    get_redis().set(CANCEL_REQ_KEY.format(model_id), "1", ex=3600)
+
+
+def cancel_requested(model_id) -> bool:
+    from ..redis_client import get_redis
+
+    return bool(get_redis().get(CANCEL_REQ_KEY.format(model_id)))
+
+
+def finish_cancel(model_id) -> None:
+    """The load is over (stopped): forget the request, remember that nobody should restart it automatically."""
+    from ..redis_client import get_redis
+
+    r = get_redis()
+    r.delete(CANCEL_REQ_KEY.format(model_id))
+    r.set(CANCELLED_KEY.format(model_id), "1", ex=OOM_TTL_S)
+
+
+def cancelled_flagged(model_id) -> bool:
+    from ..redis_client import get_redis
+
+    return bool(get_redis().get(CANCELLED_KEY.format(model_id)))

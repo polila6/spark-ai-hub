@@ -1,4 +1,5 @@
 "use client";
+import { CancelLoadButton } from "@/components/cancel-load";
 import { AudioLines, Brain, Cpu, Eye, Image as ImageIcon, Loader2, MemoryStick, Pin, Power, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import useSWR from "swr";
@@ -87,6 +88,7 @@ export function MemoryPanel({ compact }: { compact?: boolean }) {
                   {i.state === "loading" ? (
                     <div className="mt-1 flex items-center gap-2 text-[11px] text-info">
                       <Loader2 className="h-3 w-3 animate-spin" />{L("Cargando", "Loading")} {mmss(elapsed)}
+                      {i.engine === "vllm" && i.model_id && (!i.pinned || isManager(me)) && <CancelLoadButton modelId={i.model_id} alias={i.name} onDone={refresh} />}
                       {i.expected_load_seconds ? <><Progress className="w-32" value={Math.min(97, (elapsed / i.expected_load_seconds) * 100)} tone="accent" /><span className="text-muted">≈ {mmss(Math.max(0, i.expected_load_seconds - elapsed))} {L("restantes", "left")}</span></> : null}
                     </div>
                   ) : i.state === "unloading" ? <p className="text-[11px] text-warn">{L("Descargando de memoria…", "Unloading…")}</p>

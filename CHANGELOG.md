@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.7 — 2026-11-06
+A model load can be interrupted.
+
+* **Cancel a load in progress** (`POST /api/v1/models/{id}/cancel-load`, «Cancelar carga» in the Library, the model page and the memory
+  panel): big vLLM loads take minutes. The container is stopped at once and its memory comes back; the model returns to «installed»
+  (it is not marked as failed), the memory reservation is released and paused downloads go on. A load a person stopped is **not**
+  restarted by the resident-model loop: it waits until a person loads it. Pinned/general models can only be stopped by managers.
+  Ollama loads (seconds) are not cancellable.
+
 ## 0.19.6 — 2026-11-06
 Answers about people and facts are checked instead of invented.
 

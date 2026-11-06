@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from ..db import SessionLocal, advisory_lock
 from ..engines import EngineError, get_engine
+from ..engines.base import LoadCancelled
 from ..logging_setup import log
 from ..models import (
     ModelInstallation,
@@ -317,6 +318,26 @@ def ensure_loaded(model_id: uuid.UUID, *, wait_s: float = 1800, actor_id=None, p
                 memguard.finish_heavy_load()  # downloads that were paused go on
 
 
+def cancel_load(model_id: uuid.UUID, actor_id=None) -> dict:
+    """Stop a model load that is in progress. Only big vLLM loads take long enough to need it: the container is stopped at once
+    (its memory comes back), the model returns to «installed», and it is not loaded again until a person loads it."""
+    with SessionLocal() as db:
+        model = db.get(RegisteredModel, model_id)
+        inst = db.scalar(select(RuntimeInstance).where(RuntimeInstance.model_id == model_id, RuntimeInstance.state == "loading"))
+        if model is None or inst is None:
+            raise SchedulingError("not_loading", "This model is not being loaded right now")
+        if model.backend != "vllm":
+            raise SchedulingError("not_cancellable", "Only vLLM loads can be cancelled (the others take a few seconds)")
+        alias, backend = model.alias, model.backend
+    memguard.request_cancel(model_id)
+    try:
+        get_engine(backend).unload(model)  # stop the container now; the loader notices the request and cleans up
+    except Exception as e:  # noqa: BLE001 — the loader also stops it within five seconds
+        log.warning("scheduler.cancel_load_stop_failed", model=alias, error=str(e)[:200])
+    log.info("scheduler.load_cancel_requested", model=alias, by=str(actor_id))
+    return {"cancelled": True, "alias": alias}
+
+
 def _note_oom(model_id, alias: str, msg: str) -> None:
     """A load that died for lack of memory: stop automatic retries and tell the administrators once."""
     try:
@@ -338,7 +359,23 @@ def _do_load(model_id, inst_id, params: dict, actor_id) -> RuntimeInstance:
         engine = get_engine(model.backend)
         before = mem_available_gb()
         try:
+            if memguard.cancel_requested(model_id):  # stopped while it was waiting for memory or for another load
+                raise LoadCancelled()
             res = engine.load(model, params)
+        except LoadCancelled as e:
+            # Not a failure: the model goes back to «installed», nothing is retried automatically, the memory is released
+            inst = db.get(RuntimeInstance, inst_id)
+            if inst is not None:
+                db.delete(inst)
+            _set_status(db, model, ModelStatus.installed, "Load cancelled", event="load.cancelled", actor_id=actor_id)
+            db.commit()
+            release(inst_id)
+            try:
+                engine.unload(model)  # make sure no half-started container is left holding memory
+            except Exception:  # noqa: BLE001
+                pass
+            memguard.finish_cancel(model_id)
+            raise
         except Exception as e:  # noqa: BLE001
             msg = getattr(e, "message", str(e))
             rem = getattr(e, "remediation", None)
@@ -750,7 +787,8 @@ def ensure_resident() -> str | None:
 
     with SessionLocal() as db:
         loaded = {mid for (mid,) in db.execute(select(RuntimeInstance.model_id)) if mid is not None}
-        todo = [(m.id, m.alias) for m in resident_targets(db) if m.id not in loaded and not memguard.oom_flagged(m.id)]
+        todo = [(m.id, m.alias) for m in resident_targets(db) if m.id not in loaded and not memguard.oom_flagged(m.id)
+                and not memguard.cancelled_flagged(m.id)]
     if not todo:
         return None
     r = get_redis()

@@ -1,4 +1,5 @@
 "use client";
+import { CancelLoadButton } from "@/components/cancel-load";
 import { AlertTriangle, Crown, Download, Loader2, Play, Power, RefreshCw, Search, ShieldAlert, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
@@ -126,7 +127,8 @@ export function ModelLoadButtons({ m, mainAlias, onChanged, size = "sm", vertica
   }
   let reason = "";
   let button: React.ReactNode = null;
-  if (state === "loading") button = <LoadingLine inst={inst} L={L} />;
+  if (state === "loading") button = <span className="flex flex-wrap items-center gap-2"><LoadingLine inst={inst} L={L} />
+    {m.backend === "vllm" && (!m.pinned || manager) && <CancelLoadButton modelId={m.id} alias={m.alias} onDone={done} />}</span>;
   else if (state === "unloading") button = <span className="flex items-center gap-1 text-[11px] text-warn"><Loader2 className="h-3 w-3 animate-spin" />{L("Descargando de memoria…", "Unloading…")}</span>;
   else if (loaded) {
     if (!canUse) reason = L("Necesitas rol investigador para descargarlo", "You need the researcher role to unload it");
