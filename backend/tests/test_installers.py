@@ -141,6 +141,7 @@ def test_plan_for_qwen3_coder_has_no_blocker_and_no_danger(monkeypatch):
     assert pl["engine"] == "vllm" and pl["blockers"] == []
     assert not any(w["level"] == "danger" for w in pl["warnings"])
     assert pl["engine_analysis"]["recommended_params"]["tool_call_parser"] == "qwen3_coder"
+    assert "reasoning_parser" not in pl["engine_analysis"]["recommended_params"]  # it does not think: a parser would empty `content`
 
 
 def test_plan_falls_back_to_files_when_no_engine_takes_the_repo(monkeypatch):
@@ -176,3 +177,12 @@ def test_forcing_never_lifts_a_missing_prerequisite(monkeypatch):
     info = _info("x/gguf-only", WHOLE, None, pipeline_tag=None)
     pl = _plan(monkeypatch, info, engine="vllm", force=True)
     assert pl["blockers"] and "safetensors" in pl["blockers"][0]
+
+
+def test_only_thinking_qwen_models_get_a_reasoning_parser():
+    """Found in production: Qwen3-Coder Instruct got reasoning_parser=qwen3, so every answer landed in `reasoning` and `content` was empty."""
+    for repo in ("Qwen/Qwen3-Coder-30B-A3B-Instruct", "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8", "Qwen/Qwen3-Coder-480B-A35B-Instruct"):
+        d = compat.parser_defaults(repo, None)
+        assert d == {"enable_tool_calling": True, "tool_call_parser": "qwen3_coder"}, repo
+    assert compat.parser_defaults("Qwen/Qwen3.5-35B-A3B-FP8", None)["reasoning_parser"] == "qwen3"  # the thinking models keep it
+    assert compat.parser_defaults("Qwen/Qwen3-Coder-Next", None).get("reasoning_parser") == "qwen3"  # unknown: left as before

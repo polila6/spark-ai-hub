@@ -247,6 +247,10 @@ def parser_defaults(repo_id: str, config: dict | None) -> dict:
     archs = " ".join(c.get("architectures") or []).lower()
     if "gpt-oss" in rid or "gpt_oss" in mtype:
         return {"enable_tool_calling": True, "tool_call_parser": "openai", "reasoning_parser": "openai_gptoss"}
+    if "qwen3-coder" in rid and "next" not in rid:
+        # Qwen3-Coder Instruct does not think (no <think> tags): a reasoning parser would put its whole answer in `reasoning`
+        # and leave `content` empty. Only the tool-call parser is needed.
+        return {"enable_tool_calling": True, "tool_call_parser": "qwen3_coder"}
     if any(k in rid for k in ("qwen3.5", "qwen3_5", "qwen3-coder", "qwen3-next")) or any(k in mtype for k in ("qwen3_5", "qwen3_next")):
         out = {"enable_tool_calling": True, "tool_call_parser": "qwen3_coder", "reasoning_parser": "qwen3"}
         tc = c.get("text_config") or c

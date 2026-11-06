@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.8 — 2026-11-06
+* Fix: **Qwen3-Coder Instruct got a reasoning parser it must not have.** The preset gave every «qwen3-coder» model
+  `reasoning_parser=qwen3`, but the Instruct models do not think, so vLLM put the whole answer in `reasoning` and left `content` empty
+  (a harness such as Hermes saw empty replies). They now get only the tool-call parser. Thinking Qwen models keep theirs.
+
 ## 0.19.7 — 2026-11-06
 A model load can be interrupted.
 
