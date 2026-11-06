@@ -137,6 +137,7 @@ def call_tool(user_id: uuid.UUID, name: str, args: dict) -> list[dict]:
             if not res["results"]:
                 return [_text("No results.")]
             return [_text("\n\n".join(f"[{i + 1}] {r['filename']}" + (f", p. {r['page']}" if r["page"] else "")
+                                      + (f" — {r['source_path']}" if r.get("source_path") else "")
                                       + f" (file_id={r['file_id']}, collection={r['collection']})\n{r['text']}"
                                       for i, r in enumerate(res["results"])) + f"\n\n(mode: {res['mode']})")]
         if name == "list_files":

@@ -39,6 +39,7 @@ class ConvPatch(BaseModel):
     settings: dict | None = None
     visibility: Visibility | None = None
     project_id: uuid.UUID | None = None
+    preferred_agent: str | None = Field(default=None, max_length=64)
 
 
 class SendIn(BaseModel):
@@ -63,6 +64,7 @@ class SendIn(BaseModel):
     director: bool = True  # decide before answering which of the allowed capabilities this message needs
     allow: dict[str, str] | None = None  # think/web/research/skills/agents/code → auto | on | off
     workspace_id: uuid.UUID | None = None
+    preferred_agent: str | None = Field(default=None, max_length=64)
 
 
 class PromptIn(BaseModel):
@@ -164,12 +166,26 @@ def patch_conversation(cid: uuid.UUID, body: ConvPatch, p: Principal = Depends(c
                        db: Session = Depends(get_db)):
     c = _conv(db, p, cid, write=True)
     data = body.model_dump(exclude_unset=True)
+    preferred_agent = data.pop("preferred_agent", ...)
     if data.get("project_id"):
         from .projects import project_for_read
 
         project_for_read(db, p, data["project_id"])
     for k, v in data.items():
         setattr(c, k, v)
+    if preferred_agent is not ...:
+        if preferred_agent:
+            from ..services import agent
+
+            if preferred_agent not in agent.agent_profiles(db, p.user):
+                raise HTTPException(404, detail={"code": "agent_not_found",
+                                                 "message": "El agente seleccionado no existe, está desactivado o no tienes permiso para usarlo"})
+        settings = dict(c.settings or {})
+        if preferred_agent:
+            settings["preferred_agent"] = preferred_agent
+        else:
+            settings.pop("preferred_agent", None)
+        c.settings = settings
     db.commit()
     return _conv_pub(c)
 
@@ -244,7 +260,8 @@ def _launch(c: Conversation, p: Principal, body: SendIn, model: RegisteredModel,
                       context_limit=body.context_limit, auto_compact=body.auto_compact, web=body.web,
                       research=body.research, effort=body.effort, director=body.director,
                       allow={k: v for k, v in (body.allow or {}).items() if v in ("auto", "on", "off")},
-                      workspace_id=body.workspace_id, user_message_id=user_mid)
+                      workspace_id=body.workspace_id, preferred_agent=body.preferred_agent,
+                      user_message_id=user_mid)
     turns.emit(c.id, {"type": "user_message", "message_id": user_mid})  # the UI needs it to edit/rewind this message
     threading.Thread(target=_run_turn, args=(turn, p, body.model_alias, c.title), daemon=True).start()
     return StreamingResponse(_tail(c.id, request, 0), media_type="text/event-stream",
@@ -265,6 +282,15 @@ async def send_message(cid: uuid.UUID, body: SendIn, request: Request, p: Princi
 
     c = _conv(db, p, cid, write=True)
     model = _chat_model(db, p, body.model_alias)
+    if body.preferred_agent:
+        from ..services import agent
+
+        if not body.tools or not llm.supports_tools(model):
+            raise HTTPException(422, detail={"code": "agent_tools_required",
+                                             "message": "El agente seleccionado necesita un modelo con herramientas y la opción Herramientas activada"})
+        if body.preferred_agent not in agent.agent_profiles(db, p.user):
+            raise HTTPException(404, detail={"code": "agent_not_found",
+                                             "message": "El agente seleccionado no existe, está desactivado o no tienes permiso para usarlo"})
     attachments = []
     for fid in body.attachments:
         f = db.get(UserFile, fid)

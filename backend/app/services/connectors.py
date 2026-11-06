@@ -3,7 +3,7 @@
 * webdav — Nextcloud / ownCloud / any WebDAV folder (user + app password)
 * github — a repository (optional token for private repos), optionally one folder
 * zotero — the PDFs/HTML snapshots stored in a Zotero library (user or group, API key)
-* smb    — a Windows / NAS network share (\\\\host\\share\\folder)
+* smb    — a Windows / NAS network share (\\\\host\\share\\folder), optionally index-only
 
 Only documents and data files are imported (PDF, Office, text, code, CSV/Excel…), up to 100 MB each. Remote hosts
 must resolve to public addresses unless an administrator lists the private host/network in Settings
@@ -36,7 +36,7 @@ from .uploads import safe_name
 
 KINDS = ("webdav", "github", "zotero", "smb")
 MAX_FILE_BYTES = 100 * 1024 * 1024
-MAX_FILES = 2000
+MAX_FILES = 100_000
 IMPORT_EXT = files_svc.DOC_EXT | files_svc.CODE_EXT | {".csv", ".tsv", ".xlsx", ".xlsm", ".json", ".jsonl"}
 UA = "SparkAIHub-connector/0.5"
 # Database files are not copied into the Spark: they are queried where they live (Knowledge → Databases).
@@ -344,7 +344,10 @@ def validate(kind: str, cfg: dict) -> dict:
         raise ConnectorError("El ID de la biblioteca de Zotero es un número")
     allowed = {"webdav": ["url", "username"], "github": ["repo", "branch", "path"],
                "zotero": ["library_type", "library_id"], "smb": ["host", "share", "path", "username", "domain"]}[kind]
-    return {k: str(cfg[k]).strip() for k in allowed if cfg.get(k) not in (None, "")}
+    out = {k: str(cfg[k]).strip() for k in allowed if cfg.get(k) not in (None, "")}
+    if kind == "smb":
+        out["index_only"] = bool(cfg.get("index_only", False))
+    return out
 
 
 def set_secret(c: KbConnector, secret: str | None) -> None:
@@ -409,7 +412,8 @@ def _sync(db: Session, c: KbConnector, user: User, src, progress) -> dict:
             data = src.get(item)
             if len(data) > MAX_FILE_BYTES:
                 raise ConnectorError("más de 100 MB")
-            f = _store(db, user, c, folder, item["path"], data)
+            f = (_store_index_only if c.kind == "smb" and c.config.get("index_only") else _store)(
+                db, user, c, folder, item["path"], data)
             if prev:
                 _drop_file(db, prev.file_id)
                 prev.etag, prev.file_id, prev.synced_at = item["etag"], f.id if f else None, datetime.now(timezone.utc)
@@ -438,7 +442,8 @@ def _sync(db: Session, c: KbConnector, user: User, src, progress) -> dict:
     c.last_sync_at = datetime.now(timezone.utc)
     c.stats = {"remote": len(remote), "added": added, "updated": updated, "removed": removed, "failed": failed,
                "skipped": len(skipped), "skipped_examples": [f"{p}: {w}" for p, w in skipped[:3]],
-               "files": db.query(ConnectorItem).filter(ConnectorItem.connector_id == c.id).count()}
+               "files": db.query(ConnectorItem).filter(ConnectorItem.connector_id == c.id).count(),
+               "index_only": bool(c.kind == "smb" and c.config.get("index_only"))}
     db.commit()
     return c.stats
 
@@ -459,13 +464,49 @@ def _store(db: Session, user: User, c: KbConnector, folder: str, path: str, data
     return f
 
 
+def _store_index_only(db: Session, user: User, c: KbConnector, folder: str, path: str,
+                      data: bytes) -> UserFile | None:
+    """Create searchable metadata/text without persisting the remote original."""
+    name = PurePosixPath(path).name
+    kind, ext = files_svc.classify(name, data[:64])
+    fid = uuid.uuid4()
+    dst = files_svc.user_dir(user.id) / f"{fid}{ext}"  # deliberately never written
+    cfg = c.config or {}
+    # The SMB connection may use a fixed IP while citations show a friendlier, stable server name.
+    root = f"\\\\{cfg.get('display_host') or cfg.get('host', '')}\\{cfg.get('share', '')}"
+    if cfg.get("path"):
+        root += "\\" + str(cfg["path"]).strip("\\/ ").replace("/", "\\")
+    source_path = root + "\\" + path.replace("/", "\\")
+    f = UserFile(id=fid, owner_id=user.id, project_id=c.project_id, folder=folder,
+                 filename=safe_name(PurePosixPath(name).stem) + ext, mime=files_svc.guess_mime(ext), kind=kind,
+                 size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                 path=str(dst.relative_to(get_settings().data_root)), text_status="pending", source="connector",
+                 meta={"connector": str(c.id), "remote_path": path[:1000], "source_path": source_path[:2048],
+                       "original_size_bytes": len(data), "index_only": True, "original_stored": False})
+    db.add(f)
+    db.flush()
+    try:
+        res = files_svc.process_bytes(f, data, ext)
+    except Exception:
+        files_svc.text_path(f).unlink(missing_ok=True)
+        files_svc.pages_path(f).unlink(missing_ok=True)
+        raise
+    f.text_status = {"ready": "ready", "unsupported": "unsupported"}.get(res["status"], "failed")
+    f.text_chars = res["chars"]
+    f.meta = {**(f.meta or {}), "pages": res["pages"],
+              **({"skipped_reason": res["reason"]} if res.get("reason") else {})}
+    return f
+
+
 def _index(db: Session, f: UserFile, c: KbConnector) -> None:
     try:
-        res = files_svc.process(f)
-        f.text_status = {"ready": "ready", "unsupported": "unsupported"}.get(res["status"], "failed")
-        f.text_chars = res["chars"]
-        f.meta = {**(f.meta or {}), "pages": res["pages"], **({"skipped_reason": res["reason"]} if res.get("reason") else {})}
-        db.commit()
+        if f.text_status != "ready":
+            res = files_svc.process(f)
+            f.text_status = {"ready": "ready", "unsupported": "unsupported"}.get(res["status"], "failed")
+            f.text_chars = res["chars"]
+            f.meta = {**(f.meta or {}), "pages": res["pages"],
+                      **({"skipped_reason": res["reason"]} if res.get("reason") else {})}
+            db.commit()
         if f.text_status != "ready" or not c.collection_id:
             return
         doc = KbDocument(collection_id=c.collection_id, file_id=f.id, owner_id=f.owner_id, status="indexing")
@@ -489,10 +530,11 @@ def _drop_file(db: Session, file_id) -> None:
     if f:
         for d in db.scalars(select(KbDocument).where(KbDocument.file_id == f.id)):
             db.delete(d)
-        try:
-            files_svc.abs_path(f).unlink(missing_ok=True)
-        except OSError:
-            pass
+        for path in (files_svc.abs_path(f), files_svc.text_path(f), files_svc.pages_path(f)):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
         db.delete(f)
 
 

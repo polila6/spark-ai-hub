@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from app.services import director as D
 
-ALL = {"web", "skills", "agents", "code", "research"}
+ALL = {"docs", "web", "skills", "agents", "code", "research"}
 
 
 def ask(text, level=2, allow=None, available=ALL, **kw):
@@ -167,33 +167,33 @@ def _runner(monkeypatch, content, backend="vllm", **turn_kw):
     t = agent.Turn(user_id="u", conversation_id="c", model_id="m", content=content, director=True, **turn_kw)
     events = []
     r = agent.Runner(t, events.append, lambda: False)
-    r.flags = {"web": True, "skills": True, "agents": True, "auto_install": False, "code": True}
+    r.flags = {"web": True, "skills": True, "agents": True, "auto_install": False, "code": True, "docs": True}
     r._director_complete = lambda model, msgs: boom(msgs)
     return r, SimpleNamespace(backend=backend), events
 
 
 def test_the_runner_narrows_the_flags_and_the_thinking(monkeypatch):
     r, model, events = _runner(monkeypatch, "Hola, buenas", thinking=True, allow={"think": "auto"})
-    d = r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c"), model, [], False)
+    d = r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c", project_id=None), model, [], False)
     assert not any(r.flags[k] for k in ("web", "skills", "agents", "code")) and r.t.thinking is False
     assert events[0]["type"] == "director" and events[0]["tools"] == [] and d.source == "rules"
 
 
 def test_the_runner_keeps_what_the_message_needs(monkeypatch):
     r, model, events = _runner(monkeypatch, "Busca las últimas noticias sobre vLLM")
-    r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c"), model, [], False)
+    r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c", project_id=None), model, [], False)
     assert r.flags["web"] and not r.flags["code"] and r.max_steps >= 1
 
 
 def test_a_model_without_thinking_support_is_left_alone(monkeypatch):
     r, model, _ = _runner(monkeypatch, "Hola", backend="ollama", thinking=None)
-    r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c"), model, [], False)
+    r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c", project_id=None), model, [], False)
     assert r.t.thinking is None
 
 
 def test_image_mode_skips_the_director(monkeypatch):
     r, model, events = _runner(monkeypatch, "un gato", mode="image")
-    assert r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c"), model, [], False) is None and events == []
+    assert r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c", project_id=None), model, [], False) is None and events == []
 
 
 def test_a_yes_after_a_question_is_an_answer_not_small_talk():
@@ -216,5 +216,54 @@ def test_forcing_a_capability_lifts_the_step_cap():
 def test_without_a_director_the_models_own_thinking_default_is_left_alone(monkeypatch):
     r, model, _ = _runner(monkeypatch, "Hola", thinking=None)
     r.t.director = False
-    r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c"), model, [], False)
+    r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c", project_id=None), model, [], False)
     assert r.t.thinking is None
+
+
+# ------------------------------------------------------------------ the person's own documents
+
+def test_a_general_question_does_not_go_looking_in_the_persons_files():
+    """Found in a real chat: «para qué sirve el programa hermes» searched the knowledge base and answered from a robotics paper."""
+    for level in (0, 1):
+        d = D.decide(ask("para que sirve el programa hermes", level=level), boom)
+        assert not d.docs, level
+    d = D.decide(ask("para que sirve el programa hermes", level=2), lambda _: '{"think":false,"docs":false,"web":true,"code":false,"skills":false,"agents":false,"research":false,"reason":"programa externo"}')
+    assert not d.docs and d.web
+
+
+def test_documents_are_offered_when_the_message_is_about_them():
+    for text in ("Resume mi documento sobre calibración", "¿Qué dicen mis notas sobre el proyecto de Valencia?", "según mis archivos, ¿cuál es el presupuesto?",
+                 "busca en los documentos la fecha de entrega", "in my project folder, what is the deadline?"):
+        assert D.decide(ask(text, level=1), boom).docs, text
+    assert D.decide(ask("Analiza esto", attachments=["ventas.xlsx"], level=0), boom).docs  # an attachment is always about itself
+
+
+def test_in_a_project_the_model_judges_and_the_fast_levels_keep_the_documents():
+    assert D.decide(ask("¿Cuál es el siguiente paso?", level=1, project=True), boom).docs
+    d = D.decide(ask("¿Cuál es el siguiente paso?", level=2, project=True), lambda _: '{"think":false,"docs":false,"web":false,"code":false,"skills":false,"agents":false,"research":false,"reason":"charla"}')
+    assert not d.docs
+    assert not D.decide(ask("gracias", level=1, project=True), boom).docs  # small talk stays small talk
+
+
+def test_documents_can_be_forbidden_or_forced():
+    assert not D.decide(ask("Resume mi documento", allow={"docs": "off"}), boom).docs
+    assert D.decide(ask("hola", allow={"docs": "on"}), boom).docs
+
+
+def test_the_runner_leaves_the_document_tools_out_of_a_general_question(monkeypatch):
+    r, model, _ = _runner(monkeypatch, "para que sirve el programa hermes", effort=0)
+    r.flags["docs"] = True
+    r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c", project_id=None), model, [], False)
+    assert not r._tool_allowed("search_knowledge") and not r._tool_allowed("query_data") and r._tool_allowed("save_memory")
+
+
+def test_a_chosen_agent_keeps_its_tools(monkeypatch):
+    r, model, _ = _runner(monkeypatch, "hola", effort=0, preferred_agent="documentalista")
+    r.flags["docs"] = True
+    r._decide(SimpleNamespace(commit=lambda: None), SimpleNamespace(id="c", project_id=None), model, [], False)
+    assert r._tool_allowed("search_knowledge") and r.flags["agents"]
+
+
+def test_the_word_program_alone_is_not_a_request_to_run_code():
+    assert "code" not in D.decide(ask("para que sirve el programa hermes", level=1), boom).tools()
+    assert "code" in D.decide(ask("hazme un programa que ordene una lista", level=1), boom).tools()

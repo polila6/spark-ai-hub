@@ -1,2 +1,2 @@
 """Spark AI Hub backend."""
-__version__ = "0.19.0"
+__version__ = "0.19.1"

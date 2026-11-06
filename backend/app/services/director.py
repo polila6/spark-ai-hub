@@ -19,9 +19,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-CAPS = ("think", "web", "research", "skills", "agents", "code")
+CAPS = ("think", "docs", "web", "research", "skills", "agents", "code")
 STATES = ("auto", "on", "off")
-DEFAULT_ALLOW = {"think": "auto", "web": "auto", "research": "off", "skills": "auto", "agents": "auto", "code": "auto"}
+DEFAULT_ALLOW = {"think": "auto", "docs": "auto", "web": "auto", "research": "off", "skills": "auto", "agents": "auto", "code": "auto"}
 LEVELS = ("instant", "fast", "balanced", "deep", "max")
 STEP_CAP = {0: 3, 1: 8}  # chat only, when no tool is offered: the fastest levels do not wander
 STEP_CAP_TOOLS = {0: 8, 1: 12}  # ...and when the message explicitly asked for one (search, read, answer needs room)
@@ -55,6 +55,7 @@ class Ask:
     workspace: bool = False
     attachments: list[str] = field(default_factory=list)  # file names
     previous: str = ""  # start of the assistant's last message, for follow-ups
+    project: bool = False  # the chat belongs to a project (its documents may be what is asked about)
     es: bool = True
     director: bool = True  # False: no deciding, everything allowed is offered (the pre-director behaviour)
 
@@ -62,6 +63,7 @@ class Ask:
 @dataclass
 class Decision:
     think: bool = False
+    docs: bool = False  # the person's own documents (search_knowledge, read_document, describe_data, query_data)
     web: bool = False
     research: bool = False
     skills: bool = False
@@ -74,7 +76,7 @@ class Decision:
     ms: float = 0.0
 
     def tools(self) -> list[str]:
-        return [c for c in ("web", "research", "skills", "agents", "code") if getattr(self, c)]
+        return [c for c in ("docs", "web", "research", "skills", "agents", "code") if getattr(self, c)]
 
     def public(self) -> dict:
         return {"think": self.think, "tools": self.tools(), "level": self.level, "source": self.source,
@@ -94,7 +96,7 @@ WEB_WORDS = re.compile(r"\b(busca|buscar|b[uú]scame|googlea|investiga en intern
                        r"recientes?|actual(?:es|idad)?|hoy|ayer|esta semana|este mes|cotizaci[oó]n|precio(?:s)? (?:de|del|actual)|"
                        r"versi[oó]n m[aá]s reciente|search the web|look up|latest|news|current|today|right now|price of|"
                        r"what'?s new|release notes)\b", re.I)
-CODE_WORDS = re.compile(r"(```|\b(ejecuta|ejec[uú]talo|corre el|script|programa|python|pandas|gr[aá]fic[ao]s?|plot|histograma|"
+CODE_WORDS = re.compile(r"(```|\b(ejecuta|ejec[uú]talo|corre el|script|(?:escribe|crea|haz|genera|hazme|escr[ií]beme) (?:un|el|este) programa|python|pandas|gr[aá]fic[ao]s?|plot|histograma|"
                         r"regresi[oó]n|simula|simulaci[oó]n|calcula|csv|excel|xlsx|dataset|datos adjuntos|run (?:this|the) code|"
                         r"chart|analy[sz]e the data)\b)", re.I)
 THINK_WORDS = re.compile(r"\b(demuestra|demostrar|prueba que|razona|paso a paso|analiza|an[aá]lisis (?:profundo|detallado)|compara|"
@@ -103,6 +105,10 @@ THINK_WORDS = re.compile(r"\b(demuestra|demostrar|prueba que|razona|paso a paso|
                          r"step by step|why does|design|architecture|optimi[sz]e)\b", re.I)
 RESEARCH_WORDS = re.compile(r"\b(investiga a fondo|investigaci[oó]n (?:a fondo|profunda|exhaustiva)|estado del arte|revisi[oó]n bibliogr[aá]fica|"
                             r"informe (?:completo|detallado|exhaustivo) sobre|deep research|literature review|in-depth report)\b", re.I)
+DOC_WORDS = re.compile(r"\b(mis? (?:documentos?|archivos?|notas|papers?|art[ií]culos|informes?|datos|ficheros|pdfs?)|(?:en|de) (?:mi|el|nuestro) "
+                       r"(?:proyecto|repositorio|carpeta|drive|base de conocimiento|colecci[oó]n)|seg[uú]n (?:mis|mi|el|los) (?:documentos?|archivos?|notas|informe)|"
+                       r"en los (?:documentos|archivos|papers)|(?:este|ese|el) (?:archivo|documento|pdf|excel|csv)|adjunt\w+|"
+                       r"base de conocimiento|my (?:documents?|files?|notes|papers|project)|in (?:my|the) (?:project|documents|files)|attached|uploaded)\b", re.I)
 AGENT_WORDS = re.compile(r"\b(en paralelo|varios agentes|agentes en paralelo|in parallel|several agents|divide (?:la|el) tarea)\b", re.I)
 SKILL_WORDS = re.compile(r"\b(docx|pptx|xlsx|word|powerpoint|presentaci[oó]n|informe|documento|pdf|plantilla|memoria|word document|slides?|"
                          r"report|template)\b", re.I)
@@ -111,6 +117,7 @@ SKILL_WORDS = re.compile(r"\b(docx|pptx|xlsx|word|powerpoint|presentaci[oó]n|in
 @dataclass
 class Signals:
     trivial: bool = False
+    docs: bool = False
     web: bool = False
     code: bool = False
     think: bool = False
@@ -137,6 +144,14 @@ def classify(ask: Ask) -> Signals:
     if WEB_WORDS.search(text):
         s.web, s.confident = True, True
         s.why.append("pide información actual")
+    if ask.attachments:
+        s.docs = s.confident = True
+        s.why.append("hay archivos adjuntos")
+    elif DOC_WORDS.search(text):
+        s.docs = s.confident = True
+        s.why.append("se refiere a tus documentos")
+    elif ask.project:
+        s.docs = True  # a project chat: its documents may matter, but that is for the model to judge (not confident)
     if RESEARCH_WORDS.search(text):
         s.research = s.web = s.agents = s.confident = True
         s.why.append("pide una investigación a fondo")
@@ -159,8 +174,10 @@ def classify(ask: Ask) -> Signals:
 
 PROMPT = ("You route requests for an assistant. Decide which capabilities the user's LAST message needs so it is answered "
           "as fast as possible without losing accuracy. Reply with ONLY a JSON object: "
-          '{"think":bool,"web":bool,"code":bool,"skills":bool,"agents":bool,"research":bool,"reason":"<=8 words"}. '
-          "think: multi-step reasoning, maths, debugging, planning. web: current or external facts, or a URL. code: run "
+          '{"think":bool,"docs":bool,"web":bool,"code":bool,"skills":bool,"agents":bool,"research":bool,"reason":"<=8 words"}. '
+          "think: multi-step reasoning, maths, debugging, planning. docs: ONLY when the message is about the user's own "
+          "documents, files, notes, attachments or project (never for general knowledge or for programs, people or topics "
+          "that need not be in their files). web: current or external facts, or a URL. code: run "
           "code, analyse data files, make charts or files. skills: office documents or specialised procedures. agents: only "
           "big parallel jobs. research: only an explicit in-depth research report. Everything false for chit-chat, simple "
           "questions, translation, rewriting, or explanations from general knowledge. Only choose among the available ones.")
@@ -168,7 +185,8 @@ PROMPT = ("You route requests for an assistant. Decide which capabilities the us
 
 def build_prompt(ask: Ask, candidates: set[str]) -> list[dict]:
     body = (f"Available: {', '.join(sorted(candidates)) or 'none'}\n"
-            f"Attachments: {', '.join(ask.attachments[:8]) or 'none'}\n"
+            + ("This chat belongs to a project with its own documents.\n" if ask.project else "")
+            + f"Attachments: {', '.join(ask.attachments[:8]) or 'none'}\n"
             + (f"Assistant's previous message (start): {ask.previous[:300]}\n" if ask.previous else "")
             + f"User message: {ask.content[:1500]}")
     return [{"role": "system", "content": PROMPT}, {"role": "user", "content": body}]
@@ -184,7 +202,7 @@ def parse_opinion(text: str) -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
-    out = {k: bool(data.get(k)) for k in ("think", "web", "code", "skills", "agents", "research")}
+    out = {k: bool(data.get(k)) for k in ("think", "docs", "web", "code", "skills", "agents", "research")}
     out["reason"] = str(data.get("reason") or "")[:80]
     return out
 
@@ -207,7 +225,7 @@ def decide(ask: Ask, complete: Callable[[list[dict]], str] | None = None) -> Dec
         if ask.workspace:  # a workspace task runs on its commands and delegates: none of that is taken away mid-task
             use |= {c for c in ("code", "skills", "agents") if c in avail and allow[c] != "off"}
         d.think = "think" in use
-        for c in ("web", "research", "skills", "agents", "code"):
+        for c in ("docs", "web", "research", "skills", "agents", "code"):
             setattr(d, c, c in use)
         if d.research:  # deep research needs the web and agents
             d.web = d.web or "web" in avail
@@ -231,7 +249,7 @@ def decide(ask: Ask, complete: Callable[[list[dict]], str] | None = None) -> Dec
     if sig.trivial:
         pass
     elif sig.confident or level <= 1 or complete is None:
-        want = {c for c, on in (("think", sig.think), ("web", sig.web), ("code", sig.code), ("skills", sig.skills),
+        want = {c for c, on in (("think", sig.think), ("docs", sig.docs), ("web", sig.web), ("code", sig.code), ("skills", sig.skills),
                                 ("agents", sig.agents), ("research", sig.research)) if on}
         if not sig.confident and level >= 2 and complete is None:  # unsure and nobody to ask: keep everything allowed
             want = set(candidates) - {"research"}

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import tempfile
 import uuid
 import zipfile
 from pathlib import Path
@@ -208,16 +209,8 @@ def extract(path: Path, ext: str) -> list[tuple[int | None, str]]:
     return [(None, raw.decode("utf-8", errors="replace"))]
 
 
-def process(f: UserFile) -> dict:
-    """Extract text to disk. Returns {"status", "chars", "pages"}."""
-    path = abs_path(f)
-    ext = path.suffix.lower()
-    if f.kind not in ("document", "data") or ext in (".sqlite", ".db", ".parquet"):
-        return {"status": "unsupported", "chars": 0, "pages": 0}
-    why = skip_text_reason(ext, path.stat().st_size)
-    if why:
-        return {"status": "unsupported", "chars": 0, "pages": 0, "reason": why}
-    pages = extract(path, ext)
+def _persist_extracted(f: UserFile, pages: list[tuple[int | None, str]]) -> dict:
+    """Persist only searchable text and page boundaries, never the source bytes."""
     total = 0
     clean = []
     for pg, txt in pages:
@@ -231,6 +224,41 @@ def process(f: UserFile) -> dict:
     text_path(f).write_text("\n\n".join(t for _, t in clean), encoding="utf-8")
     pages_path(f).write_text(json.dumps(clean, ensure_ascii=False), encoding="utf-8")
     return {"status": "ready" if total else "empty", "chars": total, "pages": len(clean)}
+
+
+def process(f: UserFile) -> dict:
+    """Extract text from a stored file. Returns {"status", "chars", "pages"}."""
+    path = abs_path(f)
+    ext = path.suffix.lower()
+    if f.kind not in ("document", "data") or ext in (".sqlite", ".db", ".parquet"):
+        return {"status": "unsupported", "chars": 0, "pages": 0}
+    why = skip_text_reason(ext, path.stat().st_size)
+    if why:
+        return {"status": "unsupported", "chars": 0, "pages": 0, "reason": why}
+    return _persist_extracted(f, extract(path, ext))
+
+
+def process_bytes(f: UserFile, data: bytes, ext: str) -> dict:
+    """Extract from the container's RAM filesystem and persist only text/pages.
+
+    Used by index-only connectors. ``/dev/shm`` is memory-backed, not persistent storage, and the temporary source is
+    removed in ``finally`` as soon as extraction finishes.
+    """
+    if f.kind not in ("document", "data") or ext in (".sqlite", ".db", ".parquet"):
+        return {"status": "unsupported", "chars": 0, "pages": 0}
+    why = skip_text_reason(ext, len(data))
+    if why:
+        return {"status": "unsupported", "chars": 0, "pages": 0, "reason": why}
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="sah-index-only-", suffix=ext, dir="/dev/shm", delete=False) as ram_file:
+            ram_file.write(data)
+            ram_file.flush()
+            tmp_path = Path(ram_file.name)
+        return _persist_extracted(f, extract(tmp_path, ext))
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
 
 def render_pdf_pages(f: UserFile, max_pages: int = 4, scale: float = 1.4) -> list[bytes]:

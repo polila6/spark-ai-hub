@@ -396,6 +396,8 @@ def test_connector_validation_and_private_addresses(monkeypatch):
     from app.services import connectors
 
     assert connectors.validate("github", {"repo": "anthropics/skills", "path": "skills", "extra": 1}) == {"repo": "anthropics/skills", "path": "skills"}
+    assert connectors.validate("smb", {"host": "files", "share": "docs", "index_only": True}) == {
+        "host": "files", "share": "docs", "index_only": True}
     for kind, cfg in [("github", {"repo": "nope"}), ("zotero", {"library_id": "abc"}), ("webdav", {"url": "ftp://x"}), ("smb", {"host": "h"})]:
         with pytest.raises(connectors.ConnectorError):
             connectors.validate(kind, cfg)
@@ -411,6 +413,28 @@ def test_connector_validation_and_private_addresses(monkeypatch):
         monkeypatch.setattr(connectors.socket, "getaddrinfo", fake(bad))
         with pytest.raises(connectors.ConnectorError):
             connectors.resolve(None, "nas.lab", 445)  # never, even when listed
+
+
+def test_index_only_extraction_uses_ram_filesystem(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services import files as files_svc
+
+    seen = {}
+
+    def extract(path, ext):
+        seen["path"] = str(path)
+        seen["ext"] = ext
+        seen["exists_during_extract"] = path.exists()
+        return [(1, path.read_bytes().decode())]
+
+    monkeypatch.setattr(files_svc, "extract", extract)
+    monkeypatch.setattr(files_svc, "_persist_extracted", lambda _f, pages: {"status": "ready", "chars": len(pages[0][1]), "pages": len(pages)})
+    result = files_svc.process_bytes(SimpleNamespace(kind="document"), b"not persisted", ".txt")
+    assert result == {"status": "ready", "chars": 13, "pages": 1}
+    assert seen["ext"] == ".txt" and seen["exists_during_extract"] is True
+    assert seen["path"].startswith("/dev/shm/") and seen["path"].endswith(".txt")
+    assert not Path(seen["path"]).exists()
 
 
 def test_oidc_id_token_claims_and_parsers():

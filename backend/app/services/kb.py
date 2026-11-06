@@ -12,7 +12,7 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from ..engines import EngineError
-from ..models import (KbChunk, KbCollection, KbDocument, ModelStatus, Project, RegisteredModel, SharedResource, User,
+from ..models import (KbChunk, KbCollection, KbConnector, KbDocument, ModelStatus, Project, RegisteredModel, SharedResource, User,
                       UserFile, Visibility)
 from ..settings_store import get_setting
 from . import files as files_svc
@@ -172,18 +172,6 @@ def search(db: Session, user: User, query: str, collection_ids: list[uuid.UUID] 
         return {"mode": "none", "results": []}
     ranks: dict[int, float] = {}
     mode = "fts"
-    em = embedding_model(db)
-    if em is not None:
-        try:
-            qv = embed(em.id, [query])[0]
-            rows = db.execute(text(
-                "SELECT id FROM kb_chunks WHERE collection_id = ANY(:c) AND model = :m AND embedding IS NOT NULL "
-                "ORDER BY embedding <=> CAST(:q AS vector) LIMIT 40"), {"c": cids, "m": em.alias, "q": _vec(qv)}).all()
-            for r, (cid,) in enumerate(rows):
-                ranks[cid] = ranks.get(cid, 0) + 1 / (60 + r)
-            mode = "hybrid"
-        except (EngineError, scheduler.SchedulingError):
-            mode = "fts (embedding model unavailable)"
     rows = db.execute(text(
         "SELECT id FROM kb_chunks WHERE collection_id = ANY(:c) AND tsv @@ websearch_to_tsquery('simple', :t) "
         "ORDER BY ts_rank_cd(tsv, websearch_to_tsquery('simple', :t)) DESC LIMIT 40"), {"c": cids, "t": query}).all()
@@ -196,6 +184,27 @@ def search(db: Session, user: User, query: str, collection_ids: list[uuid.UUID] 
                 {"c": cids, "t": " | ".join(words)}).all()
     for r, (cid,) in enumerate(rows):
         ranks[cid] = ranks.get(cid, 0) + 1 / (60 + r)
+    # During a bulk connector sync the CPU embedding engine is saturated for minutes at a time. If exact full-text
+    # matches already exist, return them immediately; semantic retrieval remains available for queries with no strong
+    # lexical match and automatically resumes for every query once the sync finishes.
+    syncing = db.scalar(select(KbConnector.id).where(KbConnector.owner_id == user.id,
+                                                      KbConnector.status == "syncing").limit(1))
+    if syncing and rows:
+        mode = "fts (indexing in progress)"
+    else:
+        em = embedding_model(db)
+        if em is not None:
+            try:
+                qv = embed(em.id, [query])[0]
+                vector_rows = db.execute(text(
+                    "SELECT id FROM kb_chunks WHERE collection_id = ANY(:c) AND model = :m AND embedding IS NOT NULL "
+                    "ORDER BY embedding <=> CAST(:q AS vector) LIMIT 40"),
+                    {"c": cids, "m": em.alias, "q": _vec(qv)}).all()
+                for r, (cid,) in enumerate(vector_rows):
+                    ranks[cid] = ranks.get(cid, 0) + 1 / (60 + r)
+                mode = "hybrid"
+            except (EngineError, scheduler.SchedulingError):
+                mode = "fts (embedding model unavailable)"
     top = sorted(ranks.items(), key=lambda x: -x[1])[:k]
     if not top:
         return {"mode": mode, "results": []}
@@ -203,6 +212,14 @@ def search(db: Session, user: User, query: str, collection_ids: list[uuid.UUID] 
     docs = {d.id: d for d in db.scalars(select(KbDocument).where(KbDocument.id.in_({c.document_id for c in chunks.values()})))}
     fids = {d.file_id for d in docs.values()}
     fmap = {f.id: f for f in db.scalars(select(UserFile).where(UserFile.id.in_(fids)))}
+    connector_ids = set()
+    for f in fmap.values():
+        try:
+            connector_ids.add(uuid.UUID(str((f.meta or {}).get("connector"))))
+        except (ValueError, TypeError, AttributeError):
+            pass
+    connectors = {str(c.id): c for c in db.scalars(select(KbConnector).where(KbConnector.id.in_(connector_ids)))} \
+        if connector_ids else {}
     cols = {c.id: c.name for c in db.scalars(select(KbCollection).where(KbCollection.id.in_(cids)))}
     results = []
     for cid, score in top:
@@ -211,7 +228,17 @@ def search(db: Session, user: User, query: str, collection_ids: list[uuid.UUID] 
             continue
         d = docs.get(c.document_id)
         f = fmap.get(d.file_id) if d else None
+        meta = (f.meta or {}) if f else {}
+        source_path = meta.get("source_path")
+        connector = connectors.get(str(meta.get("connector")))
+        cfg = (connector.config or {}) if connector else {}
+        if source_path and cfg.get("display_host"):
+            access_root = f"\\\\{cfg.get('host', '')}\\{cfg.get('share', '')}"
+            display_root = f"\\\\{cfg['display_host']}\\{cfg.get('share', '')}"
+            if source_path.lower().startswith(access_root.lower()):
+                source_path = display_root + source_path[len(access_root):]
         results.append({"chunk_id": c.id, "score": round(score, 5), "text": c.text, "page": c.page,
                         "file_id": str(f.id) if f else None, "filename": f.filename if f else "?",
-                        "collection": cols.get(c.collection_id), "collection_id": str(c.collection_id)})
+                        "collection": cols.get(c.collection_id), "collection_id": str(c.collection_id),
+                        "source_path": source_path, "index_only": bool(meta.get("index_only"))})
     return {"mode": mode, "results": results}

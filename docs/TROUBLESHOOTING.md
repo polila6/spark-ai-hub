@@ -30,3 +30,17 @@ docker compose exec postgres psql -U sah -d sah -c "select type,status,count(*) 
 ```
 
 Diagnostic bundle (admin): Ajustes → Diagnóstico → "Paquete de diagnóstico" (secrets redacted).
+
+## The whole machine froze while loading a big model (web stuck, Tailscale "disconnected")
+On the Spark the GPU memory is the system memory, and a large vLLM load peaks far above what the model holds afterwards (seen:
+117 of 121 GB used while loading a 70 GB model). If anything else is using memory then — a big download, the robot server's text
+encoder, an idle model not freed yet — the NVIDIA driver cannot allocate, the kernel logs `NV_ERR_NO_MEMORY`, tasks block for
+minutes and the machine stops answering until it is power-cycled. Check after the fact with
+`journalctl -b -1 -k | grep -E "NV_ERR_NO_MEMORY|oom-kill|blocked for more"`.
+
+The hub now protects itself (`services/memguard.py`): before a heavy load it pauses running Hugging Face downloads (they resume
+afterwards), frees the robot server's memory, evicts idle models and requires real free memory (reservation + `load_safety_gb`,
+default 8 GB) — otherwise it refuses with the numbers. Downloads also wait while a large model loads and for the first minute after
+a restart. A model that died for lack of memory is **not** re-loaded automatically (administrators get a notification); load it by
+hand from the Library when the machine is quiet. To make a freeze recover on its own, run `sudo scripts/harden-memory.sh --apply`
+(reserves 4 GiB of headroom, reboots 30 s after a task is blocked for 5 minutes, enables the hardware watchdog); `--revert` undoes it.

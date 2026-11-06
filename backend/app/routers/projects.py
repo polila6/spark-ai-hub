@@ -246,9 +246,11 @@ def list_documents(cid: uuid.UUID, p: Principal = Depends(current_principal), db
     out = []
     for d in db.scalars(select(KbDocument).where(KbDocument.collection_id == cid).order_by(KbDocument.created_at.desc())):
         f = db.get(UserFile, d.file_id)
+        meta = (f.meta or {}) if f else {}
         out.append({"id": str(d.id), "file_id": str(d.file_id), "filename": f.filename if f else "?",
                     "size_bytes": f.size_bytes if f else 0, "status": d.status, "chunks": d.chunks,
-                    "embedding_model": d.embedding_model, "error": d.error, "created_at": d.created_at})
+                    "embedding_model": d.embedding_model, "error": d.error, "created_at": d.created_at,
+                    "source_path": meta.get("source_path"), "index_only": bool(meta.get("index_only"))})
     return out
 
 

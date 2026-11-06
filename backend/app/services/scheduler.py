@@ -33,7 +33,7 @@ from ..models import (
 )
 from ..redis_client import get_redis
 from ..settings_store import get_setting
-from . import telemetry
+from . import memguard, telemetry
 
 GB = 1e9
 LIVE_MARGIN_GB = 3.0
@@ -288,17 +288,48 @@ def ensure_loaded(model_id: uuid.UUID, *, wait_s: float = 1800, actor_id=None, p
             _set_status(db, model, ModelStatus.loading, None, actor_id=actor_id)
             db.commit()
             inst_id = inst.id
-        ok, reason = try_reserve("runtime", inst_id, mem, sched_class="interactive",
-                                 note=f"model {model.alias}", exclude_instances={inst_id})
-        if not ok:
-            with SessionLocal() as db:
-                db.delete(db.get(RuntimeInstance, inst_id))
-                m = db.get(RegisteredModel, model_id)
-                _set_status(db, m, prev_status if prev_status != ModelStatus.loading else ModelStatus.installed,
-                            f"Not loaded: {reason}", event="load.refused", details={"reason": reason})
-                db.commit()
-            raise SchedulingError("insufficient_resources", f"Cannot load {model.alias}: {reason}", retry_after=60)
-        return _do_load(model_id, inst_id, params, actor_id)
+        # A big vLLM load peaks far above what the model holds afterwards, and on this machine the GPU memory is the
+        # system memory: nothing else may be eating into it meanwhile (see services/memguard.py).
+        heavy = model.backend == "vllm" and memguard.is_heavy(mem, mem_total_gb())
+        if heavy:
+            memguard.prepare_heavy_load()  # pause downloads, let the robot server go
+        try:
+            ok, reason = try_reserve("runtime", inst_id, mem, sched_class="interactive",
+                                     note=f"model {model.alias}", exclude_instances={inst_id})
+            if ok and heavy:
+                with SessionLocal() as db:
+                    margin = memguard.margin_gb(db)
+                enough, why = memguard.wait_for_headroom(mem, margin, mem_available_gb)
+                if not enough:
+                    release(inst_id)
+                    ok, reason = False, f"not enough free memory: {why}"
+            if not ok:
+                with SessionLocal() as db:
+                    db.delete(db.get(RuntimeInstance, inst_id))
+                    m = db.get(RegisteredModel, model_id)
+                    _set_status(db, m, prev_status if prev_status != ModelStatus.loading else ModelStatus.installed,
+                                f"Not loaded: {reason}", event="load.refused", details={"reason": reason})
+                    db.commit()
+                raise SchedulingError("insufficient_resources", f"Cannot load {model.alias}: {reason}", retry_after=60)
+            return _do_load(model_id, inst_id, params, actor_id)
+        finally:
+            if heavy:
+                memguard.finish_heavy_load()  # downloads that were paused go on
+
+
+def _note_oom(model_id, alias: str, msg: str) -> None:
+    """A load that died for lack of memory: stop automatic retries and tell the administrators once."""
+    try:
+        memguard.flag_oom(model_id)
+        from . import notify
+
+        with SessionLocal() as db:
+            notify.notify_managers(db, "model_memory", f"{alias} se quedó sin memoria al cargar",
+                                   "No se volverá a cargar sola. Cuando no haya descargas ni otros modelos pesados, cárgala a mano "
+                                   "desde la Biblioteca. " + msg[:200], link=f"/models/{model_id}", email=False)
+            db.commit()
+    except Exception as e:  # noqa: BLE001
+        log.warning("scheduler.oom_note_failed", error=str(e))
 
 
 def _do_load(model_id, inst_id, params: dict, actor_id) -> RuntimeInstance:
@@ -321,9 +352,13 @@ def _do_load(model_id, inst_id, params: dict, actor_id) -> RuntimeInstance:
             with SessionLocal() as db2:
                 db2.delete(db2.get(RuntimeInstance, inst_id))
                 db2.commit()
+            if memguard.is_oom_failure(msg):
+                # Do not let the resident-model loop try again by itself: it would repeat the crisis every ten minutes.
+                _note_oom(model_id, model.alias, msg)
             if isinstance(e, EngineError):
                 raise
             raise EngineError(msg) from e
+        memguard.clear_oom(model_id)
         after = mem_available_gb()
         delta = max(0.0, before - after)
         inst = db.get(RuntimeInstance, inst_id)
@@ -688,6 +723,8 @@ def ensure_resident() -> str | None:
         if db.scalar(select(RuntimeInstance.id).where(RuntimeInstance.model_id == m.id)):
             return None
         mid = m.id
+    if memguard.oom_flagged(mid):
+        return None  # it died for lack of memory last time: a person loads it again when the machine is quiet
     r = get_redis()
     if not r.set("sah:resident:attempt", alias, nx=True, ex=600):
         return None

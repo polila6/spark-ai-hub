@@ -145,6 +145,7 @@ function Chat() {
   const { data: models } = useSWR("/api/v1/models");
   const { data: projects } = useSWR("/api/v1/projects");
   const { data: prompts, mutate: mutPrompts } = useSWR("/api/v1/playground/prompts");
+  const { data: agentData } = useSWR("/api/v1/agents");
   const [projectId, setProjectId] = useState<string>(sp.get("project") ?? "");
   const { data: convs, mutate: mutConvs } = useSWR(`/api/v1/playground/conversations${projectId ? `?project_id=${projectId}` : ""}`);
   const chatModels = useMemo(() => (models ?? []).filter((m: any) => m.capabilities?.includes("chat") && ["installed", "ready", "loading", "busy"].includes(m.status)), [models]);
@@ -162,6 +163,7 @@ function Chat() {
   const [mode, setMode] = useState<"chat" | "image">("chat");
   const [aspect, setAspect] = useState("square");
   const [tools, setTools] = useState(true);
+  const [preferredAgent, setPreferredAgent] = useState("");
   const [effort, setEffort] = useEffort();
   const { data: voice } = useSWR("/api/v1/voice");
   const [autoRead, setAutoRead] = useState(false);
@@ -179,6 +181,7 @@ function Chat() {
   const textRef = useRef<HTMLTextAreaElement>(null);
   const sel = chatModels.find((m: any) => m.alias === model);
   const proj = (projects ?? []).find((p: any) => p.id === projectId);
+  const availableAgents = useMemo(() => (agentData?.agents ?? []).filter((a: any) => a.enabled), [agentData]);
 
   // New chats use the general model (always loaded for everyone) unless the project says otherwise.
   const { data: pub } = useSWR("/api/v1/settings/public");
@@ -245,6 +248,7 @@ function Chat() {
     if (c.model_alias) setModel(c.model_alias);
     if (c.project_id) setProjectId(c.project_id);
     setSystem(c.settings?.system_prompt ?? "");
+    setPreferredAgent(c.settings?.preferred_agent ?? "");
     setCtxLimit(c.settings?.context_limit ?? 0);
     setAutoCompact(c.settings?.auto_compact ?? true);
     setEffort((cur) => effortFrom(c.settings, cur));
@@ -271,7 +275,8 @@ function Chat() {
 
   async function ensureConv(): Promise<string> {
     if (cid) return cid;
-    const c = await api("/api/v1/playground/conversations", { method: "POST", json: { model_alias: model || null, project_id: projectId || null } });
+    const settings = preferredAgent ? { preferred_agent: preferredAgent } : {};
+    const c = await api("/api/v1/playground/conversations", { method: "POST", json: { model_alias: model || null, project_id: projectId || null, settings } });
     setCid(c.id);
     mutConvs();
     return c.id;
@@ -316,8 +321,23 @@ function Chat() {
   }
   const turnBody = (useModel: string, useSel: any, m: string) => ({
     model_alias: useModel, system_prompt: system || undefined, temperature: temp, max_tokens: maxTok, mode: m, tools,
-    aspect, context_limit: ctxLimit || undefined, auto_compact: autoCompact, ...effortBody(effort),
+    aspect, context_limit: ctxLimit || undefined, auto_compact: autoCompact,
+    preferred_agent: m === "chat" ? preferredAgent || undefined : undefined,
+    ...effortBody(effort),
   });
+  async function choosePreferredAgent(value: string) {
+    const previous = preferredAgent;
+    setPreferredAgent(value);
+    if (value) setTools(true);
+    if (!cid) return;
+    try {
+      await api(`/api/v1/playground/conversations/${cid}`, { method: "PATCH", json: { preferred_agent: value || null } });
+      mutConvs();
+    } catch (e: any) {
+      setPreferredAgent(previous);
+      push("error", e.message);
+    }
+  }
   const pendingMsg = (alias: string): Msg => ({ role: "assistant", content: "", pending: true, model_alias: alias, tools: [], activity: { t0: Date.now() } });
 
   async function send(text?: string, forcedMode?: "chat" | "image", modelAlias?: string) {
@@ -443,7 +463,7 @@ function Chat() {
   const setOptions = (v: boolean) => { setOptionsState(v); try { localStorage.setItem("sah-chat-options", v ? "1" : "0"); } catch { /* storage unavailable */ } };
   useAutoGrow(textRef, input, 220);
   const queuedCount = msgs.filter((m) => m.queued === "queued").length;
-  const newChat = () => { abort.current?.abort(); viewing.current = null; setCanvas(null); setCid(null); setMsgs([]); setAtts([]); setErr(null); setStatus(null); setCtxUsed(null); setEditing(null); };
+  const newChat = () => { abort.current?.abort(); viewing.current = null; setCanvas(null); setCid(null); setMsgs([]); setAtts([]); setErr(null); setStatus(null); setCtxUsed(null); setEditing(null); setPreferredAgent(""); };
   return (
     <div className={cx("grid h-[calc(100dvh-10.5rem)] gap-4 lg:h-[calc(100vh-7.5rem)]", canvas ? "lg:grid-cols-[230px_minmax(0,1fr)_minmax(0,1.1fr)]" : options ? "lg:grid-cols-[230px_minmax(0,1fr)] xl:grid-cols-[230px_minmax(0,1fr)_280px]" : "lg:grid-cols-[230px_minmax(0,1fr)]")}>
       <h1 className="sr-only">{L("Chat", "Chat")}</h1>
@@ -452,7 +472,7 @@ function Chat() {
         <div className="space-y-2 border-b border-border p-3">
           <Button variant="primary" className="w-full" onClick={newChat}><MessageSquarePlus className="h-4 w-4" />{t("play.new")}</Button>
           <div className="relative"><Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-subtle" /><Input className="h-8 pl-8 text-xs" placeholder={L("Buscar en tus chats…", "Search your chats…")} value={q} onChange={(e) => setQ(e.target.value)} /></div>
-          {(projects?.length ?? 0) > 0 && <Select className="h-8 text-xs" aria-label={L("Proyecto", "Project")} value={projectId} onChange={(e) => { setProjectId(e.target.value); setCid(null); setMsgs([]); }}>
+          {(projects?.length ?? 0) > 0 && <Select className="h-8 text-xs" aria-label={L("Proyecto", "Project")} value={projectId} onChange={(e) => { setProjectId(e.target.value); setCid(null); setMsgs([]); setPreferredAgent(""); }}>
             <option value="">{L("Todos los chats (sin proyecto)", "All chats (no project)")}</option>
             {(projects ?? []).map((p: any) => <option key={p.id} value={p.id}>📁 {p.name}</option>)}
           </Select>}
@@ -563,6 +583,22 @@ function Chat() {
                 <option value="square">{L("Cuadrado", "Square")}</option><option value="landscape">{L("Horizontal 4:3", "Landscape 4:3")}</option><option value="portrait">{L("Vertical 3:4", "Portrait 3:4")}</option><option value="wide">16:9</option><option value="tall">9:16</option></Select></label>
             ) : (
               <>
+                {agentData?.settings?.enabled !== false && availableAgents.length > 0 && (
+                  <label className="inline-flex h-7 max-w-[210px] items-center gap-1 rounded-full border border-border px-2 text-xs text-muted"
+                    title={L("El agente elegido realizará la tarea principal; el asistente puede coordinar otros agentes si hacen falta", "The selected agent handles the main task; the assistant may coordinate other agents when needed")}>
+                    <Bot className={cx("h-3.5 w-3.5 shrink-0", preferredAgent && "text-accent")} />
+                    <Select aria-label={L("Agente preferido", "Preferred agent")} className="h-6 min-w-0 max-w-[170px] border-0 bg-transparent px-1 text-xs shadow-none"
+                      value={preferredAgent} disabled={!!status} onChange={(e) => choosePreferredAgent(e.target.value)}>
+                      <option value="">{L("Automático", "Automatic")}</option>
+                      <optgroup label={L("Agentes del hub", "Hub agents")}>
+                        {availableAgents.filter((a: any) => a.builtin).map((a: any) => <option key={a.id} value={a.name}>{a.name}</option>)}
+                      </optgroup>
+                      {availableAgents.some((a: any) => !a.builtin) && <optgroup label={L("Agentes personalizados", "Custom agents")}>
+                        {availableAgents.filter((a: any) => !a.builtin).map((a: any) => <option key={a.id} value={a.name}>{a.name}{a.mine ? L(" (mío)", " (mine)") : ""}</option>)}
+                      </optgroup>}
+                    </Select>
+                  </label>
+                )}
                 <Chip on={tools} onChange={setTools} icon={Wrench} label={L("Herramientas", "Tools")} tip={L("Archivos, código, imágenes, agentes y skills", "Files, code, images, agents and skills")} />
                 <PermChips value={effort} onChange={setEffort} canThink={sel?.backend === "vllm"} canWeb={!!(tools && sel?.tools_enabled && pub?.web_search_enabled !== false)}
                   canResearch={!!(tools && sel?.tools_enabled && pub?.web_search_enabled !== false && pub?.agents_enabled !== false)} />

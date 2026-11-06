@@ -14,7 +14,7 @@ from ...config import get_settings
 from ...db import SessionLocal
 from ...engines import get_engine
 from ...models import DownloadStatus, DownloadTask, JobStatus, ModelStatus, RegisteredModel
-from ...services import registry
+from ...services import memguard, registry
 from ...services.jobs import create_job
 from ...settings_store import get_setting
 from ..context import Cancelled, JobContext
@@ -75,6 +75,16 @@ class HfDownload(Handler):
             registry.mark(db, model, ModelStatus.downloading, None, event="download.start",
                           details={"repo": repo_id, "revision": revision})
             db.commit()
+        # Not while a large model is loading (and not before the resident model had its turn after a restart): a big
+        # download and a big load at once is what left the machine without memory. It starts by itself afterwards.
+        waited = 0.0
+        while (why := memguard.downloads_should_wait()) and waited < memguard.QUIET_MAX_WAIT_S:
+            if waited == 0:
+                ctx.log(f"Download held: {why}")
+            ctx.progress(0.0, f"Waiting: {why}", force=True)
+            ctx.raise_if_cancelled()
+            time.sleep(10)
+            waited += 10
         ctx.log(f"Downloading {repo_id}@{revision[:12]} ({total / GB:.2f} GB expected)")
         with SessionLocal() as db:
             files = (db.get(RegisteredModel, model_id).compat or {}).get("files") or []

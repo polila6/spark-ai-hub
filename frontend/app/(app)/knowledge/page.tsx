@@ -53,7 +53,7 @@ export default function KnowledgePage() {
               ) : (
                 <Table head={[L("Documento", "Document"), L("Tamaño", "Size"), L("Estado", "Status"), L("Fragmentos", "Chunks"), L("Búsqueda", "Search"), L("Añadido", "Added"), ""]}>
                   {docs?.map((d: any) => (
-                    <tr key={d.id}><Td className="max-w-[260px] truncate font-medium">{d.filename}</Td><Td className="text-xs">{bytes(d.size_bytes)}</Td>
+                    <tr key={d.id}><Td className="max-w-[320px]"><p className="truncate font-medium">{d.filename}</p>{d.source_path && <p className="truncate text-[10px] text-muted" title={d.source_path}>{d.source_path}</p>}</Td><Td className="text-xs">{bytes(d.size_bytes)}{d.index_only && <p className="text-[10px] text-muted">{L("original no almacenado", "original not stored")}</p>}</Td>
                       <Td><Badge tone={d.status === "ready" ? "ok" : d.status === "failed" ? "danger" : "info"} title={d.error}>{d.status}</Badge>{d.error && <p className="mt-1 max-w-[220px] text-[10px] text-danger">{d.error}</p>}</Td>
                       <Td>{d.chunks}</Td><Td className="text-xs text-muted">{d.embedding_model === "fts-only" ? L("palabras clave", "keywords") : d.embedding_model ? L("semántica + palabras", "semantic + keywords") : "—"}</Td>
                       <Td className="whitespace-nowrap text-xs text-muted">{dt(d.created_at, lang)}</Td>
@@ -76,6 +76,7 @@ export default function KnowledgePage() {
                 <p className="text-[11px] text-muted">{L("Modo", "Mode")}: {res.mode}</p>
                 {res.results.map((r: any) => <div key={r.chunk_id} className="rounded-lg border border-border p-3">
                   <p className="mb-1 text-xs font-medium">{r.filename}{r.page ? `, p. ${r.page}` : ""} <span className="text-muted">· {r.collection}</span></p>
+                  {r.source_path && <p className="mb-1 break-all text-[10px] text-muted">{r.source_path}</p>}
                   <p className="line-clamp-4 whitespace-pre-wrap text-xs text-muted">{r.text}</p></div>)}
               </div> : <Empty title={L("Sin resultados", "No results")} />)}
             </CardBody>

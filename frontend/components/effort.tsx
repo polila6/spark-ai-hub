@@ -17,7 +17,7 @@ export const useEffort = (key = "sah-effort") => usePersisted<Effort>(key, DEFAU
 export function effortBody(e: Effort) {
   return {
     effort: e.level, director: e.director,
-    allow: { ...e.allow, skills: "auto", agents: "auto", code: "auto" },
+    allow: { ...e.allow, docs: "auto", skills: "auto", agents: "auto", code: "auto" },
     web: e.allow.web !== "off", research: e.allow.research === "on",
   };
 }
@@ -98,7 +98,7 @@ export function PermChips({ value, onChange, canThink, canWeb, canResearch }: { 
   </>;
 }
 
-const TOOL_NAMES: Record<string, [string, string]> = { web: ["internet", "web"], research: ["investigación", "research"], skills: ["skills", "skills"], agents: ["agentes", "agents"], code: ["código", "code"] };
+const TOOL_NAMES: Record<string, [string, string]> = { docs: ["tus documentos", "your documents"], web: ["internet", "web"], research: ["investigación", "research"], skills: ["skills", "skills"], agents: ["agentes", "agents"], code: ["código", "code"] };
 
 /** «Director: razona · internet — pide datos actuales» */
 export function directorText(d: any, L: (es: string, en: string) => string): string {

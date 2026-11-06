@@ -62,6 +62,40 @@ IMAGE_MAX_SIDE = 1280
 TOOL_RESULT_CHARS = 12000
 CHARS_PER_TOKEN = 3.2  # first estimate; recalibrated with the engine's real prompt_tokens during the turn
 IMAGE_TOKENS = 1100
+UNC_PATH_RE = re.compile(r"\\\\[^\n`|)]+")
+DOCUMENT_QUERY_STOP = {
+    "acuerdo", "acuerdos", "archivo", "archivos", "busca", "buscar", "cita", "citar", "dame", "documento",
+    "documentos", "encuentra", "enumera", "exacta", "exactas", "fuente", "fuentes", "información", "necesito",
+    "resumen", "resume", "resúmelo", "resúmelos", "ruta", "rutas", "tenemos", "verificada", "verificadas",
+    "what", "which", "search", "find", "summarize", "summary", "source", "sources", "path", "paths", "verified",
+    "algún", "alguna", "cual", "cuál", "como", "cómo", "donde", "dónde", "para", "sobre", "todos", "todas",
+    "esta", "este", "estos", "estas", "entre", "desde", "hasta", "with", "from", "about", "have", "there",
+}
+
+
+def _document_search_query(value: str) -> str:
+    """Extract a compact retrieval query from an instruction-like user question."""
+    words = re.findall(r"[\w.-]+", value, re.UNICODE)
+    distinctive = [w for i, w in enumerate(words) if i > 0 and len(w) > 2 and w[0].isupper()
+                   and w.lower() not in DOCUMENT_QUERY_STOP]
+    if distinctive:
+        return " ".join(distinctive[:4])
+    useful = [w for w in words if len(w) > 2 and w.lower() not in DOCUMENT_QUERY_STOP]
+    return " ".join(useful[:6]) or value[:1000]
+
+
+def _remove_unverified_unc_paths(text: str, allowed_paths: set[str]) -> str:
+    """Keep only UNC paths that came verbatim from document metadata."""
+    if not allowed_paths:
+        return text
+
+    def replace(match: re.Match) -> str:
+        raw = match.group(0)
+        candidate = raw.rstrip(" .,:;")
+        suffix = raw[len(candidate):]
+        return raw if candidate in allowed_paths else "[ruta no verificada omitida]" + suffix
+
+    return UNC_PATH_RE.sub(replace, text)
 
 
 class AgentError(Exception):
@@ -91,6 +125,7 @@ class Turn:
     director: bool = False  # a decision before answering: which of the allowed capabilities this message needs
     allow: dict = field(default_factory=dict)  # capability → auto | on | off (think, web, research, skills, agents, code)
     workspace_id: uuid.UUID | None = None  # workspace mode: files and commands in the user's persistent workspace
+    preferred_agent: str | None = None  # agent selected for the main task; other agents may still assist
     user_message_id: int | None = None  # the message being answered: history = messages before it (queued ones after)
     history_upto: int | None = None  # follow-up turns: history = messages with id < this (default user_message_id)...
     history_exclude: list[int] = field(default_factory=list)  # ...except these (the queued messages being answered)
@@ -541,7 +576,9 @@ TOOLS = [
     {"type": "function", "function": {
         "name": "search_knowledge",
         "description": "Search the user's documents (personal knowledge base and the current project). Use it for "
-                       "questions about their papers, notes, reports or any uploaded document. Cite the sources.",
+                       "questions about their papers, notes, reports or any uploaded document. Cite every source with "
+                       "its filename, page when available, and the COMPLETE source_path returned by the tool; never "
+                       "shorten a source_path to its root folder.",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "Search query (keywords or a question)"}},
             "required": ["query"]}}},
@@ -795,9 +832,11 @@ BUILTIN_AGENTS = {
                                      "hayas podido verificar.",
                      "tools": ["web_search", "fetch_url"]},
     "documentalista": {"description": "Busca y lee en los documentos del usuario (base de conocimiento y adjuntos).",
-                       "instructions": "Eres un documentalista. Busca con search_knowledge (prueba varias consultas) y "
-                                       "lee con read_document lo necesario. Devuelve los fragmentos relevantes con su "
-                                       "cita [archivo, p. N] y una síntesis.",
+                       "instructions": "Eres un documentalista. Empieza con una consulta precisa a search_knowledge y "
+                                       "haz una segunda solo si los primeros resultados son insuficientes. Lee con "
+                                       "read_document lo necesario. Devuelve los fragmentos relevantes y una síntesis. "
+                                       "En cada cita incluye [archivo, p. N] y la ruta source_path COMPLETA exacta que "
+                                       "devuelva la herramienta; nunca la reduzcas a la carpeta raíz.",
                        "tools": ["search_knowledge", "read_document"]},
     "analista": {"description": "Analiza archivos de datos (CSV, Excel, Parquet, SQLite) con consultas SQL.",
                  "instructions": "Eres un analista de datos. Usa describe_data y query_data para responder con cifras "
@@ -883,10 +922,11 @@ class Runner:
         self.model: RegisteredModel | None = None
         self.ratio = CHARS_PER_TOKEN
         self.agents: dict[str, dict] = {}
+        self.preferred_agent: str | None = None
         self.ws_claims: dict[str, tuple[str, list[str]]] = {}  # sub-agent call id -> (agent, write scope)
         self.ws_claims_lock = threading.Lock()
         self.skill_names: list[str] = []
-        self.flags = {"web": False, "skills": False, "agents": False, "auto_install": False, "code": False}
+        self.flags = {"web": False, "skills": False, "agents": False, "auto_install": False, "code": False, "docs": False}
         self.project_id: uuid.UUID | None = None
         self.canvas_id: uuid.UUID | None = None
         self.small = False
@@ -929,7 +969,7 @@ class Runner:
         """The director: narrow what this message is offered to what it needs, then say so (event "director")."""
         if self.t.mode != "chat":
             return None
-        avail = {c for c in ("web", "skills", "agents", "code") if self.flags[c]}
+        avail = {c for c in ("docs", "web", "skills", "agents", "code") if self.flags.get(c, c == "docs")}
         if self.flags["web"] and self.flags["agents"]:
             avail.add("research")
         previous = ""
@@ -940,12 +980,16 @@ class Runner:
             pass
         allow = director.normalize_allow(self.t.allow, {"thinking": self.t.thinking, "web": self.t.web, "research": self.t.research})
         ask = director.Ask(content=self.t.content, level=self.t.effort, available=avail, workspace=ws_mode, allow=allow,
+                           project=bool(conv.project_id),
                            attachments=[f.filename for f in files], previous=previous, es=self.t.lang != "en",
                            director=self.t.director and bool(get_setting(db, "director_enabled")))
         db.commit()  # nothing to save: give the connection back instead of holding it while the model answers
         d = director.decide(ask, lambda msgs: self._director_complete(model, msgs))
-        for cap in ("web", "skills", "agents", "code"):
-            self.flags[cap] = self.flags[cap] and getattr(d, cap)
+        before = dict(self.flags)
+        for cap in ("docs", "web", "skills", "agents", "code"):
+            self.flags[cap] = self.flags.get(cap, cap == "docs") and getattr(d, cap)
+        if self.t.preferred_agent:  # the person picked an agent for this chat: it needs its tools, whatever the message says
+            self.flags.update(before)
         if model.backend == "vllm" and not (d.source == "fixed" and allow["think"] == "auto" and not d.think):
             self.t.thinking = d.think  # (without a director, "auto" leaves the model's own default alone)
         self.t.research = d.research and self.flags["web"] and self.flags["agents"]
@@ -966,16 +1010,28 @@ class Runner:
                  "Responde en el idioma del usuario. Usa Markdown (tablas, listas, bloques de código, LaTeX con $...$)."
                  if es else "Answer in the user's language. Use Markdown (tables, lists, code blocks, LaTeX with $...$)."]
         if tools_on:
+            docs = self.flags.get("docs", True)
             lines.append(
-                "Herramientas: generate_image y edit_image crean/editan imágenes (la imagen se muestra sola al usuario; "
-                "no escribas enlaces ni markdown de imagen); search_knowledge busca en los documentos del usuario "
-                "(cita así: [archivo, p. N]); read_document lee documentos largos adjuntos; describe_data y query_data "
-                "consultan archivos de datos con SQL; save_memory guarda datos duraderos que el usuario quiere que "
-                "recuerdes. Usa las herramientas solo cuando hagan falta y no inventes resultados." if es else
-                "Tools: generate_image/edit_image create or edit images (the image is shown to the user automatically; "
-                "do not write image links); search_knowledge searches the user's documents (cite as [file, p. N]); "
-                "read_document reads long attachments; describe_data/query_data query data files with SQL; save_memory "
-                "stores lasting facts the user wants you to remember. Use tools only when needed; never invent results.")
+                ("Herramientas: generate_image y edit_image crean/editan imágenes (la imagen se muestra sola al usuario; "
+                 "no escribas enlaces ni markdown de imagen); "
+                 + ("search_knowledge busca en los documentos del usuario "
+                    "(cita así: [archivo, p. N] y añade la ruta source_path COMPLETA exacta, con el nombre del archivo; "
+                    "nunca cites solo la carpeta raíz); read_document lee documentos largos adjuntos; describe_data y query_data "
+                    "consultan archivos de datos con SQL; " if docs else "")
+                 + "save_memory guarda datos duraderos que el usuario quiere que "
+                 "recuerdes. Usa las herramientas solo cuando hagan falta y no inventes resultados."
+                 + (" Si la pregunta es de cultura general o trata de un programa, una persona o un tema que no tiene por qué "
+                    "estar en sus archivos, respóndela directamente con lo que sabes (di si no estás seguro); no busques en sus "
+                    "documentos salvo que la pregunta se refiera a ellos." if docs else "")) if es else
+                ("Tools: generate_image/edit_image create or edit images (the image is shown to the user automatically; "
+                 "do not write image links); "
+                 + ("search_knowledge searches the user's documents (cite as [file, p. N] and "
+                    "include the exact COMPLETE source_path with the filename; never cite only its root folder); "
+                    "read_document reads long attachments; describe_data/query_data query data files with SQL; " if docs else "")
+                 + "save_memory stores lasting facts the user wants you to remember. Use tools only when needed; never invent results."
+                 + (" If the question is general knowledge or about a program, person or topic that need not be in their files, "
+                    "answer it directly from what you know (say if you are unsure); do not search their documents unless the "
+                    "question refers to them." if docs else "")))
         if tools_on and self.flags["web"]:
             lines.append("Internet: web_search busca en la web (a través del buscador privado del Spark) y fetch_url lee "
                          "páginas y PDFs. Úsalas para actualidad, precios, versiones, normativa o datos que no sepas con "
@@ -1072,6 +1128,18 @@ class Runner:
                           "no para preguntas simples. Disponibles:\n" if es else
                           "Sub-agents (delegate_task) work in parallel with their own context. Available:\n")
                          + "\n".join(f"- {k}: {v['description'][:200]}" for k, v in self.agents.items()))
+            if self.preferred_agent:
+                lines.append(
+                    (f"Agente preferido de esta conversación: «{self.preferred_agent}». Para cada petición sustantiva "
+                     f"delega OBLIGATORIAMENTE la tarea principal a «{self.preferred_agent}» mediante delegate_task, "
+                     "incluyendo en la tarea todo el contexto necesario. Integra y explica su resultado en tu respuesta. "
+                     "Puedes delegar además partes complementarias a otros agentes cuando ayude; el agente preferido no "
+                     "te impide coordinarlos. Para un saludo o una simple petición de aclaración no hace falta delegar."
+                     if es else
+                     f"Preferred agent for this conversation: '{self.preferred_agent}'. For every substantive request, "
+                     f"you MUST delegate the main task to '{self.preferred_agent}' with delegate_task and provide all "
+                     "necessary context. Integrate and explain its result. You may also delegate complementary work to "
+                     "other agents. Greetings and simple clarification questions do not require delegation."))
             if self.workspace is not None:
                 lines.append(
                     "En este workspace los subagentes también leen, escriben y ejecutan archivos. Para un trabajo grande "
@@ -1346,8 +1414,9 @@ class Runner:
             return {"ok": True, "summary": "Sin resultados en los documentos del usuario.", "sources": [],
                     "content": "No se encontró nada relevante en los documentos del usuario."}
         sources = [{"filename": r["filename"], "page": r["page"], "file_id": r["file_id"], "collection": r["collection"],
-                    "snippet": r["text"][:280]} for r in res["results"]]
+                    "source_path": r.get("source_path"), "snippet": r["text"][:280]} for r in res["results"]]
         content = "\n\n".join(f"[{i + 1}] {r['filename']}" + (f", p. {r['page']}" if r["page"] else "")
+                              + (f" — {r['source_path']}" if r.get("source_path") else "")
                               + f" ({r['collection']}):\n{r['text'][:1800]}" for i, r in enumerate(res["results"]))
         return {"ok": True, "summary": f"{len(sources)} fragmentos ({res['mode']})", "sources": sources, "content": content}
 
@@ -1701,10 +1770,19 @@ class Runner:
         user_msg = task + (f"\n\nContexto:\n{str(args['context'])[:30000]}" if args.get("context") else "")
         messages = [{"role": "system", "content": "\n\n".join(sys_lines) + preload}, {"role": "user", "content": user_msg}]
         specs = [t for t in self._all_specs() if t["function"]["name"] in tools]
+        if "search_knowledge" in tools:
+            messages[0]["content"] += ("\n\nAl buscar documentos, empieza con UNA consulta precisa basada en los términos "
+                                       "del usuario. Haz una segunda búsqueda solo si es imprescindible. En las fuentes "
+                                       "copia literalmente la ruta source_path COMPLETA de cada archivo, incluido su "
+                                       "nombre y extensión; no cites únicamente la carpeta raíz.")
         steps: list[dict] = []
         sources: list[dict] = []
         changed: set[str] = set()
         text = ""
+        document_searches = 0
+        must_search_docs = "search_knowledge" in tools and bool(re.search(
+            r"\b(document\w*|archivo\w*|colecci\w*|fuente\w*|acuerdo\w*|contrato\w*|convenio\w*|memorando\w*)\b",
+            task, re.I))
         max_steps, max_out = (SUB_WS_MAX_STEPS, 8192) if writes else (SUB_MAX_STEPS, 2048)
         try:
             inst = scheduler.ensure_loaded(self.t.model_id, wait_s=1800)
@@ -1719,13 +1797,27 @@ class Runner:
                     raise AgentError("Cancelado por el usuario")
                 self._fit(messages, max_out)
                 last = step == max_steps - 1
-                text, calls, _ = self._llm_step(messages, specs if specs and not last else None, max_out,
+                active_specs = specs
+                if document_searches >= 2:
+                    active_specs = [s for s in specs if s["function"]["name"] != "search_knowledge"]
+                text, calls, _ = self._llm_step(messages, active_specs if active_specs and not last else None, max_out,
                                                 thinking=False)
                 if not calls and step == 0 and "web_search" in tools and (name == "investigador" or args.get("_must_search")):
                     # a researcher must look things up instead of answering from memory
                     messages += [{"role": "assistant", "content": text or ""},
                                  {"role": "user", "content": "Antes de responder busca con web_search y lee las mejores "
                                                              "fuentes con fetch_url; cita cada dato con su URL."}]
+                    continue
+                if not calls and step == 0 and must_search_docs:
+                    # A document agent must inspect the user's index instead of inventing that files do or do not exist.
+                    messages += [{"role": "assistant", "content": text or ""},
+                                 {"role": "user", "content": "Antes de responder debes ejecutar UNA consulta precisa a "
+                                                             "search_knowledge basada en los términos del usuario. Haz "
+                                                             "una segunda solo si los resultados son insuficientes. Basa "
+                                                             "la conclusión únicamente en los resultados y no afirmes "
+                                                             "que no existe documentación sin buscarla. En cada fuente "
+                                                             "copia la ruta source_path COMPLETA exacta, con nombre de "
+                                                             "archivo y extensión, además de la página o sección."}]
                     continue
                 if not calls:
                     break
@@ -1734,6 +1826,10 @@ class Runner:
                 for cid, tname, targs in results:
                     if tname not in tools:
                         res = {"ok": False, "summary": f"{tname} no disponible", "content": f"Tool {tname} not available"}
+                    elif tname == "search_knowledge" and document_searches >= 2:
+                        res = {"ok": True, "summary": "Límite de dos búsquedas documentales alcanzado",
+                               "content": "Ya dispones de hasta doce fragmentos. Sintetiza la respuesta con esos "
+                                          "resultados y sus rutas exactas; no hagas más búsquedas."}
                     elif tname in WS_WRITE_TOOLS and not self._sub_may_write(targs, scope):
                         res = {"ok": False, "summary": "Fuera de su zona de escritura",
                                "content": f"You may only write inside: {', '.join(scope)}. Put your work there, or report "
@@ -1743,9 +1839,11 @@ class Runner:
                         self.emit({"type": "tool_progress", "id": call_id, "message": f"{name}: {TOOL_LABELS.get(tname, tname)}"
                                    + (f" «{str(what)[:70]}»" if what else "")})
                         res = self._exec(cid, tname, targs)
+                        if tname == "search_knowledge":
+                            document_searches += 1
                     steps.append({"name": tname, "label": TOOL_LABELS.get(tname, tname), "ok": res.get("ok", True),
                                   "summary": str(res.get("summary", ""))[:200]})
-                    sources += [x for x in res.get("sources") or [] if x.get("url")]
+                    sources += [x for x in res.get("sources") or [] if x.get("url") or x.get("source_path")]
                     changed.update((res.get("workspace") or {}).get("changed") or [])
                     messages.append({"role": "tool", "tool_call_id": cid,
                                      "content": str(res.get("content") or res.get("summary"))[:TOOL_RESULT_CHARS]})
@@ -1756,13 +1854,23 @@ class Runner:
         text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip() or "(el agente no devolvió texto)"
         seen, uniq = set(), []
         for x in sources:
-            if x["url"] not in seen:
-                seen.add(x["url"])
+            key = x.get("url") or x.get("source_path")
+            if key not in seen:
+                seen.add(key)
                 uniq.append(x)
+        exact_docs = [x for x in uniq if x.get("source_path")]
+        if exact_docs:
+            text = _remove_unverified_unc_paths(text, {x["source_path"] for x in exact_docs})
+        exact_catalog = "\n".join(
+            f"- [{x.get('filename') or 'documento'}" + (f", p. {x['page']}" if x.get("page") else "")
+            + f"] `{x['source_path']}`" for x in exact_docs)
         out = {"ok": True, "summary": f"{name}: {len(steps)} pasos" + (f", {len(uniq)} fuentes" if uniq else "")
                + (f", {len(changed)} archivo(s)" if changed else ""),
                "agent": {"name": name, "task": task[:500], "steps": steps, "report": text[:20000]},
                "sources": uniq[:15], "content": f"Report from agent '{name}':\n{text[:16000]}"}
+        if exact_catalog:
+            out["content"] += ("\n\nVerified document sources from the index. Copy these paths verbatim; do not "
+                               "infer folders or alter them:\n" + exact_catalog)
         if changed:
             out["workspace"] = {"changed": sorted(changed)}
             out["content"] += "\n\nFiles changed by this agent: " + ", ".join(sorted(changed)[:100])
@@ -2086,6 +2194,8 @@ class Runner:
     # -------------------------------------------------------------- tool plumbing
 
     def _tool_allowed(self, name: str) -> bool:
+        if name in ("search_knowledge", "read_document", "describe_data", "query_data") and not self.flags.get("docs", True):
+            return False  # the director left the person's documents out of this answer
         if name in ("db_schema", "db_query"):
             return bool(self.db_names)
         if name in ("web_search", "fetch_url"):
@@ -2401,7 +2511,8 @@ class Runner:
                           "skills": tools_on and bool(get_setting(db, "skills_enabled")),
                           "agents": tools_on and bool(get_setting(db, "agents_enabled")),
                           "auto_install": bool(get_setting(db, "skills_auto_install")),
-                          "code": tools_on and bool(get_setting(db, "code_exec_enabled"))}
+                          "code": tools_on and bool(get_setting(db, "code_exec_enabled")),
+                          "docs": tools_on}  # search_knowledge / read_document / describe_data / query_data
             self.small = (model.parameters_b or 99) < SMALL_MODEL_B
             self.db_names = remote_db.names(db, user.id) if tools_on else []
             if self.small:  # small models: core tools only (see tool_specs)
@@ -2420,10 +2531,17 @@ class Runner:
                                         or (WORKSPACE_MAX_STEPS if ws_mode else MAX_STEPS)))
             self.max_seconds = 60 * float(get_setting(db, "agent_max_minutes_workspace" if ws_mode else "agent_max_minutes_chat")
                                           or (MAX_MINUTES_WORKSPACE if ws_mode else MAX_MINUTES_CHAT))
+            agents_available = self.flags["agents"]
             self.decision = self._decide(db, conv, model, files, ws_mode)
+            if self.t.preferred_agent and agents_available:
+                self.flags["agents"] = True  # the explicit conversation choice overrides the director's automatic pruning
             self.agents = agent_profiles(db, user) if self.flags["agents"] else {}
-            if not self.flags["web"]:
+            self.preferred_agent = self.t.preferred_agent
+            if not self.flags["web"] and self.preferred_agent != "investigador":
                 self.agents.pop("investigador", None)
+            if self.preferred_agent and self.preferred_agent not in self.agents:
+                raise AgentError(f"El agente preferido «{self.preferred_agent}» no está disponible con la configuración actual.",
+                                 "Activa Herramientas y las capacidades que necesita, elige otro agente o vuelve a Automático.")
             self.max_parallel = int(get_setting(db, "max_parallel_agents") or 3)
             summary_upto = conv.summary_upto
             self.summary = conv.summary
@@ -2489,6 +2607,24 @@ class Runner:
         first = {"t": None}
         finish = None
         specs = self.tool_specs() if tools_on else None
+        preferred_agent_completed = False
+        preferred_profile = self.agents.get(self.preferred_agent) if self.preferred_agent else None
+        preferred_tools = set((preferred_profile or {}).get("tools") or [])
+        # A document-only preferred agent does not need a second LLM planning pass: retrieve once here, then let the
+        # main model synthesise the answer. This preserves the selected agent's instructions and exact source metadata
+        # while avoiding the former delegate -> search -> report -> rewrite round trip.
+        if preferred_profile and "search_knowledge" in preferred_tools \
+                and preferred_tools.issubset({"search_knowledge", "read_document"}):
+            cid = f"call_{uuid.uuid4().hex[:12]}"
+            retrieval_query = _document_search_query(self.t.content)
+            result = self.run_tool(cid, "search_knowledge", {"query": retrieval_query})
+            messages.append({"role": "user", "content":
+                             f"El agente seleccionado «{self.preferred_agent}» ya ha ejecutado su búsqueda documental "
+                             "en el servidor. No delegues ni uses más herramientas: responde ahora a la petición "
+                             "original basándote únicamente en estos resultados y siguiendo sus instrucciones.\n\n"
+                             f"Instrucciones del agente:\n{str(preferred_profile.get('instructions') or '')[:6000]}\n\n"
+                             f"Resultados verificados:\n{str(result.get('content') or result.get('summary'))[:TOOL_RESULT_CHARS]}"})
+            preferred_agent_completed = True
 
         def on_delta(piece):
             if first["t"] is None:
@@ -2546,7 +2682,11 @@ class Runner:
             chars = sum(len(json.dumps(m.get("content"), ensure_ascii=False)) for m in messages)
             r0 = len(reasoning)
             try:
-                text, calls, finish = self._llm_step(messages, specs if not last else None, fit_tokens,
+                step_specs = specs
+                if preferred_agent_completed and specs:
+                    step_specs = [s for s in specs if s["function"]["name"] not in
+                                  {"delegate_task", "search_knowledge", "read_document"}]
+                text, calls, finish = self._llm_step(messages, step_specs if not last else None, fit_tokens,
                                                      step_thinking, on_delta, on_reasoning, usage_total)
             except EngineError as e:
                 if ctx_retries < 3 and is_context_error(e.message):
@@ -2577,6 +2717,17 @@ class Runner:
                 continue
             if text.strip() or calls:
                 think_retries = 0
+            if not calls and step == 1 and self.preferred_agent and not preferred_agent_completed and not re.match(
+                    r"^\s*(hola|buenos días|buenas tardes|buenas noches|hello|hi|gracias|thanks)\b[.!?\s]*$",
+                    self.t.content, re.I):
+                messages += [{"role": "assistant", "content": text or ""},
+                             {"role": "user", "content":
+                              f"La conversación tiene seleccionado el agente «{self.preferred_agent}». Esta petición "
+                              "es sustantiva: debes delegar ahora la tarea principal a ese agente mediante "
+                              "delegate_task y basar la respuesta en su resultado."}]
+                self.emit({"type": "warning", "message":
+                           f"Se fuerza el uso del agente preferido «{self.preferred_agent}» para esta petición."})
+                continue
             if glue and text_out:
                 text_out[-1] += text  # seamless continuation of the previous piece
             else:
@@ -2628,6 +2779,9 @@ class Runner:
                     res = self._update_plan(args)
                 else:
                     res = outputs.get(cid) or self.run_tool(cid, name, args)
+                    if name == "delegate_task" and self.preferred_agent \
+                            and (res.get("agent") or {}).get("name") == self.preferred_agent:
+                        preferred_agent_completed = True
                     if name in WS_WRITE_TOOLS and res.get("ok"):
                         self.unverified = True
                     elif name == "ws_run":
@@ -2645,6 +2799,24 @@ class Runner:
         self._remember_fallback()
         total = time.perf_counter() - t0
         final = "\n\n".join(x for x in text_out if x.strip())
+        doc_sources = []
+        doc_seen = set()
+        for part in self.parts:
+            for src in part.get("sources") or []:
+                path = src.get("source_path")
+                key = path
+                if path and key not in doc_seen:
+                    doc_seen.add(key)
+                    doc_sources.append(src)
+        if doc_sources:
+            final = _remove_unverified_unc_paths(final, {src["source_path"] for src in doc_sources})
+            verified = "\n".join(
+                f"- [{src.get('filename') or 'documento'}"
+                + (f", p. {src['page']}" if src.get("page") else "")
+                + f"] `{src['source_path']}`" for src in doc_sources[:30])
+            final += ("\n\n### Fuentes documentales verificadas\n\n"
+                      "Estas rutas proceden directamente del índice y no han sido redactadas por el modelo:\n\n"
+                      + verified)
         ct = usage_total["completion_tokens"]
         ttft = first["t"]
         decode = total - (ttft or 0)

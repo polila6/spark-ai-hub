@@ -7,6 +7,7 @@ x-backend-common: &backend-common
   image: spark-ai-hub/backend:${SAH_VERSION:-0.1.0}
   user: "1000:1000"
   restart: unless-stopped
+  shm_size: "256m"                 # RAM-only staging for index-only document extraction
   environment: &backend-env
     SAH_ENV: production
     SAH_IMAGE_TAG: ${SAH_VERSION:-0.1.0}

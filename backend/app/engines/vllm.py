@@ -112,8 +112,9 @@ class VllmAdapter(EngineAdapter):
             info = next((i for i in self.instances() if i.get("model") == model.alias), {})
             if info.get("state") in ("exited", "dead"):
                 logs = orchestrator.engine_logs("vllm", 60, model=model.alias)
+                oom = bool(info.get("oom_killed")) or info.get("exit_code") == 137
                 raise EngineError(f"vLLM exited during load (code {info.get('exit_code')}, oom={info.get('oom_killed')})",
-                                  remediation=_remediation(logs) + "\n--- last log lines ---\n" + logs[-3000:])
+                                  remediation=_remediation(logs, oom) + "\n--- last log lines ---\n" + logs[-3000:])
             try:
                 with httpx.Client(base_url=base, timeout=5) as cl:
                     if cl.get("/health").status_code == 200:
@@ -129,8 +130,12 @@ class VllmAdapter(EngineAdapter):
         orchestrator.stop_vllm(model.alias)
 
 
-def _remediation(logs: str) -> str:
+def _remediation(logs: str, oom: bool = False) -> str:
     low = logs.lower()
+    if oom:
+        return ("The machine ran out of memory while loading and the system killed vLLM. Stop downloads and other heavy "
+                "work (the robot server, other models), then load it again; if it keeps happening, lower gpu_memory_utilization "
+                "or max_model_len.")
     if "out of memory" in low or "cuda error: out of memory" in low:
         return "Out of memory: lower max_model_len / max_num_seqs or gpu_memory_utilization, or unload other models."
     if "free memory on device" in low or "gpu_memory_utilization" in low:

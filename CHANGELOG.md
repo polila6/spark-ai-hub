@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.19.1 — 2026-11-06
+A big model load can no longer take the machine down, and the chat stops rummaging in your files.
+
+* **Memory guard for big loads** (`services/memguard.py`): before loading a large vLLM model the hub pauses running Hugging Face
+  downloads (they resume afterwards), frees the robot server's memory, evicts idle models and requires real free memory
+  (reservation + `load_safety_gb`, default 8 GB); otherwise it refuses with the numbers. Downloads wait while a large model loads and
+  for the first minute after a restart. Triggered by a freeze on 2026-11-06 02:19 (loading a 70 GB model while two downloads ran).
+* A load that died for lack of memory is no longer retried every ten minutes by the resident-model loop; administrators are told.
+  The error hint no longer blames `trust_remote_code` for a memory kill.
+* `scripts/harden-memory.sh` (needs `sudo`, `--dry-run` by default): 4 GiB free-memory headroom, automatic reboot after a hung task,
+  hardware watchdog.
+* **The director now also decides when to offer your documents** (search_knowledge, read_document, describe_data, query_data):
+  only if the message is about them, there are attachments, or you are in a project. A question like «¿para qué sirve el programa
+  hermes?» is answered directly instead of searching your files. «Programa» alone no longer counts as a request to run code. A chosen
+  agent keeps its tools.
+
 ## 0.19.0 — 2026-11-05
 The assistant remembers you, and remote databases are queried where they live.
 

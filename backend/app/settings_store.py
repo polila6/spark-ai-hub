@@ -9,6 +9,7 @@ from .models import SystemSetting
 from .security import decrypt_str, encrypt_str
 
 DEFAULTS: dict[str, Any] = {
+    "load_safety_gb": 8,  # real free memory required, on top of a big model's reservation, before it is loaded (services/memguard.py)
     "default_language": "es",  # chosen in the first-run setup; each person can pick their own in Settings
     "org_name": "",  # shown in terms, e-mails and the assistant prompt; empty = SAH_ORG_NAME, else nothing is mentioned
     "setup_completed": False,  # the first-run setup (language, organisation) was done or skipped
