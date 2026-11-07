@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.9 — 2026-11-07
+* **«Conectar herramientas» → Python: a full guided tutorial** for calling the hub from your own program. Fourteen steps with your real
+  address, model and key: key in an environment variable, first call, multi-turn chat with a system prompt, streaming, thinking control
+  (`reasoning_effort`, `max_tokens`), tool/function calling loop, JSON output, embeddings, model list, timeouts/retries, async batches,
+  plain `requests`, the Anthropic SDK, and a troubleshooting list for 401/403/404/400/429/503.
+
 ## 0.19.8 — 2026-11-06
 * Fix: **Qwen3-Coder Instruct got a reasoning parser it must not have.** The preset gave every «qwen3-coder» model
   `reasoning_parser=qwen3`, but the Instruct models do not think, so vLLM put the whole answer in `reasoning` and left `content` empty
