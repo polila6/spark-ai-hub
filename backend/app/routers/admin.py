@@ -232,6 +232,8 @@ def put_settings(body: dict, request: Request, p: Principal = Depends(require_ad
                 raise HTTPException(422, detail={"code": "invalid", "message": "skill_sources: list of owner/repo[/path]"})
         if k == "api_default_thinking" and v not in ("auto", "off", "on"):
             raise HTTPException(422, detail={"code": "invalid", "message": "api_default_thinking must be auto|off|on"})
+        if k == "vision_helper_model":
+            v = str(v or "auto").strip()[:128] or "auto"
         if k == "default_language" and v not in ("es", "en"):
             raise HTTPException(422, detail={"code": "invalid", "message": "default_language must be es|en"})
         if k == "org_name":

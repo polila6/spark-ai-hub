@@ -65,6 +65,7 @@ class SendIn(BaseModel):
     allow: dict[str, str] | None = None  # think/web/research/skills/agents/code → auto | on | off
     workspace_id: uuid.UUID | None = None
     preferred_agent: str | None = Field(default=None, max_length=64)
+    interrupt: bool = False  # sent while the assistant works: interrupt its current thinking (kept) and read this now
 
 
 class PromptIn(BaseModel):
@@ -349,7 +350,7 @@ async def send_message(cid: uuid.UUID, body: SendIn, request: Request, p: Princi
             turns.start(cid, p.id, c.title)
             break
         except RuntimeError:  # a turn is running: give it this message instead of refusing it
-            if turns.queue_message(cid, msg.id):
+            if turns.queue_message(cid, msg.id, urgent=body.interrupt):
                 log.info("chat message queued: user=%s conversation=%s message=%s", p.id, cid, msg.id)
                 return JSONResponse(status_code=202, content={"queued": True, "message_id": msg.id})
             await asyncio.sleep(0.5)  # the running turn is finishing (inbox closed): answer with a turn of its own

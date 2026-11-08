@@ -10,6 +10,7 @@ import { AgentPicker } from "@/components/agent-picker";
 import { BulkBar, BulkDeleteConfirm, SelectBox, useBulk, useSelection } from "@/components/bulk";
 import { AnswerMarkdown } from "@/components/deliverable-link";
 import { effortBody, effortFrom, EffortSlider, PermChips, useEffort } from "@/components/effort";
+import { SteerToggle, useSteer } from "@/components/steer";
 import remarkGfm from "remark-gfm";
 import useSWR from "swr";
 import { CanvasChip, CanvasPanel } from "@/components/canvas";
@@ -68,7 +69,7 @@ const MD_COMPONENTS = {
 const toolLabel = (n: string): string | undefined => ({
   run_code: tr("Código ejecutado", "Code run"), canvas_write: tr("Lienzo", "Canvas"), canvas_edit: tr("Lienzo editado", "Canvas edited"),
   deep_research: tr("Investigación a fondo", "Deep research"), schedule_task: tr("Tarea programada", "Task scheduled"),
-  web_search: tr("Búsqueda en internet", "Web search"), fetch_url: tr("Página web", "Web page"), search_images: tr("Buscando imágenes", "Searching images"), download_file: tr("Descargando archivo", "Downloading file"), delegate_task: tr("Agente", "Agent"),
+  web_search: tr("Búsqueda en internet", "Web search"), fetch_url: tr("Página web", "Web page"), search_images: tr("Buscando imágenes", "Searching images"), download_file: tr("Descargando archivo", "Downloading file"), view_image: tr("Mirando la imagen", "Looking at the image"), delegate_task: tr("Agente", "Agent"),
   generate_image: tr("Imagen generada", "Image generated"), edit_image: tr("Imagen editada", "Image edited"),
   search_knowledge: tr("Búsqueda en documentos", "Document search"), read_document: tr("Documento leído", "Document read"),
   query_data: tr("Consulta de datos", "Data query"), describe_data: tr("Datos analizados", "Data analysed"),
@@ -173,6 +174,7 @@ function Chat() {
   const [tools, setTools] = useState(true);
   const [preferredAgent, setPreferredAgent] = useState("");
   const [effort, setEffort] = useEffort();
+  const [steer, setSteer] = useSteer();
   const { data: voice } = useSWR("/api/v1/voice");
   const [autoRead, setAutoRead] = useState(false);
   const autoReadRef = useRef(false);
@@ -379,7 +381,7 @@ function Chat() {
     setMsgs((x) => insertQueued(x, { role: "user", content, attachments: sentAtts, queued: "queued", key }));
     let streamed = false;
     try {
-      const r = await streamPost(`/api/v1/playground/conversations/${id}/messages`, { content, attachments: sentAtts.map((a) => a.file_id), ...turnBody(useModel, useSel, mode) }, (ev) => {
+      const r = await streamPost(`/api/v1/playground/conversations/${id}/messages`, { content, attachments: sentAtts.map((a) => a.file_id), ...turnBody(useModel, useSel, mode), interrupt: steer }, (ev) => {
         if (!streamed && viewing.current === id) {  // the task had just finished: the server answers it as a normal turn
           streamed = true;
           setStatus("generating");
@@ -604,7 +606,7 @@ function Chat() {
           {atts.length > 0 && <div className="flex flex-wrap gap-1.5 px-3 pt-3">{atts.map((a) => <AttachmentChip key={a.file_id} a={a} onRemove={() => setAtts((x) => x.filter((y) => y.file_id !== a.file_id))} />)}</div>}
             <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
             <textarea ref={textRef} aria-label={t("play.placeholder")} rows={1} className="block w-full resize-none bg-transparent px-4 pb-1 pt-3 text-[14.5px] leading-relaxed text-fg placeholder:text-subtle focus:outline-none" value={input} onChange={(e) => setInput(e.target.value)}
-              placeholder={status ? L("Añade indicaciones a la tarea en curso (no la interrumpe)…", "Add instructions to the running task (it is not interrupted)…") : mode === "image" ? L("Describe la imagen que quieres (o qué cambiar en la adjunta)…", "Describe the image you want (or what to change in the attached one)…") : L("Escribe tu mensaje…", "Type your message…")}
+              placeholder={status ? (steer ? L("Escribe aunque esté pensando: lo lee al instante sin perder lo razonado…", "Type even while it thinks: it reads it at once without losing its reasoning…") : L("Añade indicaciones a la tarea en curso (las lee al terminar el paso)…", "Add instructions to the running task (read when the step ends)…")) : mode === "image" ? L("Describe la imagen que quieres (o qué cambiar en la adjunta)…", "Describe the image you want (or what to change in the attached one)…") : L("Escribe tu mensaje…", "Type your message…")}
               onPaste={(e) => { const fs = Array.from(e.clipboardData.files); if (fs.length) { e.preventDefault(); addFiles(fs); } }}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
           <div className="flex items-end gap-2 px-2 pb-2">
@@ -632,7 +634,8 @@ function Chat() {
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
             {status ? <>
-              <Button key="add" type="submit" size="sm" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)} title={L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it")}><ListPlus className="h-4 w-4" /><span className="hidden sm:inline">{L("Añadir a la tarea", "Add to the task")}</span></Button>
+              <SteerToggle key="steer" on={steer} onChange={setSteer} />
+              <Button key="add" type="submit" size="sm" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)} title={steer ? L("Interrumpe su pensamiento actual (se conserva) y lo lee ya", "Interrupts its current thinking (kept) and reads it now") : L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it")}><ListPlus className="h-4 w-4" /><span className="hidden sm:inline">{steer ? L("Enviar ahora", "Send now") : L("Añadir a la tarea", "Add to the task")}</span></Button>
               <Button key="stop" type="button" size="sm" variant="danger" onClick={stop}><Square className="h-3.5 w-3.5" /><span className="hidden sm:inline">{t("play.stop")}</span></Button></>
               : <Button key="send" type="submit" size="sm" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)}>{mode === "image" ? <Sparkles className="h-4 w-4" /> : <Send className="h-4 w-4" />}{mode === "image" ? L("Crear", "Create") : t("play.send")}</Button>}
             </div>

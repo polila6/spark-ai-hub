@@ -36,7 +36,7 @@ from ..settings_store import branding, get_setting
 from . import canvas as canvas_svc
 from . import director
 from . import memory as memory_svc
-from . import dataq, kb, llm, media_fetch, remote_db, sandbox, scheduler, web, workflows
+from . import dataq, kb, llm, media_fetch, remote_db, sandbox, scheduler, vision, web, workflows
 from . import skills as skills_svc
 from . import files as files_svc
 from . import turns as turns_svc
@@ -652,6 +652,19 @@ WEB_TOOLS = [
             "path": {"type": "string", "description": "Workspace path, e.g. imagenes/feijoo.jpg (optional; default imagenes/<name>)"},
             "max_px": {"type": "integer", "description": "Longest side in pixels for pictures (default 2000)"}},
             "required": ["url"]}}},
+    {"type": "function", "function": {
+        "name": "view_image",
+        "description": "LOOK at a picture or at pages of a PDF with a small vision model and get what is wrong or what is shown: "
+                       "text cut off or overprinted, tables or figures outside the margin, legends over data, blurry or placeholder "
+                       "pictures. Use it after compiling a document or making a chart, then fix what is real. For PDFs the page "
+                       "screenshots are saved in capturas/. Its remarks can be wrong: confirm them (sah_check, ws_read) before "
+                       "changing anything. For a Word/PowerPoint/Excel file convert it to PDF first (soffice --headless "
+                       "--convert-to pdf).",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "Workspace path of a PNG/JPG image or a PDF"},
+            "file": {"type": "string", "description": "Chat only: name or id of an attached or generated file"},
+            "pages": {"type": "string", "description": "PDF pages, e.g. \"1-3,8\" (at most 6 per call; default the first ones)"},
+            "question": {"type": "string", "description": "What to check or describe; omit for a layout-defect review"}}}}},
 ]
 
 DB_TOOLS = [
@@ -877,15 +890,15 @@ BUILTIN_AGENTS = {
                                 "errores, supuestos dudosos, riesgos y omisiones y propón mejoras concretas priorizadas "
                                 "(críticas, importantes, menores). Termina diciendo qué archivos leíste.",
                 "tools": ["ws_list", "ws_read", "read_document", "search_knowledge", "describe_data", "query_data",
-                          "web_search", "fetch_url"]},
+                          "web_search", "fetch_url", "view_image"]},
     "general": {"description": "Agente de propósito general con las instrucciones que le des (campo instructions).",
                 "instructions": "Eres un agente auxiliar. Cumple la tarea con las herramientas disponibles y devuelve "
                                 "un resultado completo y conciso.",
                 "tools": ["web_search", "fetch_url", "search_images", "download_file", "search_knowledge", "read_document",
                           "describe_data", "query_data", "use_skill", "read_skill_file", "ws_list", "ws_read", "ws_write",
-                          "ws_append", "ws_edit", "ws_run"]},
+                          "ws_append", "ws_edit", "ws_run", "view_image"]},
 }
-SUB_AGENT_TOOLS = {"web_search", "fetch_url", "search_images", "download_file", "search_knowledge", "read_document", "describe_data", "query_data",
+SUB_AGENT_TOOLS = {"web_search", "fetch_url", "search_images", "download_file", "view_image", "search_knowledge", "read_document", "describe_data", "query_data",
                    "use_skill", "read_skill_file", "run_code"} | WS_TOOLS  # ws_* only inside a workspace
 from .agent_catalog import EXTRA_AGENTS  # noqa: E402 - specialised agents (programador, tester, estadistico…)
 
@@ -893,7 +906,7 @@ BUILTIN_AGENTS.update({k: v for k, v in EXTRA_AGENTS.items() if k not in BUILTIN
 
 TOOL_LABELS = {"generate_image": "Generando imagen", "edit_image": "Editando imagen", "search_knowledge": "Buscando en tus documentos",
                "read_document": "Leyendo documento", "describe_data": "Analizando datos", "query_data": "Consultando datos",
-               "save_memory": "Guardando en memoria", "web_search": "Buscando en internet", "fetch_url": "Leyendo página web", "search_images": "Buscando imágenes", "download_file": "Descargando archivo",
+               "save_memory": "Guardando en memoria", "web_search": "Buscando en internet", "fetch_url": "Leyendo página web", "search_images": "Buscando imágenes", "download_file": "Descargando archivo", "view_image": "Mirando la imagen",
                "use_skill": "Cargando skill", "read_skill_file": "Leyendo archivo de skill", "find_skills": "Buscando skills",
                "install_skill": "Instalando skill", "delegate_task": "Agente trabajando", "compact_context": "Contexto compactado",
                "run_code": "Ejecutando código", "canvas_write": "Escribiendo en el lienzo",
@@ -969,6 +982,9 @@ class Runner:
         self.flags = {"web": False, "skills": False, "agents": False, "auto_install": False, "code": False, "docs": False}
         self.project_id: uuid.UUID | None = None
         self.image_failures = 0
+        self._vision_cache: bool | None = None
+        self._steered = False  # an urgent user message interrupted the current generation
+        self._steer_t = 0.0
         self.image_meta: dict[str, dict] = {}  # url -> author/licence of pictures found by search_images
         self.canvas_id: uuid.UUID | None = None
         self.small = False
@@ -1694,7 +1710,10 @@ class Runner:
                       "en longtable según su tamaño; figuras con ancho y alto acotados) y, tras compilar con latexmk -g -pdf, ejecuta "
                       "`python .sah/sah_check.py informe.pdf`: marca cajas desbordadas, contenido pegado al borde, texto encimado, "
                       "referencias y citas rotas. Arregla todo lo que marque y repite antes de decir que has terminado: un PDF "
-                      "que compila sin errores NO está listo si el comprobador marca problemas. ")
+                      "que compila sin errores NO está listo si el comprobador marca problemas. Después, mira el resultado con view_image "
+                      "(pages=\"1-4\", etc.): un modelo de visión pequeño revisa capturas de las páginas y te dice qué se ve mal; "
+                      "sus avisos pueden ser falsos, confírmalos antes de corregir, y revisa al menos las páginas con figuras, "
+                      "tablas anchas y la portada. ")
             if web:
                 t += ("Imágenes de internet: el sandbox NO tiene red (curl/wget/requests fallan: no lo intentes). Usa search_images "
                       "(fotos de Wikipedia, Wikimedia Commons, Openverse con autor y licencia) y download_file para traerlas "
@@ -1710,7 +1729,9 @@ class Runner:
         if ws:
             t += ("In LaTeX use `from sah_tex import PREAMBLE, df_to_latex, figure` and after latexmk -g -pdf run "
                   "`python .sah/sah_check.py report.pdf`; fix everything it flags (overfull boxes, content at the page edge, "
-                  "overprinted text, broken references) before saying you are done. ")
+                  "overprinted text, broken references) before saying you are done. Then look at the result with view_image "
+                  "(pages=\"1-4\"): a small vision model reviews page screenshots and says what looks wrong; its remarks can be "
+                  "false, confirm them before fixing, and check at least the pages with figures, wide tables and the cover. ")
         if web:
             t += ("Pictures from the internet: the sandbox has NO network (do not try curl/wget/requests). Use search_images "
                   "(Wikipedia, Wikimedia Commons, Openverse, with author and licence) and download_file "
@@ -1718,6 +1739,83 @@ class Runner:
                      "check it matches the request and credit each image (imagenes/creditos.json). " if ws else
                      "into the user's files; show it with the link it returns and credit author and licence. "))
         return t
+
+    def _vision_ok(self) -> bool:
+        if self._vision_cache is None:
+            try:
+                with SessionLocal() as db:
+                    self._vision_cache = vision.available(db)
+            except Exception:  # noqa: BLE001
+                self._vision_cache = False
+        return self._vision_cache
+
+    def tool_view_image(self, call_id: str, args: dict) -> dict:
+        path = str(args.get("path") or "").strip()
+        ref = str(args.get("file") or "").strip()
+        question = str(args.get("question") or "").strip() or None
+        src, name = None, ""
+        if path and self.workspace is not None:
+            def grab(db, ws, svc):
+                p, _ = svc.raw(ws, path)
+                return p
+            src, name = self._ws_call(grab), path
+        elif ref:
+            f = next((x for x in self.files.values() if x.filename == ref or str(x.id) == ref), None) or self._file(ref)
+            src, name = files_svc.abs_path(f), f.filename
+        else:
+            raise AgentError("Indica path (archivo del workspace) o file (archivo del chat)")
+        ext = src.suffix.lower()
+        if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".pdf"):
+            raise AgentError(f"No puedo mirar archivos {ext or 'sin extensión'}: solo imágenes y PDF.",
+                             "Convierte Word/PowerPoint/Excel a PDF con soffice --headless --convert-to pdf y mira el PDF.")
+        shots: list[tuple[str, bytes]] = []
+        pagenums: list[int] = []
+        saved: list[str] = []
+        if ext == ".pdf":
+            total = vision.pdf_pages(src)
+            pages = vision.parse_pages(args.get("pages"), total)
+            if not pages:
+                raise AgentError(f"El PDF tiene {total} páginas; pide páginas entre 1 y {total}")
+            for p, png in vision.render_pdf(src, pages):
+                shots.append((f"página {p} de {total}", png))
+                pagenums.append(p)
+        else:
+            if src.stat().st_size > 25 * 1024 * 1024:
+                raise AgentError("La imagen pesa más de 25 MB")
+            shots.append(("imagen", src.read_bytes()))
+        self.emit({"type": "tool_progress", "id": call_id, "message": f"Mirando {len(shots)} imagen(es) con el modelo de visión…"})
+        with SessionLocal() as db:
+            helper = vision.helper_model(db, self.model)
+            if helper is None:
+                raise AgentError("No hay ningún modelo con visión instalado.", "Instala uno en Modelos (p. ej. qwen3-vl:4b-instruct).")
+            alias = helper.alias
+            parts: list[str] = []
+            for i in range(0, len(shots), 3):  # a small model reads better a few pages at a time
+                chunk = shots[i:i + 3]
+                try:
+                    parts.append(vision.analyze(helper, [b for _, b in chunk], question, [l for l, _ in chunk]))
+                except (EngineError, scheduler.SchedulingError) as e:
+                    raise AgentError(f"El modelo de visión no pudo responder: {getattr(e, 'message', e)}")
+        if self.workspace is not None and ext == ".pdf":
+            stem = src.stem
+
+            def save(db2, ws, svc):
+                for (label, png), p in zip(shots, pagenums):
+                    rel = f"capturas/{stem}-p{p}.png"
+                    svc.write(db2, ws, rel, png)
+                    saved.append(rel)
+                db2.commit()
+            try:
+                self._ws_call(save)
+            except AgentError:
+                saved = []
+        report = "\n\n".join(x for x in parts if x) or "(el modelo de visión no devolvió texto)"
+        return {"ok": True, "summary": f"{name}: {len(shots)} imagen(es) vistas con {alias}",
+                **({"workspace": {"changed": saved}} if saved else {}),
+                "content": f"Revisión visual de «{name}» ({', '.join(l for l, _ in shots)}) con el modelo {alias}:\n{report}\n\n"
+                           "AVISO: un modelo pequeño puede equivocarse o repetirse. Confirma cada defecto (sah_check, ws_read, medir) "
+                           "antes de cambiar nada y corrige solo lo que sea real. Si dice «OK: sin defectos visibles», fíate "
+                           "de ello solo si sah_check tampoco marca nada." + (f"\nCapturas guardadas en: {', '.join(saved)}" if saved else "")}
 
     def tool_search_images(self, call_id: str, args: dict) -> dict:
         q = str(args.get("query", "")).strip()
@@ -2426,6 +2524,8 @@ class Runner:
             return bool(self.db_names)
         if name in ("web_search", "fetch_url", "search_images", "download_file"):
             return self.flags["web"]
+        if name == "view_image":
+            return self._vision_ok() and (self.workspace is not None or self.flags["code"])
         if name in ("use_skill", "read_skill_file", "find_skills", "install_skill"):
             return self.flags["skills"]
         if name == "delegate_task":
@@ -2531,8 +2631,25 @@ class Runner:
                 total = est_tokens(messages, self.ratio)
         return max(256, min(max_tokens, limit - total))
 
+    def _steer_check(self) -> bool:
+        """Stream cancel check of the main loop: stop requested, or the user sent an urgent message (read at most every 0.3 s).
+        An urgent message sets `_steered`; the loop then keeps what was reasoned and reads the message at once."""
+        if self.stop():
+            return True
+        now = time.monotonic()
+        if now - self._steer_t < 0.3:
+            return False
+        self._steer_t = now
+        try:
+            due = turns_svc.steer_pending(self.t.conversation_id)
+        except Exception:  # noqa: BLE001  (Redis hiccup: the message is read after the step instead)
+            return False
+        if due:
+            self._steered = True
+        return due
+
     def _llm_step(self, messages: list[dict], specs: list[dict] | None, max_tokens: int, thinking: bool | None = None,
-                  on_delta=None, on_reasoning=None, usage: dict | None = None) -> tuple[str, dict, str | None]:
+                  on_delta=None, on_reasoning=None, usage: dict | None = None, interruptible: bool = False) -> tuple[str, dict, str | None]:
         body = {"messages": messages, **{k: v for k, v in self.t.params.items() if k not in ("aspect", "max_tokens")},
                 "max_tokens": max_tokens, **({"tools": specs} if specs else {})}
         if thinking is not None and self.model.backend == "vllm":
@@ -2542,7 +2659,7 @@ class Runner:
         out: list[str] = []
         finish = None
         told = 0.0  # a long file written as a tool argument takes minutes: say how it goes (at most once per second)
-        for chunk in llm.stream_json(self.model, payload, cancel_check=self.stop):
+        for chunk in llm.stream_json(self.model, payload, cancel_check=self._steer_check if interruptible else self.stop):
             if chunk.get("usage") and usage is not None:
                 for k in ("prompt_tokens", "completion_tokens"):
                     usage[k] = usage.get(k, 0) + (chunk["usage"].get(k) or 0)
@@ -2594,7 +2711,7 @@ class Runner:
             f" Next: {rest[0]['content']}. Keep working; do not stop until every item is completed." if rest else
             " Everything is completed: give the final summary to the user.")}
 
-    def _absorb_inbox(self, messages: list[dict], closing: bool = False) -> int:
+    def _absorb_inbox(self, messages: list[dict], closing: bool = False, partial_reasoning: str = "") -> int:
         """Append the messages the user sent while the turn runs (see services/turns.py) as user messages.
 
         `closing`: the model is about to finish, so the inbox is closed atomically when it is empty (later messages get
@@ -2629,7 +2746,15 @@ class Runner:
                     else ([], [])
                 for w in warnings:
                     self.emit({"type": "warning", "message": w})
-                text = (("[Mensaje nuevo del usuario mientras trabajabas]: " if es else
+                carried = ""
+                if partial_reasoning.strip() and n == 0:  # the user interrupted a generation: hand its reasoning back
+                    tail = partial_reasoning.strip()[-8000:]
+                    carried = (("[Te escribieron mientras pensabas. Este es tu razonamiento hasta ese momento, interrumpido: no "
+                                "lo repitas, continúa desde ahí teniendo en cuenta el mensaje.]\n<razonamiento>\n" if es else
+                                "[The user wrote while you were thinking. This is your reasoning up to that point, interrupted: do "
+                                "not repeat it, carry on from there taking the message into account.]\n<reasoning>\n")
+                               + tail + ("\n</razonamiento>\n\n" if es else "\n</reasoning>\n\n"))
+                text = carried + (("[Mensaje nuevo del usuario mientras trabajabas]: " if es else
                          "[New message from the user while you were working]: ") + (m.content or "")
                         + ("\n\n(Incorpóralo a la tarea: si la cambia o la amplía, actualiza el plan con update_plan y "
                            "sigue; no abandones lo que estabas haciendo salvo que te lo pida.)" if es else
@@ -2913,7 +3038,8 @@ class Runner:
                     step_specs = [s for s in specs if s["function"]["name"] not in
                                   {"delegate_task", "search_knowledge", "read_document"}]
                 text, calls, finish = self._llm_step(messages, step_specs if not last else None, fit_tokens,
-                                                     step_thinking, on_delta, on_reasoning, usage_total)
+                                                     step_thinking, on_delta, on_reasoning, usage_total,
+                                                     interruptible=not last)
             except EngineError as e:
                 if ctx_retries < 3 and is_context_error(e.message):
                     # the estimate was too optimistic: be stricter, compact the turn's steps and retry
@@ -2929,6 +3055,24 @@ class Runner:
                 self.ratio = max(1.5, min(6.0, chars / max(1, usage_total["last_prompt"])))
                 self.emit({"type": "context", "used": usage_total["last_prompt"] + usage_total.get("last_completion", 0),
                            "limit": self.ctx})
+            if self._steered and not self.stop():
+                # The user wrote while the model was still generating (maybe minutes of reasoning): keep what it had
+                # thought and said, drop a tool call cut halfway, and read the message right now.
+                self._steered = False
+                if glue and text_out:
+                    text_out[-1] += text
+                elif text.strip():
+                    text_out.append(text)
+                glue = False
+                if text.strip():
+                    messages.append({"role": "assistant", "content": text})
+                if not self._absorb_inbox(messages, partial_reasoning="".join(reasoning[r0:])):
+                    self._steered = False  # nothing to read after all (taken meanwhile): carry on normally
+                self.emit({"type": "warning", "message": "Pensamiento interrumpido para leer tu mensaje; se conserva lo razonado." if es
+                           else "Thinking interrupted to read your message; what was reasoned is kept."})
+                nudges_in_row = 0
+                continue
+            self._steered = False
             if not calls and not text.strip() and finish == "length" and len(reasoning) > r0 and think_retries < 2 \
                     and not self.stop():
                 # The whole budget went into reasoning: retry with more room, then without thinking. Not an answer.

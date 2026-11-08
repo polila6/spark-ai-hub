@@ -13,6 +13,7 @@ import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markI
 import { CodeBlock, MessageActions, MessageEditor, MSG_GROUP, quoteMarkdown, quoteStart, SelectionQuote, USER_BUBBLE_SELECTION } from "@/components/message-actions";
 import { JumpToEnd, useStickToBottom } from "@/components/stick-to-bottom";
 import { effortBody, EffortSlider, PermChips, useEffort } from "@/components/effort";
+import { SteerToggle, useSteer } from "@/components/steer";
 import { useAutoGrow, useConfirm } from "./common";
 import { PanelHeader } from "./layout";
 
@@ -41,6 +42,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [effort, setEffort] = useEffort("sah-effort-ws");
+  const [steer, setSteer] = useSteer();
   const [editing, setEditing] = useState<number | null>(null);
   const { confirm, confirmElement } = useConfirm();
   const abort = useRef<AbortController | null>(null);
@@ -103,7 +105,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
     setMsgs((x) => insertQueued(x, { role: "user", content, queued: "queued", key }));
     let streamed = false;
     try {
-      const r = await streamPost(`/api/v1/playground/conversations/${cid}/messages`, { content, ...turnBody() }, (ev) => {
+      const r = await streamPost(`/api/v1/playground/conversations/${cid}/messages`, { content, ...turnBody(), interrupt: steer }, (ev) => {
         if (!streamed) {  // the task had just finished: the server answers it as a normal turn
           streamed = true; setBusy(true);
           setMsgs((x) => [...x.map((m) => (m.key === key ? { ...m, queued: undefined } : m)), { role: "assistant", content: "", tools: [], pending: true, activity: { t0: Date.now() } }]);
@@ -208,7 +210,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
       {confirmElement}
       <form className="shrink-0 px-3 pb-3 pt-2 sm:px-6" onSubmit={(e) => { e.preventDefault(); send(); }}>
         <div className="mx-auto w-full max-w-3xl space-y-1.5 rounded-2xl border border-border bg-bg p-2 shadow-card transition focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/25">
-          <textarea ref={box} rows={2} value={input} onChange={(e) => setInput(e.target.value)} placeholder={busy ? L("Añade indicaciones a la tarea en curso (no la interrumpe)…", "Add instructions to the running task (it is not interrupted)…") : L("¿Qué hacemos en este workspace?", "What shall we do in this workspace?")}
+          <textarea ref={box} rows={2} value={input} onChange={(e) => setInput(e.target.value)} placeholder={busy ? (steer ? L("Escribe aunque esté pensando: lo lee al instante sin perder lo razonado…", "Type even while it thinks: it reads it at once without losing its reasoning…") : L("Añade indicaciones a la tarea en curso (las lee al terminar el paso)…", "Add instructions to the running task (read when the step ends)…")) : L("¿Qué hacemos en este workspace?", "What shall we do in this workspace?")}
             aria-label={L("Mensaje para el asistente", "Message for the assistant")}
             className="w-full resize-none bg-transparent px-2 py-1.5 text-sm text-fg placeholder:text-subtle focus:outline-none"
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
@@ -216,10 +218,11 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
             <PermChips value={effort} onChange={setEffort} canThink canWeb canResearch={false} />
             <EffortSlider value={effort} onChange={setEffort} compact />
             <span className="hidden text-[10.5px] text-subtle xl:inline">{L("Mayús+Enter: nueva línea", "Shift+Enter: new line")}</span>
-            {busy && <Button type="button" size="sm" variant="danger" className="ml-auto" onClick={stop} title={L("Detiene la tarea", "Stops the task")}><Square className="h-3.5 w-3.5" />{L("Parar", "Stop")}</Button>}
+            {busy && <SteerToggle on={steer} onChange={setSteer} className="ml-auto" />}
+            {busy && <Button type="button" size="sm" variant="danger" onClick={stop} title={L("Detiene la tarea", "Stops the task")}><Square className="h-3.5 w-3.5" />{L("Parar", "Stop")}</Button>}
             <Button type="submit" size="sm" variant="primary" className={busy ? undefined : "ml-auto"} disabled={!input.trim() || !cid}
-              title={busy ? L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it") : undefined}>
-              {busy ? <><ListPlus className="h-3.5 w-3.5" />{L("Añadir a la tarea", "Add to the task")}</> : <><Send className="h-3.5 w-3.5" />{L("Enviar", "Send")}</>}</Button>
+              title={busy ? (steer ? L("Interrumpe su pensamiento actual (se conserva) y lo lee ya", "Interrupts its current thinking (kept) and reads it now") : L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it")) : undefined}>
+              {busy ? <><ListPlus className="h-3.5 w-3.5" />{steer ? L("Enviar ahora", "Send now") : L("Añadir a la tarea", "Add to the task")}</> : <><Send className="h-3.5 w-3.5" />{L("Enviar", "Send")}</>}</Button>
           </div>
         </div>
       </form>

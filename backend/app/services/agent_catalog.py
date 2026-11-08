@@ -29,7 +29,8 @@ _VISUAL_RULES = (
     "horizontales, menos categorías) y la rehaces hasta que diga OK. Tablas anchas: table_image (imagen) o, en LaTeX, "
     "sah_tex.df_to_latex (se adapta al ancho, apaisa o usa longtable). Tras compilar un PDF ejecuta `python .sah/sah_check.py "
     "archivo.pdf` y corrige lo que marque (desbordes, contenido pegado al borde, texto encimado, referencias rotas). "
-    "No des por entregado nada que el comprobador marque. El sandbox NO tiene internet: las fotos de la web se traen con "
+    "No des por entregado nada que el comprobador marque. Después mira el resultado con view_image (un modelo de visión "
+    "pequeño revisa capturas de las páginas o de la figura): confirma sus avisos antes de corregir. El sandbox NO tiene internet: las fotos de la web se traen con "
     "search_images + download_file (si los tienes), nunca con curl/requests."
 )
 
@@ -203,7 +204,7 @@ EXTRA_AGENTS: dict[str, dict] = {
             "generada (tamaño, solapes) y describe en el informe qué muestra cada figura y una propuesta de pie de "
             "figura." + _VISUAL_RULES + _WS_RULES),
         "tools": ["describe_data", "query_data", "use_skill", "read_skill_file", "run_code", "ws_list", "ws_read",
-                  "ws_write", "ws_append", "ws_edit", "ws_run"],
+                  "ws_write", "ws_append", "ws_edit", "ws_run", "view_image"],
         "skills": ["graficos-publicacion"],
     },
     "limpiador-datos": {
@@ -239,7 +240,7 @@ EXTRA_AGENTS: dict[str, dict] = {
             "en el .log la primera línea que empieza por '!' y su número de línea, corrige y recompila; revisa también "
             "referencias '??' (cita o etiqueta inexistente) y avisos de Overfull hbox graves. No inventes paquetes: si "
             "dudas de que exista, usa `kpsewhich paquete.sty`. Entrega la ruta del PDF y del .tex principal." + _VISUAL_RULES + _WS_RULES),
-        "tools": _CODE_TOOLS + ["search_images", "download_file"],
+        "tools": _CODE_TOOLS + ["search_images", "download_file", "view_image"],
         "skills": ["informe-latex"],
     },
     "traductor": {

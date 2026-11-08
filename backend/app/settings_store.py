@@ -9,6 +9,7 @@ from .models import SystemSetting
 from .security import decrypt_str, encrypt_str
 
 DEFAULTS: dict[str, Any] = {
+    "vision_helper_model": "auto",  # alias of the small vision model that reviews pictures/pages for the assistant (services/vision.py)
     "api_default_thinking": "auto",  # auto = the model's own default | off | on: for API clients that do not say (reasoning_effort wins)
     "load_safety_gb": 8,  # real free memory required, on top of a big model's reservation, before it is loaded (services/memguard.py)
     "default_language": "es",  # chosen in the first-run setup; each person can pick their own in Settings

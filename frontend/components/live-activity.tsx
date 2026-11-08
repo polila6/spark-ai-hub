@@ -21,7 +21,7 @@ const RUNNING_LABELS: Record<string, [string, string]> = {
   search_knowledge: ["Buscando en tus documentos", "Searching your documents"], read_document: ["Leyendo documento", "Reading document"],
   describe_data: ["Analizando datos", "Analysing data"], query_data: ["Consultando datos", "Querying data"],
   save_memory: ["Guardando en memoria", "Saving to memory"], web_search: ["Buscando en internet", "Searching the web"],
-  fetch_url: ["Leyendo página web", "Reading web page"], search_images: ["Buscando imágenes", "Searching images"], download_file: ["Descargando archivo", "Downloading file"], use_skill: ["Cargando skill", "Loading skill"],
+  fetch_url: ["Leyendo página web", "Reading web page"], search_images: ["Buscando imágenes", "Searching images"], download_file: ["Descargando archivo", "Downloading file"], view_image: ["Mirando la imagen", "Looking at the image"], use_skill: ["Cargando skill", "Loading skill"],
   read_skill_file: ["Leyendo archivo de skill", "Reading skill file"], find_skills: ["Buscando skills", "Finding skills"],
   install_skill: ["Instalando skill", "Installing skill"], delegate_task: ["Agente trabajando", "Agent working"],
   compact_context: ["Contexto compactado", "Context compacted"], run_code: ["Ejecutando código", "Running code"],

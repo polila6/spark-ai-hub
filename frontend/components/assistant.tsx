@@ -1,6 +1,6 @@
 "use client";
 // Chat extensions: context-window meter/settings, and the cards for web sources, sub-agents and skills.
-import { Bot, Code2, Download, ExternalLink, FileText, Gauge, Globe, Loader2, Mic, Puzzle, Shrink, Square, Volume2 } from "lucide-react";
+import { Bot, Code2, Download, ExternalLink, Eye, FileText, Gauge, Globe, Loader2, Mic, Puzzle, Shrink, Square, Volume2 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { hubFile, useFileViewer } from "@/components/file-viewer";
@@ -147,7 +147,7 @@ export function CodeRun({ run }: { run: any }) {
   );
 }
 
-export const TOOL_ICONS: Record<string, any> = { run_code: Code2, web_search: Globe, fetch_url: Globe, search_images: Globe, download_file: Globe, delegate_task: Bot, use_skill: Puzzle, read_skill_file: Puzzle, find_skills: Puzzle, install_skill: Puzzle, compact_context: Shrink };
+export const TOOL_ICONS: Record<string, any> = { run_code: Code2, web_search: Globe, fetch_url: Globe, search_images: Globe, download_file: Globe, view_image: Eye, delegate_task: Bot, use_skill: Puzzle, read_skill_file: Puzzle, find_skills: Puzzle, install_skill: Puzzle, compact_context: Shrink };
 
 // ------------------------------------------------------------------ voice (local Whisper / MMS-TTS on the Spark)
 

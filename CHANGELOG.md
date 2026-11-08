@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.21.0 — 2026-11-08
+* **Write to the assistant while it is thinking.** A message sent during a task used to wait until the model finished its current
+  step (a long reasoning can last minutes). With «Leer al instante» (a switch next to the send button, on by default, remembered per
+  browser) the running generation is interrupted at once, **what it had reasoned and said so far is kept and handed back to it**
+  together with your message (it is told not to repeat that reasoning), and it carries on from there. A tool call cut halfway is
+  discarded; a tool that is already running (a compile, a sub-agent) finishes first and your message is read right after it. Off = the
+  previous behaviour (read at the next step). API: `interrupt: true` in the send-message body.
+* **A small vision model that looks at the work.** New tool `view_image`: renders PDF pages (or takes a picture/chart), has a small
+  vision model review them for layout defects (text cut off or overprinted, tables outside the margin, legends over data, blurry or
+  placeholder pictures…) and returns what is wrong with page and zone; PDF page screenshots are saved in `capturas/`. The assistant
+  is told to confirm its remarks (it is a 4B model: it can be wrong) with `sah_check`/`ws_read` before fixing. Available to the figure,
+  LaTeX and reviewer agents. Admin setting «Revisión de imágenes y documentos (visión)» (`vision_helper_model`, default automatic =
+  the smallest installed vision model, else a loaded one). `qwen3-vl:4b-instruct` (3.3 GB, Ollama) is installed as the helper.
+
 ## 0.20.0 — 2026-11-08
 Workspace review (a long LaTeX report on opinion polls): what went wrong, fixed for every part of the hub.
 

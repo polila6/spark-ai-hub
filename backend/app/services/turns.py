@@ -174,10 +174,21 @@ return items
 """
 
 
-def queue_message(cid, message_id: int) -> bool:
+def queue_message(cid, message_id: int, urgent: bool = False) -> bool:
     """Hand a stored user message to the running turn. False = the turn is not accepting messages (none running, or
-    it is finishing): the caller answers the message with a turn of its own."""
-    return bool(get_redis().eval(_QUEUE_LUA, 2, _k(cid, ":accept"), _k(cid, ":inbox"), int(message_id), TTL_S))
+    it is finishing): the caller answers the message with a turn of its own.
+
+    `urgent`: do not wait for the model to finish what it is generating (a long reasoning can last minutes): the running
+    generation is interrupted, what it had reasoned so far is kept, and the message is read at once."""
+    ok = bool(get_redis().eval(_QUEUE_LUA, 2, _k(cid, ":accept"), _k(cid, ":inbox"), int(message_id), TTL_S))
+    if ok and urgent:
+        get_redis().set(_k(cid, ":steer"), "1", ex=TTL_S)
+    return ok
+
+
+def steer_pending(cid) -> bool:
+    """True while an urgent message waits for the running generation to be interrupted."""
+    return bool(get_redis().exists(_k(cid, ":steer")))
 
 
 def take_inbox(cid) -> list[int]:
@@ -185,7 +196,8 @@ def take_inbox(cid) -> list[int]:
     pipe = get_redis().pipeline(transaction=True)
     pipe.lrange(_k(cid, ":inbox"), 0, -1)
     pipe.delete(_k(cid, ":inbox"))
-    raw, _ = pipe.execute()
+    pipe.delete(_k(cid, ":steer"))
+    raw, _, _ = pipe.execute()
     return inbox_order(raw)
 
 
@@ -193,6 +205,7 @@ def close_inbox(cid, final: bool = False) -> list[int]:
     """The agent is about to finish: atomically pop the queued ids and, when there are none (or `final`), stop
     accepting new ones. A non-empty result means the turn must go on with those messages."""
     raw = get_redis().eval(_CLOSE_LUA, 2, _k(cid, ":accept"), _k(cid, ":inbox"), "1" if final else "0")
+    get_redis().delete(_k(cid, ":steer"))
     return inbox_order(raw)
 
 
