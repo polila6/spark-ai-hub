@@ -21,7 +21,7 @@ const RUNNING_LABELS: Record<string, [string, string]> = {
   search_knowledge: ["Buscando en tus documentos", "Searching your documents"], read_document: ["Leyendo documento", "Reading document"],
   describe_data: ["Analizando datos", "Analysing data"], query_data: ["Consultando datos", "Querying data"],
   save_memory: ["Guardando en memoria", "Saving to memory"], web_search: ["Buscando en internet", "Searching the web"],
-  fetch_url: ["Leyendo página web", "Reading web page"], search_images: ["Buscando imágenes", "Searching images"], download_file: ["Descargando archivo", "Downloading file"], view_image: ["Mirando la imagen", "Looking at the image"], use_skill: ["Cargando skill", "Loading skill"],
+  fetch_url: ["Leyendo página web", "Reading web page"], fetch_urls: ["Leyendo varias páginas", "Reading several pages"], http_request: ["Consultando una API", "Calling an API"], crawl_site: ["Rastreando un sitio", "Crawling a site"], search_images: ["Buscando imágenes", "Searching images"], download_file: ["Descargando archivo", "Downloading file"], view_image: ["Mirando la imagen", "Looking at the image"], use_skill: ["Cargando skill", "Loading skill"],
   read_skill_file: ["Leyendo archivo de skill", "Reading skill file"], find_skills: ["Buscando skills", "Finding skills"],
   install_skill: ["Instalando skill", "Installing skill"], delegate_task: ["Agente trabajando", "Agent working"],
   compact_context: ["Contexto compactado", "Context compacted"], run_code: ["Ejecutando código", "Running code"],
@@ -109,7 +109,7 @@ function useNow(active: boolean) {
 const dur = (s?: number | null) => (s == null || !isFinite(s) ? "" : s < 10 ? `${s.toFixed(1)} s` : s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`);
 
 function toolIcon(name = "") {
-  if (name === "web_search" || name === "fetch_url" || name === "search_images" || name === "download_file") return Globe;
+  if (name === "web_search" || name === "fetch_url" || name === "search_images" || name === "fetch_urls" || name === "http_request" || name === "crawl_site" || name === "download_file") return Globe;
   if (name === "ws_write" || name === "ws_append" || name === "ws_edit" || name.startsWith("canvas_")) return FilePen;
   if (name === "ws_read" || name === "read_document" || name === "read_skill_file") return FileText;
   if (name === "ws_list") return FolderOpen;

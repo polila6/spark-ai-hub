@@ -147,7 +147,7 @@ export function CodeRun({ run }: { run: any }) {
   );
 }
 
-export const TOOL_ICONS: Record<string, any> = { run_code: Code2, web_search: Globe, fetch_url: Globe, search_images: Globe, download_file: Globe, view_image: Eye, delegate_task: Bot, use_skill: Puzzle, read_skill_file: Puzzle, find_skills: Puzzle, install_skill: Puzzle, compact_context: Shrink };
+export const TOOL_ICONS: Record<string, any> = { run_code: Code2, web_search: Globe, fetch_url: Globe, fetch_urls: Globe, http_request: Globe, crawl_site: Globe, search_images: Globe, download_file: Globe, view_image: Eye, delegate_task: Bot, use_skill: Puzzle, read_skill_file: Puzzle, find_skills: Puzzle, install_skill: Puzzle, compact_context: Shrink };
 
 // ------------------------------------------------------------------ voice (local Whisper / MMS-TTS on the Spark)
 

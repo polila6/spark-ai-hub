@@ -36,7 +36,7 @@ from ..settings_store import branding, get_setting
 from . import canvas as canvas_svc
 from . import director
 from . import memory as memory_svc
-from . import dataq, kb, llm, media_fetch, remote_db, sandbox, scheduler, vision, web, workflows
+from . import dataq, kb, llm, media_fetch, remote_db, sandbox, scheduler, vision, web, web_tools, workflows
 from . import skills as skills_svc
 from . import files as files_svc
 from . import turns as turns_svc
@@ -45,7 +45,7 @@ from .jobs import JobError, create_job, request_cancel
 MAX_STEPS = 40  # fallback of the admin setting agent_max_steps_chat (safety net, not a goal)
 SMALL_MODEL_B = 14  # below this size models get only the core tools: 20+ tool definitions confuse them
 CORE_TOOLS = {"generate_image", "edit_image", "search_knowledge", "read_document", "describe_data", "query_data",
-              "save_memory", "web_search", "fetch_url", "use_skill", "db_schema", "db_query"}
+              "save_memory", "web_search", "fetch_url", "fetch_urls", "use_skill", "db_schema", "db_query"}
 REMEMBER_RE = re.compile(r"^\s*(?:por favor,?\s*)?(?:recuerda|recuérdalo|apunta|guarda en (?:tu )?memoria|remember)\b[\s,:]*(?:que|that)?\s*(.+)",
                          re.I | re.S)
 WORKSPACE_MAX_STEPS = 400  # fallback of agent_max_steps_workspace: long tasks run until done (or stopped)
@@ -621,14 +621,60 @@ WEB_TOOLS = [
             "query": {"type": "string", "description": "Search query (keywords; no personal or confidential data)"},
             "category": {"type": "string", "enum": ["web", "science", "news", "code"],
                          "description": "science = papers (arXiv, Scholar, PubMed...), code = GitHub/StackOverflow"},
-            "time_range": {"type": "string", "enum": ["day", "week", "month", "year"]}},
+            "time_range": {"type": "string", "enum": ["day", "week", "month", "year"]},
+            "site": {"type": "string", "description": "Only this site or domain, e.g. ine.es (optional)"},
+            "filetype": {"type": "string", "description": "Only this file type: pdf, xlsx, csv, docx… (optional)"},
+            "page": {"type": "integer", "description": "Result page, 2 for the next results (default 1)"},
+            "limit": {"type": "integer", "description": "How many results, up to 20 (default 8)"}},
             "required": ["query"]}}},
     {"type": "function", "function": {
         "name": "fetch_url",
         "description": "Open a public web page or PDF and read its text (the most relevant passages when `query` is given).",
         "parameters": {"type": "object", "properties": {
             "url": {"type": "string"},
-            "query": {"type": "string", "description": "What to look for in the page (optional)"}},
+            "query": {"type": "string", "description": "What to look for in the page (optional)"},
+            "as_of": {"type": "string", "description": "Read the Internet Archive copy closest to this date (YYYY-MM-DD or a year), "
+                                                       "e.g. to see a page as it was months ago (optional)"},
+            "save_to": {"type": "string", "description": "Also save the FULL text as a file (workspace path, or the user's files in a "
+                                                         "chat) so scripts can process it (optional)"}},
+            "required": ["url"]}}},
+    {"type": "function", "function": {
+        "name": "fetch_urls",
+        "description": "Read up to 10 web pages or PDFs AT ONCE (in parallel) and get an excerpt of each: much faster than calling "
+                       "fetch_url one by one. Use it after web_search to read the best results together.",
+        "parameters": {"type": "object", "properties": {
+            "urls": {"type": "array", "items": {"type": "string"}, "description": "Up to 10 URLs"},
+            "query": {"type": "string", "description": "What to look for in each page (picks the most relevant passages)"},
+            "save_dir": {"type": "string", "description": "Workspace folder where to save each page's FULL text as .md (optional)"}},
+            "required": ["urls"]}}},
+    {"type": "function", "function": {
+        "name": "http_request",
+        "description": "Call a public web API or download a data endpoint (GET or POST): JSON, CSV, XML… Public addresses only. "
+                       "The answer is shown (JSON pretty-printed); with save_to the FULL raw response is saved as a file for scripts "
+                       "(the sandbox has no network, so this is how API data gets there). Do not send the user's private data to "
+                       "third parties.",
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string"},
+            "method": {"type": "string", "enum": ["GET", "POST"]},
+            "params": {"type": "object", "description": "Query-string parameters"},
+            "headers": {"type": "object", "description": "Extra headers (e.g. Accept, Authorization with an API key the user gave you)"},
+            "json": {"type": "object", "description": "JSON body for POST"},
+            "form": {"type": "object", "description": "Form body for POST"},
+            "save_to": {"type": "string", "description": "Save the full raw response as this file (workspace path or the user's files)"}},
+            "required": ["url"]}}},
+    {"type": "function", "function": {
+        "name": "crawl_site",
+        "description": "Read SEVERAL pages of one website by following its links (or its sitemap), politely (robots.txt, pauses) and "
+                       "return what each says. For documentation, reports, news archives, catalogues. Limited to 40 pages and 2 "
+                       "minutes per call; use `pattern` to stay in a section.",
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Where to start"},
+            "max_pages": {"type": "integer", "description": "Default 15, up to 40"},
+            "depth": {"type": "integer", "description": "Link levels from the start page (default 2, up to 3)"},
+            "pattern": {"type": "string", "description": "Regular expression the page URLs must match, e.g. /docs/ (optional)"},
+            "sitemap": {"type": "boolean", "description": "Also take the URLs of the site's sitemap"},
+            "same_host": {"type": "boolean", "description": "Stay on the same domain (default true)"},
+            "save_dir": {"type": "string", "description": "Workspace folder where to save each page's FULL text as .md (optional)"}},
             "required": ["url"]}}},
     {"type": "function", "function": {
         "name": "search_images",
@@ -867,7 +913,7 @@ BUILTIN_AGENTS = {
                                      "fuentes más fiables y contrasta los datos. Devuelve un informe estructurado con "
                                      "los hallazgos, cifras y fechas, citando cada dato con su URL. Indica lo que no "
                                      "hayas podido verificar.",
-                     "tools": ["web_search", "fetch_url", "search_images"]},
+                     "tools": ["web_search", "fetch_url", "fetch_urls", "search_images"]},
     "documentalista": {"description": "Busca y lee en los documentos del usuario (base de conocimiento y adjuntos).",
                        "instructions": "Eres un documentalista. Empieza con una consulta precisa a search_knowledge y "
                                        "haz una segunda solo si los primeros resultados son insuficientes. Lee con "
@@ -894,11 +940,13 @@ BUILTIN_AGENTS = {
     "general": {"description": "Agente de propósito general con las instrucciones que le des (campo instructions).",
                 "instructions": "Eres un agente auxiliar. Cumple la tarea con las herramientas disponibles y devuelve "
                                 "un resultado completo y conciso.",
-                "tools": ["web_search", "fetch_url", "search_images", "download_file", "search_knowledge", "read_document",
+                "tools": ["web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "download_file",
+                          "search_knowledge", "read_document",
                           "describe_data", "query_data", "use_skill", "read_skill_file", "ws_list", "ws_read", "ws_write",
                           "ws_append", "ws_edit", "ws_run", "view_image"]},
 }
-SUB_AGENT_TOOLS = {"web_search", "fetch_url", "search_images", "download_file", "view_image", "search_knowledge", "read_document", "describe_data", "query_data",
+WEB_SAVE_TOOLS = {"fetch_url", "fetch_urls", "http_request", "crawl_site"}  # write into the workspace only when given save_to/save_dir
+SUB_AGENT_TOOLS = {"web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "download_file", "view_image", "search_knowledge", "read_document", "describe_data", "query_data",
                    "use_skill", "read_skill_file", "run_code"} | WS_TOOLS  # ws_* only inside a workspace
 from .agent_catalog import EXTRA_AGENTS  # noqa: E402 - specialised agents (programador, tester, estadistico…)
 
@@ -906,7 +954,7 @@ BUILTIN_AGENTS.update({k: v for k, v in EXTRA_AGENTS.items() if k not in BUILTIN
 
 TOOL_LABELS = {"generate_image": "Generando imagen", "edit_image": "Editando imagen", "search_knowledge": "Buscando en tus documentos",
                "read_document": "Leyendo documento", "describe_data": "Analizando datos", "query_data": "Consultando datos",
-               "save_memory": "Guardando en memoria", "web_search": "Buscando en internet", "fetch_url": "Leyendo página web", "search_images": "Buscando imágenes", "download_file": "Descargando archivo", "view_image": "Mirando la imagen",
+               "save_memory": "Guardando en memoria", "web_search": "Buscando en internet", "fetch_url": "Leyendo página web", "fetch_urls": "Leyendo varias páginas", "http_request": "Consultando una API", "crawl_site": "Rastreando un sitio", "search_images": "Buscando imágenes", "download_file": "Descargando archivo", "view_image": "Mirando la imagen",
                "use_skill": "Cargando skill", "read_skill_file": "Leyendo archivo de skill", "find_skills": "Buscando skills",
                "install_skill": "Instalando skill", "delegate_task": "Agente trabajando", "compact_context": "Contexto compactado",
                "run_code": "Ejecutando código", "canvas_write": "Escribiendo en el lienzo",
@@ -954,6 +1002,23 @@ def scope_overlaps(a: list[str], b: list[str]) -> bool:
 
 def in_scope(path: str, scope: list[str]) -> bool:
     return any(s == "" or path == s or path.startswith(s + "/") for s in scope)
+
+
+def public_args(name: str, args: dict) -> dict:
+    """Arguments as shown to the user and kept in the history: header values and request bodies of http_request are hidden."""
+    if name != "http_request":
+        return args
+    out = dict(args)
+    if isinstance(out.get("headers"), dict):
+        out["headers"] = {k: ("«oculto»" if re.search(r"auth|key|token|secret|cookie|pass", str(k), re.I) else v)
+                          for k, v in out["headers"].items()}
+    return out
+
+
+def urlsplit_host(url: str) -> str:
+    from urllib.parse import urlsplit
+
+    return urlsplit(url).hostname or url
 
 
 def urlsplit_name(url: str) -> str:
@@ -1098,10 +1163,23 @@ class Runner:
             lines.append("Internet: web_search busca en la web (a través del buscador privado del Spark) y fetch_url lee "
                          "páginas y PDFs. Úsalas para actualidad, precios, versiones, normativa o datos que no sepas con "
                          "certeza; lee las fuentes antes de responder y cita así: [título](url). Nunca pongas datos "
-                         "personales o confidenciales del usuario en una búsqueda." if es else
+                         "personales o confidenciales del usuario en una búsqueda. Más herramientas: fetch_urls lee hasta 10 "
+                         "páginas a la vez (úsala tras buscar en vez de abrirlas una a una); web_search admite site, filetype, "
+                         "page y limit (hasta 20); fetch_url con as_of lee la copia del Internet Archive de una fecha; "
+                         "http_request llama a APIs públicas (GET/POST) y crawl_site recorre varias páginas de un sitio. "
+                         "Con save_to/save_dir guardas lo descargado como archivo para procesarlo después con un script "
+                         "(el código no tiene internet). Si una página no tiene texto porque necesita JavaScript, busca su API "
+                         "de datos con http_request o una versión alternativa. Nunca envíes datos privados del usuario a "
+                         "terceros con http_request." if es else
                          "Internet: web_search searches the web (through the Spark's private search engine) and fetch_url "
                          "reads pages/PDFs. Use them for current facts; read sources before answering and cite as "
-                         "[title](url). Never put personal or confidential data in a query.")
+                         "[title](url). Never put personal or confidential data in a query. More tools: fetch_urls reads up to 10 pages at "
+                         "once (use it after searching instead of opening them one by one); web_search takes site, filetype, page and "
+                         "limit (up to 20); fetch_url with as_of reads the Internet Archive copy of a date; http_request calls public "
+                         "APIs (GET/POST) and crawl_site walks several pages of a site. save_to/save_dir keep what was downloaded as a "
+                         "file for a script (code has no internet). If a page has no text because it needs JavaScript, find its data "
+                         "API with http_request or an alternative version. Never send the user's private data to third parties with "
+                         "http_request.")
         if tools_on and self.db_names:
             lines.append(("Bases de datos remotas del usuario: " + ", ".join(self.db_names) + ". Consúltalas con db_schema (tablas y columnas) y "
                           "db_query (UNA consulta SQL de solo lectura que se ejecuta en el servidor remoto). Mira el esquema antes de "
@@ -1649,49 +1727,170 @@ class Runner:
         q = str(args.get("query", "")).strip()[:400]
         if not q:
             raise AgentError("Consulta vacía")
+        site = re.sub(r"^https?://|/.*$", "", str(args.get("site") or "").strip())
+        ft = re.sub(r"[^a-z0-9]", "", str(args.get("filetype") or "").lower())[:8]
+        full = " ".join(x for x in (q, f"site:{site}" if site else "", f"filetype:{ft}" if ft else "") if x)
+        try:
+            limit = max(1, min(20, int(args.get("limit") or 8)))
+            page_no = max(1, min(10, int(args.get("page") or 1)))
+        except (TypeError, ValueError):
+            limit, page_no = 8, 1
         with SessionLocal() as db:
             try:
-                res = web.search(db, q, str(args.get("category") or "web"), None, 8, args.get("time_range"))
+                res = web.search(db, full, str(args.get("category") or "web"), None, limit, args.get("time_range"), page_no)
             except web.WebError as e:
                 raise AgentError(str(e))
         if not res:
-            return {"ok": True, "summary": f"Sin resultados para «{q}»", "sources": [], "query": q,
-                    "content": "No results. Try other keywords or another category."}
+            return {"ok": True, "summary": f"Sin resultados para «{full}»", "sources": [], "query": q,
+                    "content": "No results. Try other keywords, another category, another page or drop site/filetype."}
         content = "\n\n".join(f"[{i + 1}] {r['title']}\n{r['url']}" + (f" ({r['published']})" if r["published"] else "")
-                              + f"\n{r['snippet']}" for i, r in enumerate(res))
-        return {"ok": True, "summary": f"{len(res)} resultados para «{q}»", "query": q,
+                               + f"\n{r['snippet']}" for i, r in enumerate(res))
+        return {"ok": True, "summary": f"{len(res)} resultados para «{full}»" + (f" (página {page_no})" if page_no > 1 else ""), "query": q,
                 "sources": [{"title": r["title"], "url": r["url"], "snippet": r["snippet"], "kind": "web"} for r in res],
-                "content": content + "\n\nOpen the most relevant results with fetch_url before answering."}
+                "content": content + "\n\nRead the most relevant results together with fetch_urls (or one by one with fetch_url) "
+                                    "before answering; page=2 gives more results."}
+
+    def _store(self, rel: str, data: bytes) -> dict:
+        """Keep fetched data as a file: in the workspace (rel = path) or, in a chat, in the user's files («Descargas»).
+        Returns {"where": text, "changed": [...]} or {"where": text, "files": [...]}."""
+        if self.workspace is not None:
+            def save(db, ws, svc):
+                out = svc.write(db, ws, rel, data)
+                db.commit()
+                return out
+            out = self._ws_call(save)
+            return {"where": f"en el workspace: {out['path']}", "changed": [out["path"]]}
+        with SessionLocal() as db:
+            user = db.get(User, self.t.user_id)
+            try:
+                f = sandbox.store_bytes(db, user, rel.rsplit("/", 1)[-1] or "datos.txt", data, folder="Descargas",
+                                        project_id=self.project_id, generated_by="web")
+            except Exception as e:  # noqa: BLE001 (quota, type)
+                raise AgentError(f"No se pudo guardar el archivo: {e}")
+        if not f:
+            raise AgentError("Ese tipo de archivo no se puede guardar; usa .md, .txt, .json o .csv")
+        return {"where": f"en los archivos del usuario (Descargas): «{f['filename']}»", "files": [f]}
+
+    @staticmethod
+    def _attach_saved(res: dict, saved: list[dict]) -> dict:
+        for s in saved:
+            if s.get("changed"):
+                res.setdefault("workspace", {"changed": []})["changed"] += s["changed"]
+            if s.get("files"):
+                res.setdefault("files", []).extend(s["files"])
+        return res
 
     def tool_fetch_url(self, call_id: str, args: dict) -> dict:
         url = str(args.get("url", "")).strip()
+        as_of = str(args.get("as_of") or "").strip()
         try:
-            page = web.read_page(url)
+            page = web.wayback_page(url, as_of) if as_of else web.read_page(url)
         except web.WebError as e:
             raise AgentError(str(e))
         text = page["text"]
         if not text:
             raise AgentError("La página no tiene texto legible")
-        q = str(args.get("query") or "")
-        limit = TOOL_RESULT_CHARS
-        if len(text) > limit and q:
-            words = set(re.findall(r"\w{3,}", q.lower()))
-            paras = [p for p in re.split(r"\n(?=#)|\n\n", text) if p.strip()]
-            scored = sorted(range(len(paras)), key=lambda i: -sum(paras[i].lower().count(w) for w in words))
-            pick, size = set(), 0
-            for i in scored:
-                if size + len(paras[i]) > limit:
-                    continue
-                pick.add(i)
-                size += len(paras[i])
-            text = "\n\n".join(paras[i] for i in sorted(pick))
-        elif len(text) > limit:
-            text = text[:limit] + "\n[... página recortada]"
         title = page["title"] or url
+        saved = []
+        if args.get("save_to"):
+            saved.append(self._store(str(args["save_to"]).strip(), f"# {title}\nURL: {page['url']}\n\n{text}".encode()))
+        text = web_tools.excerpt(text, str(args.get("query") or ""), TOOL_RESULT_CHARS)
         via = {"archive": " · copia del Internet Archive", "openalex": " · ficha OpenAlex", "europepmc": " · ficha Europe PMC"}.get(page.get("via") or "", "")
-        return {"ok": True, "summary": f"{title[:90]} ({len(page['text']):,} caracteres){via}".replace(",", "."),
-                "sources": [{"title": title, "url": page["url"], "kind": "web", "snippet": page["text"][:240]}],
-                "content": f"# {title}\nURL: {page['url']}\n" + (f"{page['note']}\n" if page.get("note") else "") + f"\n{text}"}
+        res = {"ok": True, "summary": f"{title[:90]} ({len(page['text']):,} caracteres){via}".replace(",", "."),
+               "sources": [{"title": title, "url": page["url"], "kind": "web", "snippet": page["text"][:240]}],
+               "content": f"# {title}\nURL: {page['url']}\n" + (f"{page['note']}\n" if page.get("note") else "")
+                          + (f"Texto completo guardado {saved[0]['where']}\n" if saved else "") + f"\n{text}"}
+        return self._attach_saved(res, saved)
+
+    def tool_fetch_urls(self, call_id: str, args: dict) -> dict:
+        urls = args.get("urls")
+        if isinstance(urls, str):
+            urls = [u for u in re.split(r"[\s,]+", urls) if u]
+        if not isinstance(urls, list) or not urls:
+            raise AgentError("Pasa urls como lista de direcciones")
+        urls = [str(u) for u in urls][:web_tools.MAX_URLS]
+        self.emit({"type": "tool_progress", "id": call_id, "message": f"Leyendo {len(urls)} páginas a la vez…"})
+        try:
+            pages = web_tools.read_many(urls)
+        except web_tools.ToolError as e:
+            raise AgentError(e.message)
+        per = max(1500, TOOL_RESULT_CHARS // max(1, len(pages)))
+        q = str(args.get("query") or "")
+        save_dir = str(args.get("save_dir") or "").strip().strip("/")
+        saved, blocks, sources = [], [], []
+        for i, p in enumerate(pages, 1):
+            if not p["ok"]:
+                blocks.append(f"## [{i}] ✗ {p['url']}\nNo se pudo leer: {p['error']}")
+                continue
+            sources.append({"title": p["title"], "url": p["final_url"], "kind": "web", "snippet": p["text"][:240]})
+            where = ""
+            if save_dir and self.workspace is not None:
+                st = self._store(f"{save_dir}/{web_tools.slug_for(p['final_url'])}.md", f"# {p['title']}\nURL: {p['final_url']}\n\n{p['text']}".encode())
+                saved.append(st)
+                where = f"\n(texto completo: {st['where']})"
+            blocks.append(f"## [{i}] {p['title']}\n{p['final_url']}{where}\n{web_tools.excerpt(p['text'], q, per)}")
+        ok = sum(1 for p in pages if p["ok"])
+        if not ok:
+            raise AgentError("No se pudo leer ninguna: " + "; ".join(f"{p['url']}: {p['error']}" for p in pages)[:600])
+        res = {"ok": True, "summary": f"{ok}/{len(pages)} páginas leídas" + (f" · {len(saved)} guardadas" if saved else ""),
+               "sources": sources, "content": "\n\n".join(blocks)}
+        return self._attach_saved(res, saved)
+
+    def tool_http_request(self, call_id: str, args: dict) -> dict:
+        url = str(args.get("url", "")).strip()
+        try:
+            r = web_tools.request(url, str(args.get("method") or "GET"), args.get("params") if isinstance(args.get("params"), dict) else None,
+                                  args.get("headers") if isinstance(args.get("headers"), dict) else None,
+                                  args.get("json") if args.get("json") is not None else None,
+                                  args.get("form") if isinstance(args.get("form"), dict) else None)
+        except web_tools.ToolError as e:
+            raise AgentError(e.message)
+        status, ct, body = r["status"], r["content_type"], r["body"]
+        saved = []
+        if args.get("save_to") and status < 400:
+            saved.append(self._store(str(args["save_to"]).strip(), body))
+        shown = web_tools.render_body(body, ct, TOOL_RESULT_CHARS)
+        head = f"HTTP {status} · {ct.split(';')[0] or 'sin tipo'} · {len(body) / 1024:.1f} KB · {r['url']}"
+        if status >= 400:
+            return {"ok": False, "summary": f"HTTP {status} de {urlsplit_host(r['url'])}",
+                    "content": f"{head}\n{shown[:3000]}"}
+        res = {"ok": True, "summary": f"HTTP {status} · {len(body) / 1024:.1f} KB" + (f" · guardado {saved[0]['where']}" if saved else ""),
+               "sources": [{"title": r["url"][:100], "url": r["url"], "kind": "web", "snippet": ""}],
+               "content": head + (f"\nRespuesta completa guardada {saved[0]['where']}" if saved else "") + "\n\n" + shown}
+        return self._attach_saved(res, saved)
+
+    def tool_crawl_site(self, call_id: str, args: dict) -> dict:
+        url = str(args.get("url", "")).strip()
+
+        def progress(n, total, u):
+            self.emit({"type": "tool_progress", "id": call_id, "progress": min(0.95, n / max(1, total)),
+                       "message": f"{n}/{total} páginas · {urlsplit_host(u)}"})
+        try:
+            out = web_tools.crawl(url, args.get("max_pages") or 15, args.get("depth") if args.get("depth") is not None else 2,
+                                  args.get("same_host") is not False, str(args.get("pattern") or "") or None,
+                                  bool(args.get("sitemap")), progress, self.stop)
+        except (web_tools.ToolError, re.error) as e:
+            raise AgentError(getattr(e, "message", None) or f"Patrón no válido: {e}")
+        pages = out["pages"]
+        if not pages:
+            raise AgentError("No se pudo leer ninguna página" + (f" (omitidas: {out['skipped']})" if out["skipped"] else ""),
+                             "Prueba con otra URL de inicio, sin pattern, o con sitemap=true")
+        save_dir = str(args.get("save_dir") or "").strip().strip("/")
+        saved, blocks, sources = [], [], []
+        per = max(600, TOOL_RESULT_CHARS // max(1, len(pages)))
+        for i, p in enumerate(pages, 1):
+            sources.append({"title": p["title"], "url": p["url"], "kind": "web", "snippet": p["text"][:240]})
+            where = ""
+            if save_dir and self.workspace is not None:
+                st = self._store(f"{save_dir}/{web_tools.slug_for(p['url'])}.md", f"# {p['title']}\nURL: {p['url']}\n\n{p['text']}".encode())
+                saved.append(st)
+                where = f" → {st['changed'][0]}"
+            blocks.append(f"[{i}] {p['title']} (nivel {p['depth']}){where}\n{p['url']}\n{web_tools.excerpt(p['text'], None, per)}")
+        sk = (" · omitidas: " + ", ".join(f"{k} {v}" for k, v in out["skipped"].items())) if out["skipped"] else ""
+        res = {"ok": True, "summary": f"{len(pages)} páginas en {out['seconds']} s" + (f" · {len(saved)} guardadas" if saved else "") + sk,
+               "sources": sources[:40],
+               "content": f"Rastreo de {url}: {len(pages)} páginas, {out['queued']} enlaces sin visitar{sk}.\n\n" + "\n\n".join(blocks)}
+        return self._attach_saved(res, saved)
 
     # -------------------------------------------------------------- pictures and files from the internet
 
@@ -2134,6 +2333,12 @@ class Runner:
                         res = {"ok": True, "summary": "Límite de dos búsquedas documentales alcanzado",
                                "content": "Ya dispones de hasta doce fragmentos. Sintetiza la respuesta con esos "
                                           "resultados y sus rutas exactas; no hagas más búsquedas."}
+                    elif tname in WEB_SAVE_TOOLS and (targs.get("save_to") or targs.get("save_dir")) and not (
+                            writes and self._sub_may_write({"path": targs.get("save_to") or targs.get("save_dir")}, scope)):
+                        res = {"ok": False, "summary": "No puede guardar ahí",
+                               "content": "This agent may only save inside its write zone"
+                                          + (f": {', '.join(scope)}" if scope else " (it has none: do not use save_to/save_dir)")
+                                          + ". Return the content in your report instead, or save inside your zone."}
                     elif tname in WS_WRITE_TOOLS and not self._sub_may_write(
                             {**targs, "path": targs.get("path") or (self._dl_default_path(targs) if tname == "download_file" else "")}, scope):
                         res = {"ok": False, "summary": "Fuera de su zona de escritura",
@@ -2522,7 +2727,7 @@ class Runner:
             return False  # the director left the person's documents out of this answer
         if name in ("db_schema", "db_query"):
             return bool(self.db_names)
-        if name in ("web_search", "fetch_url", "search_images", "download_file"):
+        if name in ("web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "download_file"):
             return self.flags["web"]
         if name == "view_image":
             return self._vision_ok() and (self.workspace is not None or self.flags["code"])
@@ -2577,10 +2782,12 @@ class Runner:
 
     def run_tool(self, call_id: str, name: str, args: dict) -> dict:
         started = time.time()
+        orig_args = args
+        args = public_args(name, args)  # API keys in headers never reach the chat history
         self.emit({"type": "tool_start", "id": call_id, "name": name, "label": TOOL_LABELS.get(name, name),
                    "started": round(started, 3),
                    "args": {k: v for k, v in args.items() if k not in ("sql", "context")} | ({"sql": args["sql"]} if "sql" in args else {})})
-        res = self._exec(call_id, name, args)
+        res = self._exec(call_id, name, orig_args)
         public = {k: v for k, v in res.items() if k != "content"}
         public["seconds"] = round(time.time() - started, 2)
         self.emit({"type": "tool_result", "id": call_id, "name": name, **public})

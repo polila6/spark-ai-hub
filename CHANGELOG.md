@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.22.0 — 2026-11-08
+Much more complete internet access for the assistant (chat, projects and workspaces). The code sandbox is still offline by design:
+the hub does the fetching and can hand the result to scripts as files.
+
+* **`fetch_urls`**: reads up to 10 pages/PDFs in parallel with an excerpt of each (the last long workspace made 37 sequential
+  `fetch_url` calls). One failing page does not stop the rest.
+* **`http_request`** (GET/POST): calls public web APIs, JSON pretty-printed, errors returned as data. Public addresses only (same
+  private-network protections as `fetch_url`: no internal hosts, no odd ports, redirects re-checked), 8 MB response, 200 KB body,
+  no `Cookie`/`Host` headers. Header values that look like keys/tokens are hidden in the chat history.
+* **`crawl_site`**: follows a site's links (or its sitemap) up to 40 pages, depth 3, 2 minutes per call, honours `robots.txt`, pauses
+  between requests, `pattern` to stay in a section.
+* **`fetch_url(as_of=…)`**: the Internet Archive copy closest to a date (e.g. a page as it was months ago).
+* **`web_search`**: `site`, `filetype`, `page` (more results) and `limit` up to 20.
+* **`save_to` / `save_dir`** on those tools: the full text or raw response is kept as a workspace file (or, in a chat, in the user's
+  files) so a script can process it. Sub-agents can only save inside their write zone; read-only ones cannot save.
+
 ## 0.21.0 — 2026-11-08
 * **Write to the assistant while it is thinking.** A message sent during a task used to wait until the model finished its current
   step (a long reasoning can last minutes). With «Leer al instante» (a switch next to the send button, on by default, remembered per

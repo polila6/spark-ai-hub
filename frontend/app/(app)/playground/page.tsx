@@ -69,7 +69,7 @@ const MD_COMPONENTS = {
 const toolLabel = (n: string): string | undefined => ({
   run_code: tr("Código ejecutado", "Code run"), canvas_write: tr("Lienzo", "Canvas"), canvas_edit: tr("Lienzo editado", "Canvas edited"),
   deep_research: tr("Investigación a fondo", "Deep research"), schedule_task: tr("Tarea programada", "Task scheduled"),
-  web_search: tr("Búsqueda en internet", "Web search"), fetch_url: tr("Página web", "Web page"), search_images: tr("Buscando imágenes", "Searching images"), download_file: tr("Descargando archivo", "Downloading file"), view_image: tr("Mirando la imagen", "Looking at the image"), delegate_task: tr("Agente", "Agent"),
+  web_search: tr("Búsqueda en internet", "Web search"), fetch_url: tr("Página web", "Web page"), fetch_urls: tr("Varias páginas", "Several pages"), http_request: tr("API", "API"), crawl_site: tr("Rastreo de sitio", "Site crawl"), search_images: tr("Buscando imágenes", "Searching images"), download_file: tr("Descargando archivo", "Downloading file"), view_image: tr("Mirando la imagen", "Looking at the image"), delegate_task: tr("Agente", "Agent"),
   generate_image: tr("Imagen generada", "Image generated"), edit_image: tr("Imagen editada", "Image edited"),
   search_knowledge: tr("Búsqueda en documentos", "Document search"), read_document: tr("Documento leído", "Document read"),
   query_data: tr("Consulta de datos", "Data query"), describe_data: tr("Datos analizados", "Data analysed"),

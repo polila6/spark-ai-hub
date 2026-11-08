@@ -11,7 +11,7 @@ from app.models import Role, Skill, User, Visibility
 from app.services import skills
 from app.services.agent_catalog import EXTRA_AGENTS
 
-ALLOWED_TOOLS = {"web_search", "fetch_url", "search_images", "download_file", "view_image", "search_knowledge", "read_document", "describe_data", "query_data",
+ALLOWED_TOOLS = {"web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "download_file", "view_image", "search_knowledge", "read_document", "describe_data", "query_data",
                  "use_skill", "read_skill_file", "run_code", "ws_list", "ws_read", "ws_write", "ws_append", "ws_edit",
                  "ws_run"}
 PKGS = skills.builtin_packages()

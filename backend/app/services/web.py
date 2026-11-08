@@ -14,6 +14,7 @@ from __future__ import annotations
 import codecs
 import email.utils
 import ipaddress
+import json
 import random
 import re
 import socket
@@ -21,7 +22,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.cookies import CookieError, SimpleCookie
-from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -119,7 +120,7 @@ def _searx(base: str, params: dict) -> dict:
 
 
 def search(db, query: str, category: str = "web", language: str | None = None, limit: int = 8,
-           time_range: str | None = None) -> list[dict]:
+           time_range: str | None = None, page: int = 1) -> list[dict]:
     if not get_setting(db, "web_search_enabled"):
         raise WebError("La búsqueda web está desactivada por el administrador")
     params = {"q": query[:400], "format": "json", "engines": ENGINES.get(category, ENGINES["web"]), "safesearch": 1}
@@ -127,6 +128,8 @@ def search(db, query: str, category: str = "web", language: str | None = None, l
         params["language"] = language
     if time_range in ("day", "week", "month", "year"):
         params["time_range"] = time_range
+    if page and int(page) > 1:
+        params["pageno"] = min(int(page), 10)
     base = (get_setting(db, "searxng_url") or "http://searxng:8080").rstrip("/")
     data = _searx(base, params)
     failed = {e[0]: e[1] for e in data.get("unresponsive_engines") or [] if isinstance(e, (list, tuple)) and len(e) > 1}
@@ -284,7 +287,8 @@ def _charset(ct: str) -> str | None:
 
 
 def fetch(url: str, max_bytes: int = MAX_BYTES, accept: str | None = None, profile: str | None = None,
-          jar: CookieJar | None = None, retries: int = 2, timeout: httpx.Timeout = TIMEOUT) -> dict:
+          jar: CookieJar | None = None, retries: int = 2, timeout: httpx.Timeout = TIMEOUT, method: str = "GET",
+          content: bytes | None = None, extra_headers: dict | None = None) -> dict:
     """GET a public URL. Returns {url, status, content_type, headers, body (bytes)}; raises WebError.
 
     4xx/5xx answers are returned (not raised) after retrying 429/5xx with backoff; error bodies are truncated."""
@@ -292,7 +296,7 @@ def fetch(url: str, max_bytes: int = MAX_BYTES, accept: str | None = None, profi
     attempt = 0
     while True:
         try:
-            r = _fetch_once(url, max_bytes, accept, profile, jar, timeout)
+            r = _fetch_once(url, max_bytes, accept, profile, jar, timeout, method, content, extra_headers)
         except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError) as e:
             if attempt < min(retries, 1):
                 attempt += 1
@@ -301,7 +305,7 @@ def fetch(url: str, max_bytes: int = MAX_BYTES, accept: str | None = None, profi
             raise WebError(f"No se pudo abrir {urlsplit(url).hostname}: {_net_reason(e)}") from e
         except httpx.HTTPError as e:
             raise WebError(f"No se pudo abrir {urlsplit(url).hostname}: {_net_reason(e)}") from e
-        wait = retry_delay(r["status"], r["headers"], attempt) if attempt < retries else None
+        wait = retry_delay(r["status"], r["headers"], attempt) if attempt < retries and method == "GET" else None
         if wait is None or is_challenge(r["body"]):
             return r
         attempt += 1
@@ -309,7 +313,8 @@ def fetch(url: str, max_bytes: int = MAX_BYTES, accept: str | None = None, profi
 
 
 def _fetch_once(url: str, max_bytes: int, accept: str | None, profile: str | None, jar: CookieJar,
-                timeout: httpx.Timeout) -> dict:
+                timeout: httpx.Timeout, method: str = "GET", content: bytes | None = None,
+                extra_headers: dict | None = None) -> dict:
     current = url
     for _ in range(MAX_REDIRECTS + 1):
         host, ip, port = _check_url(current)
@@ -317,11 +322,16 @@ def _fetch_once(url: str, max_bytes: int, accept: str | None, profile: str | Non
         netloc = (f"[{ip}]" if ":" in ip else ip) + (f":{u.port}" if u.port else "")
         pinned = urlunsplit((u.scheme, netloc, u.path or "/", u.query, ""))
         headers = build_headers(profile or profiles_for(host)[0], host, u.port, accept, jar.header(host))
+        if extra_headers:
+            headers.update(extra_headers)
         with httpx.Client(timeout=timeout, follow_redirects=False) as c:
-            with c.stream("GET", pinned, headers=headers, extensions={"sni_hostname": host}) as r:
+            body_kw = {"content": content} if method != "GET" and content is not None else {}
+            with c.stream(method, pinned, headers=headers, extensions={"sni_hostname": host}, **body_kw) as r:
                 jar.store(host, r.headers.get_list("set-cookie"))
                 if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                     current = urljoin(current, r.headers["location"])
+                    if r.status_code not in (307, 308):  # 301/302/303 turn a POST into a GET without a body
+                        method, content = "GET", None
                     continue
                 ct = r.headers.get("content-type", "")
                 limit = max_bytes
@@ -655,6 +665,39 @@ def _archive_page(url: str) -> tuple[dict | None, str]:
     page["snapshot"] = r["url"].replace("id_/", "/", 1) if m else r["url"]
     page["snapshot_date"] = f"{m.group(1)[6:8]}/{m.group(1)[4:6]}/{m.group(1)[:4]}" if m else ""
     return page, ""
+
+
+def wayback_page(url: str, date: str) -> dict:
+    """The Internet Archive copy of `url` closest to `date` (YYYY-MM-DD, YYYYMMDD or YYYY): a page dict like read_page's."""
+    digits = re.sub(r"\D", "", date or "")
+    if len(digits) < 4:
+        raise WebError("La fecha debe ser AAAA-MM-DD (o solo el año)")
+    global _archive_pause_until
+    _check_url(url)
+    if time.monotonic() < _archive_pause_until:
+        raise WebError("El Internet Archive limita las peticiones ahora mismo; prueba de nuevo en un minuto")
+    try:
+        r = fetch("https://archive.org/wayback/available?" + urlencode({"url": url, "timestamp": digits.ljust(14, "0")[:14]}),
+                  profile="bot", retries=1, timeout=httpx.Timeout(10, read=20))
+        if r["status"] == 429:
+            _archive_pause_until = time.monotonic() + ARCHIVE_PAUSE
+            raise WebError("El Internet Archive limita las peticiones ahora mismo; prueba de nuevo en un minuto")
+        snap = ((json.loads(r["body"] or b"{}").get("archived_snapshots") or {}).get("closest") or {}) if r["status"] == 200 else {}
+    except (WebError, ValueError) as e:
+        raise WebError(f"No se pudo consultar el Internet Archive: {e}") from e
+    if not snap.get("url") or not snap.get("available"):
+        raise WebError(f"El Internet Archive no tiene ninguna copia de {url} cercana a {date}")
+    ts = snap.get("timestamp") or ""
+    raw = re.sub(r"/web/(\d+)/", r"/web/\1id_/", snap["url"], count=1).replace("http://", "https://", 1)
+    r = fetch(raw, profile="bot", retries=1, timeout=httpx.Timeout(10, read=25))
+    if r["status"] >= 400:
+        raise WebError(f"La copia del Internet Archive no se pudo abrir ({r['status']})")
+    page = _to_page(r)
+    when = f"{ts[6:8]}/{ts[4:6]}/{ts[:4]}" if len(ts) >= 8 else ts
+    note = (f"[Nota: copia del Internet Archive del {when} (pedida: {date}); la página actual puede ser distinta. "
+            f"Cita la URL original y la fecha de la copia.]")
+    return {**page, "url": url, "text": note + "\n\n" + page["text"], "via": "archive", "note": note,
+            "archive_url": snap["url"], "snapshot_date": when}
 
 
 # ------------------------------------------------------------------ the page reader used by the agent

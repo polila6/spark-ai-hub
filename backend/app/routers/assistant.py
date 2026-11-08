@@ -27,7 +27,7 @@ from ..settings_store import get_setting
 
 router = APIRouter(prefix="/api/v1", tags=["assistant"])
 
-TOOL_NAMES = {"web_search": "Búsqueda web", "fetch_url": "Leer páginas web", "search_images": "Buscar imágenes", "download_file": "Descargar archivos e imágenes", "view_image": "Mirar imágenes y páginas (visión)", "search_knowledge": "Buscar en documentos",
+TOOL_NAMES = {"web_search": "Búsqueda web", "fetch_url": "Leer páginas web", "fetch_urls": "Leer varias páginas a la vez", "http_request": "Consultar APIs públicas", "crawl_site": "Rastrear un sitio", "search_images": "Buscar imágenes", "download_file": "Descargar archivos e imágenes", "view_image": "Mirar imágenes y páginas (visión)", "search_knowledge": "Buscar en documentos",
               "read_document": "Leer documentos", "describe_data": "Explorar datos", "query_data": "Consultas SQL",
               "use_skill": "Usar skills", "read_skill_file": "Archivos de skills", "run_code": "Ejecutar código",
               "ws_list": "Workspace: ver archivos", "ws_read": "Workspace: leer", "ws_write": "Workspace: escribir",
