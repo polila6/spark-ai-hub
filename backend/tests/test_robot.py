@@ -139,3 +139,11 @@ def test_llama_access_reports_each_case(monkeypatch):
     assert robot.llama_access("bad")["state"] == "denied"
     monkeypatch.setattr(robot.hf, "api", lambda token: Api())
     assert robot.llama_access("good")["state"] == "granted"
+
+
+def test_a_lost_gpu_is_recognised_so_the_container_restarts_itself():
+    assert n.gpu_lost(RuntimeError("CUDA error: unknown error"))
+    assert n.gpu_lost("Failed to initialize NVML: Unknown Error")
+    assert n.gpu_lost(RuntimeError("No CUDA GPUs are available"))
+    assert not n.gpu_lost(ValueError("duration must be between 0.5 and 10 s"))
+    assert not n.gpu_lost(RuntimeError("CUDA out of memory"))  # a real OOM is not a lost device

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.22.1 — 2026-11-08
+* **Robot server: it lost its GPU and kept answering «ok».** After two days the `sah-robot` container could no longer use the GPU
+  («Failed to initialize NVML», «CUDA error: unknown error»: the driver reset the device under the running container), so every
+  generation failed — from the Robot page and from the suite — while `/health` still said ok. The server now recognises that error
+  (`gpu_lost`), answers `503 gpu_lost` with a clear message and exits so the container's restart policy brings it back with the GPU;
+  an idle watchdog does the same when `nvidia-smi` fails twice in a row (only if the GPU worked at boot, so it cannot loop on a
+  machine without GPU); `/health` reports `gpu_ok`. A real out-of-memory is not treated as a lost device.
+
 ## 0.22.0 — 2026-11-08
 Much more complete internet access for the assistant (chat, projects and workspaces). The code sandbox is still offline by design:
 the hub does the fetching and can hand the result to scripts as files.

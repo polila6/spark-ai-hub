@@ -278,10 +278,53 @@ def autoload() -> None:
         log.info(json.dumps({"event": "autoload.failed", "model": "text_encoder", "error": str(getattr(e, "message", e))}))
 
 
+# A container can silently lose its GPU (the driver resets the device while the container lives: "Failed to initialize NVML",
+# "CUDA error: unknown error"). The server then answers /health "ok" but every generation fails until it is restarted.
+# So: detect it, say so clearly, and exit — the container's restart policy brings it back with the GPU.
+EXIT_RESTART = 75
+boot_gpu_ok = False
+gpu_ok = True
+gpu_lost = n.gpu_lost
+
+
+def nvidia_smi_ok() -> bool:
+    try:
+        return subprocess.run(["nvidia-smi", "-L"], capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def restart_soon(reason: str, delay: float = 2.0) -> None:
+    log.error(json.dumps({"event": "gpu.lost", "reason": reason[:300], "action": f"exit {EXIT_RESTART} so the container restarts"}))
+    threading.Timer(delay, os._exit, [EXIT_RESTART]).start()
+
+
+def gpu_watchdog() -> None:
+    """Every 30 s while idle: if the GPU worked at boot but nvidia-smi now fails twice in a row, restart the container."""
+    global gpu_ok
+    fails = 0
+    while True:
+        time.sleep(30)
+        if busy is not None:
+            continue
+        if nvidia_smi_ok():
+            fails, gpu_ok = 0, True
+            continue
+        fails += 1
+        gpu_ok = False
+        if fails >= 2 and boot_gpu_ok:
+            restart_soon("nvidia-smi fails inside the container (GPU lost)")
+            return
+
+
 @app.on_event("startup")
 def _startup() -> None:
+    global boot_gpu_ok
+    boot_gpu_ok = nvidia_smi_ok()
     threading.Thread(target=memory_guard, daemon=True).start()
     threading.Thread(target=autoload, daemon=True).start()
+    if boot_gpu_ok:
+        threading.Thread(target=gpu_watchdog, daemon=True).start()
 
 
 # ------------------------------------------------------------------ what the suite sees
@@ -424,6 +467,10 @@ async def generate_route(request: HttpRequest):
     except Exception as e:
         last_error = f"{type(e).__name__}: {e}"
         log.exception("generate failed")
+        if gpu_lost(e) and boot_gpu_ok:
+            restart_soon(last_error)
+            last_error = "La GPU se perdió dentro del contenedor del robot; se reinicia solo (≈30-60 s). Vuelve a intentarlo."
+            return error("gpu_lost", last_error, 503)
         return error("generation_failed", last_error, 500)
     if str(body.get("format", "")).lower() == "csv" or "text/csv" in request.headers.get("accept", ""):
         return PlainTextResponse(result.get("csv", ""), media_type="text/csv")
@@ -467,7 +514,7 @@ def physics_capabilities():
 def public_status() -> dict:
     return {"status": "ok", "ok": True, "service": "spark-robot", "models": [m["display"] for m in models.values()], "default_model": n.DEFAULT_MODEL,
             "text_encoder": encoder_mode() or "missing", "text_encoder_loaded": encoder is not None, "busy": busy is not None,
-            "physics": True, "mujoco": True, "dof": [23, 29], "fps": n.FPS, "poses": True}
+            "physics": True, "mujoco": True, "dof": [23, 29], "fps": n.FPS, "poses": True, "gpu_ok": gpu_ok}
 
 
 @app.get("/")

@@ -216,3 +216,12 @@ def summarize(value: Any, depth: int = 0) -> Any:
     if isinstance(value, str):
         return value[:160]
     return value if isinstance(value, (int, float, bool, type(None))) else type(value).__name__
+
+
+GPU_LOST_MARKERS = ("cuda error", "acceleratorerror", "no cuda gpus", "nvml", "cudaerrorunknown", "device-side assert", "cuda driver")
+
+
+def gpu_lost(e) -> bool:
+    """True when an error means the container lost its GPU (the driver reset it while the container lived): only a restart cures it."""
+    text = (f"{type(e).__name__}: {e}" if isinstance(e, BaseException) else str(e)).lower()
+    return any(m in text for m in GPU_LOST_MARKERS)
