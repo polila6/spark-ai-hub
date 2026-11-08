@@ -36,7 +36,7 @@ from ..settings_store import branding, get_setting
 from . import canvas as canvas_svc
 from . import director
 from . import memory as memory_svc
-from . import dataq, kb, llm, remote_db, sandbox, scheduler, web, workflows
+from . import dataq, kb, llm, media_fetch, remote_db, sandbox, scheduler, web, workflows
 from . import skills as skills_svc
 from . import files as files_svc
 from . import turns as turns_svc
@@ -55,8 +55,10 @@ COMPACT_AT = 0.7  # compact the turn's working messages when the prompt passes t
 COMPACT_KEEP = 0.2  # share of the window kept verbatim (most recent steps) when compacting
 MAX_NUDGES_CHAT, MAX_NUDGES_WORKSPACE = 6, 30  # "continue" reminders per turn (2 in a row at most)
 SUB_MAX_STEPS = 8
+IMAGE_QUEUE_WAIT_S = 300  # a generated image that has not even started after this long stops holding the turn
+IMAGE_FAILS_MAX = 2  # after this many failed generations in a turn the generator is switched off for it
 SUB_WS_MAX_STEPS = 60  # a sub-agent that writes and runs code in the workspace needs more steps
-WS_WRITE_TOOLS = {"ws_write", "ws_append", "ws_edit"}
+WS_WRITE_TOOLS = {"ws_write", "ws_append", "ws_edit", "download_file"}  # download_file writes into the workspace too
 WS_TOOLS = WS_WRITE_TOOLS | {"ws_list", "ws_read", "ws_run"}
 IMAGE_MAX_SIDE = 1280
 TOOL_RESULT_CHARS = 12000
@@ -628,6 +630,28 @@ WEB_TOOLS = [
             "url": {"type": "string"},
             "query": {"type": "string", "description": "What to look for in the page (optional)"}},
             "required": ["url"]}}},
+    {"type": "function", "function": {
+        "name": "search_images",
+        "description": "Find real pictures on the internet (Wikipedia lead photos, Wikimedia Commons, Openverse) with their "
+                       "author and licence. Use it when a document needs a photo of a person, place, object or event. "
+                       "Then call download_file with the chosen `url` to bring it into the workspace / the user's files.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "What the picture shows (a person's full name works well)"},
+            "source": {"type": "string", "enum": ["auto", "wikipedia", "commons", "openverse"],
+                       "description": "auto = Wikipedia's main photo first, then Commons, then Openverse"},
+            "limit": {"type": "integer", "description": "How many candidates (default 6)"}},
+            "required": ["query"]}}},
+    {"type": "function", "function": {
+        "name": "download_file",
+        "description": "Download a picture or file from a public URL into the workspace (path) or, in a chat, into the user's "
+                       "files. The sandbox has NO internet, so this is the only way to get web images into a document. "
+                       "Pictures are converted to JPEG/PNG and reduced to max_px. Also PDF, CSV, JSON, text, xlsx, docx, zip. "
+                       "For web pages use fetch_url.",
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Direct URL of the file (use the `url` from search_images)"},
+            "path": {"type": "string", "description": "Workspace path, e.g. imagenes/feijoo.jpg (optional; default imagenes/<name>)"},
+            "max_px": {"type": "integer", "description": "Longest side in pixels for pictures (default 2000)"}},
+            "required": ["url"]}}},
 ]
 
 DB_TOOLS = [
@@ -830,7 +854,7 @@ BUILTIN_AGENTS = {
                                      "fuentes más fiables y contrasta los datos. Devuelve un informe estructurado con "
                                      "los hallazgos, cifras y fechas, citando cada dato con su URL. Indica lo que no "
                                      "hayas podido verificar.",
-                     "tools": ["web_search", "fetch_url"]},
+                     "tools": ["web_search", "fetch_url", "search_images"]},
     "documentalista": {"description": "Busca y lee en los documentos del usuario (base de conocimiento y adjuntos).",
                        "instructions": "Eres un documentalista. Empieza con una consulta precisa a search_knowledge y "
                                        "haz una segunda solo si los primeros resultados son insuficientes. Lee con "
@@ -842,17 +866,26 @@ BUILTIN_AGENTS = {
                  "instructions": "Eres un analista de datos. Usa describe_data y query_data para responder con cifras "
                                  "exactas; muestra tablas en Markdown y explica el método. No inventes datos.",
                  "tools": ["describe_data", "query_data", "read_document", "run_code"]},
-    "revisor": {"description": "Revisa críticamente un texto, plan, código o respuesta: errores, huecos y mejoras.",
-                "instructions": "Eres un revisor exigente. Analiza lo que te pasan, señala errores, supuestos dudosos, "
-                                "riesgos y omisiones, y propone mejoras concretas priorizadas.",
-                "tools": []},
+    "revisor": {"description": "Revisa críticamente un informe, texto, plan, código o respuesta: errores, huecos y mejoras. "
+                               "LEE él mismo los archivos del workspace y los documentos; cita cada defecto con texto literal.",
+                "instructions": "Eres un revisor exigente. REGLA DE PRUEBAS: lee tú mismo el material (ws_list/ws_read en el "
+                                "workspace, read_document/search_knowledge para documentos) antes de opinar. Cada defecto que "
+                                "señales debe llevar el archivo, la línea y una copia LITERAL del texto afectado; si no puedes "
+                                "citarlo literalmente, no lo afirmes. Si no logras abrir el material, di exactamente qué no has "
+                                "podido leer y NO inventes comentarios genéricos. Comprueba las cifras contra los datos "
+                                "(describe_data/query_data o los CSV) y los hechos dudosos con web_search/fetch_url. Señala "
+                                "errores, supuestos dudosos, riesgos y omisiones y propón mejoras concretas priorizadas "
+                                "(críticas, importantes, menores). Termina diciendo qué archivos leíste.",
+                "tools": ["ws_list", "ws_read", "read_document", "search_knowledge", "describe_data", "query_data",
+                          "web_search", "fetch_url"]},
     "general": {"description": "Agente de propósito general con las instrucciones que le des (campo instructions).",
                 "instructions": "Eres un agente auxiliar. Cumple la tarea con las herramientas disponibles y devuelve "
                                 "un resultado completo y conciso.",
-                "tools": ["web_search", "fetch_url", "search_knowledge", "read_document", "describe_data", "query_data",
-                          "use_skill", "read_skill_file", "ws_list", "ws_read", "ws_write", "ws_append", "ws_edit", "ws_run"]},
+                "tools": ["web_search", "fetch_url", "search_images", "download_file", "search_knowledge", "read_document",
+                          "describe_data", "query_data", "use_skill", "read_skill_file", "ws_list", "ws_read", "ws_write",
+                          "ws_append", "ws_edit", "ws_run"]},
 }
-SUB_AGENT_TOOLS = {"web_search", "fetch_url", "search_knowledge", "read_document", "describe_data", "query_data",
+SUB_AGENT_TOOLS = {"web_search", "fetch_url", "search_images", "download_file", "search_knowledge", "read_document", "describe_data", "query_data",
                    "use_skill", "read_skill_file", "run_code"} | WS_TOOLS  # ws_* only inside a workspace
 from .agent_catalog import EXTRA_AGENTS  # noqa: E402 - specialised agents (programador, tester, estadistico…)
 
@@ -860,7 +893,7 @@ BUILTIN_AGENTS.update({k: v for k, v in EXTRA_AGENTS.items() if k not in BUILTIN
 
 TOOL_LABELS = {"generate_image": "Generando imagen", "edit_image": "Editando imagen", "search_knowledge": "Buscando en tus documentos",
                "read_document": "Leyendo documento", "describe_data": "Analizando datos", "query_data": "Consultando datos",
-               "save_memory": "Guardando en memoria", "web_search": "Buscando en internet", "fetch_url": "Leyendo página web",
+               "save_memory": "Guardando en memoria", "web_search": "Buscando en internet", "fetch_url": "Leyendo página web", "search_images": "Buscando imágenes", "download_file": "Descargando archivo",
                "use_skill": "Cargando skill", "read_skill_file": "Leyendo archivo de skill", "find_skills": "Buscando skills",
                "install_skill": "Instalando skill", "delegate_task": "Agente trabajando", "compact_context": "Contexto compactado",
                "run_code": "Ejecutando código", "canvas_write": "Escribiendo en el lienzo",
@@ -910,6 +943,13 @@ def in_scope(path: str, scope: list[str]) -> bool:
     return any(s == "" or path == s or path.startswith(s + "/") for s in scope)
 
 
+def urlsplit_name(url: str) -> str:
+    from urllib.parse import unquote, urlsplit
+
+    tail = unquote(urlsplit(url).path.rsplit("/", 1)[-1])
+    return tail.rsplit(".", 1)[0] or "archivo"
+
+
 class Runner:
     def __init__(self, turn: Turn, emit: Callable[[dict], None], stop: Callable[[], bool]):
         self.t = turn
@@ -928,6 +968,8 @@ class Runner:
         self.skill_names: list[str] = []
         self.flags = {"web": False, "skills": False, "agents": False, "auto_install": False, "code": False, "docs": False}
         self.project_id: uuid.UUID | None = None
+        self.image_failures = 0
+        self.image_meta: dict[str, dict] = {}  # url -> author/licence of pictures found by search_images
         self.canvas_id: uuid.UUID | None = None
         self.small = False
         self.workspace = None
@@ -1091,6 +1133,16 @@ class Runner:
                           "(/work). Use ws_list/ws_read/ws_write/ws_edit/ws_run to create, check and run code and documents "
                           "HERE (not run_code or the canvas). Write files, run them, check the output and fix until it works. "
                           "Save results with clear names and tell the user where they are."))
+            lines.append(("Datos de un informe: si el tema es el mundo real (política, economía, ciencia, empresas), recoge los "
+                          "datos de fuentes con web_search/fetch_url y cita cada una; NO generes datos sintéticos ni de ejemplo "
+                          "salvo que el usuario lo pida, y no des por «hipotético» un hecho reciente sin buscarlo (hoy es la fecha "
+                          "indicada arriba; tu conocimiento puede estar desfasado). Todo lo simulado se rotula como simulado. "
+                          "Si un subagente te devuelve citas, líneas o cifras, compruébalas antes de aplicarlas." if es else
+                          "Report data: for real-world topics (politics, economy, science, companies) collect data from sources "
+                          "with web_search/fetch_url and cite each; do NOT generate synthetic or sample data unless asked, and do "
+                          "not call a recent fact «hypothetical» without searching (your knowledge may be out of date). Label "
+                          "anything simulated as simulated. Verify any quotes, lines or figures a sub-agent returns before acting."))
+            lines.append(self._media_guidance(es, True))
             lines.append(("Trabaja hasta terminar la tarea de verdad: aquí no hay un límite pequeño de pasos. Antes de dar "
                           "algo por hecho, verifícalo (ejecuta, compila, abre la salida o pasa los tests) y corrige hasta "
                           "que funcione; no termines con el trabajo a medias ni con «voy a…»." if es else
@@ -1106,6 +1158,8 @@ class Runner:
                          "Code: run_code runs Python, bash or Node in an isolated sandbox without internet, for exact "
                          "calculations, data analysis, charts and creating/converting files. Save results in /work: the "
                          "user receives them as downloads (do not write links). If it fails, fix it and retry.")
+        if tools_on and self.flags["code"] and self.workspace is None and not self.small:
+            lines.append(self._media_guidance(es, False))
         if tools_on and self.workspace is None and not self.small:
             docs = canvas_svc.for_conversation(db, user.id, conv.id)
             self.canvas_id = docs[0].id if docs else None
@@ -1308,6 +1362,11 @@ class Runner:
         while time.time() - t0 < timeout:
             with SessionLocal() as db:
                 j = db.get(Job, job_id)
+                if j.status == JobStatus.queued and time.time() - t0 > IMAGE_QUEUE_WAIT_S:
+                    # nothing started in minutes (memory or a busy engine): do not hold the whole turn waiting
+                    raise AgentError("La imagen sigue en cola tras varios minutos (no hay memoria o el motor está ocupado); "
+                                     "continúa sin imágenes generadas y no la repitas. Para fotos reales usa search_images + "
+                                     "download_file. El trabajo queda en Trabajos.")
                 if self.stop():
                     request_cancel(db, j)
                     db.commit()
@@ -1321,7 +1380,8 @@ class Runner:
                     db.expunge(j)
                     return j
             time.sleep(1.0)
-        raise AgentError("La generación tarda demasiado; sigue en Trabajos.")
+        raise AgentError("La generación tarda demasiado; sigue en Trabajos. No la repitas ahora: continúa sin imágenes generadas "
+                         "(para fotos reales de personas o lugares usa search_images y download_file).")
 
     def _release_llm(self):
         if self.inst is not None:
@@ -1368,7 +1428,13 @@ class Runner:
                 pass
         return meta
 
+    def _image_guard(self):
+        if self.image_failures >= IMAGE_FAILS_MAX:
+            raise AgentError(f"La generación de imágenes ha fallado {self.image_failures} veces en este turno: no insistas. "
+                             "Continúa sin imágenes generadas; para fotos reales usa search_images y download_file.")
+
     def tool_generate_image(self, call_id: str, args: dict) -> dict:
+        self._image_guard()
         with SessionLocal() as db:
             wf_id = pick_workflow(db, "txt2img")
         if not wf_id:
@@ -1382,12 +1448,17 @@ class Runner:
             inputs["negative_prompt"] = str(args["negative_prompt"])[:1000]
         if isinstance(args.get("seed"), int):
             inputs["seed"] = abs(args["seed"]) % (2**48)
-        img = self._image_job(call_id, wf_id, inputs, inputs["prompt"])
+        try:
+            img = self._image_job(call_id, wf_id, inputs, inputs["prompt"])
+        except AgentError:
+            self.image_failures += 1
+            raise
         where = f" Guardada en el workspace como {img['workspace_path']}." if img.get("workspace_path") else ""
         return {"ok": True, "summary": f"Imagen {img['ref']} generada con {wf_id} ({w}×{h}) y mostrada al usuario.{where}",
                 "image": img, **({"workspace": {"changed": [img["workspace_path"]]}} if img.get("workspace_path") else {})}
 
     def tool_edit_image(self, call_id: str, args: dict) -> dict:
+        self._image_guard()
         ref = str(args.get("image_ref", "")).strip().lower()
         target = next((r for r in self.refs if r["ref"] == ref), None) or (self.refs[-1] if self.refs and not ref else None)
         if not target:
@@ -1404,7 +1475,11 @@ class Runner:
             inputs["denoise"] = 0.6
         if isinstance(args.get("seed"), int):
             inputs["seed"] = abs(args["seed"]) % (2**48)
-        img = self._image_job(call_id, wf_id, inputs, instr)
+        try:
+            img = self._image_job(call_id, wf_id, inputs, instr)
+        except AgentError:
+            self.image_failures += 1
+            raise
         img["edited_from"] = target["ref"]
         where = f" Guardada en el workspace como {img['workspace_path']}." if img.get("workspace_path") else ""
         return {"ok": True, "summary": f"{target['ref']} editada → {img['ref']} (mostrada al usuario).{where}", "image": img,
@@ -1601,6 +1676,133 @@ class Runner:
         return {"ok": True, "summary": f"{title[:90]} ({len(page['text']):,} caracteres){via}".replace(",", "."),
                 "sources": [{"title": title, "url": page["url"], "kind": "web", "snippet": page["text"][:240]}],
                 "content": f"# {title}\nURL: {page['url']}\n" + (f"{page['note']}\n" if page.get("note") else "") + f"\n{text}"}
+
+    # -------------------------------------------------------------- pictures and files from the internet
+
+    def _media_guidance(self, es: bool, ws: bool) -> str:
+        """How to make figures/tables that fit, check them, and get real pictures (the sandbox has no internet)."""
+        web = self.flags.get("web")
+        where = "en /work/.sah (ya instalado)" if ws else "(ya disponible: import sah_plot)"
+        if es:
+            t = ("Gráficas y tablas legibles: usa `from sah_plot import new_fig, save_fig, table_image` " + where + ". new_fig(15, 9) "
+                 "da un tamaño que cabe en una página; save_fig(fig, 'figs/x.png') comprueba y corrige textos solapados, textos "
+                 "fuera de la figura y leyendas que tapan datos, e imprime «OK» o «PROBLEMAS»: con PROBLEMAS la figura NO está "
+                 "lista (acorta etiquetas, agranda, usa barras horizontales o menos categorías y guarda otra vez). table_image(df, "
+                 "'figs/t.png') dibuja tablas que no se salen. Títulos cortos; nunca guardes con plt.savefig a ciegas. ")
+            if ws:
+                t += ("En LaTeX usa `from sah_tex import PREAMBLE, df_to_latex, figure` (tablas que se adaptan al ancho, apaisadas o "
+                      "en longtable según su tamaño; figuras con ancho y alto acotados) y, tras compilar con latexmk -g -pdf, ejecuta "
+                      "`python .sah/sah_check.py informe.pdf`: marca cajas desbordadas, contenido pegado al borde, texto encimado, "
+                      "referencias y citas rotas. Arregla todo lo que marque y repite antes de decir que has terminado: un PDF "
+                      "que compila sin errores NO está listo si el comprobador marca problemas. ")
+            if web:
+                t += ("Imágenes de internet: el sandbox NO tiene red (curl/wget/requests fallan: no lo intentes). Usa search_images "
+                      "(fotos de Wikipedia, Wikimedia Commons, Openverse con autor y licencia) y download_file para traerlas "
+                      + ("a imagenes/ del workspace; descarga la foto real de cada persona o lugar en vez de dejar un hueco o una "
+                         "tarjeta de respaldo, comprueba que el resultado corresponde a lo pedido y acredita cada imagen "
+                         "(autor, licencia, enlace; están en imagenes/creditos.json). " if ws else
+                         "a los archivos del usuario; para mostrarla en la respuesta usa el enlace que te devuelve. Acredita autor y licencia. "))
+            return t
+        t = ("Legible charts and tables: use `from sah_plot import new_fig, save_fig, table_image` " + ("(installed in /work/.sah) " if ws else "(available) ")
+             + "— save_fig(fig, 'figs/x.png') checks and fixes overlapping text, text outside the figure and legends covering data, "
+             "and prints OK or PROBLEMAS: with PROBLEMAS the figure is NOT ready (shorter labels, larger size, horizontal bars, fewer "
+             "categories, save again). table_image(df, 'figs/t.png') draws tables that never overflow. Never save blindly with plt.savefig. ")
+        if ws:
+            t += ("In LaTeX use `from sah_tex import PREAMBLE, df_to_latex, figure` and after latexmk -g -pdf run "
+                  "`python .sah/sah_check.py report.pdf`; fix everything it flags (overfull boxes, content at the page edge, "
+                  "overprinted text, broken references) before saying you are done. ")
+        if web:
+            t += ("Pictures from the internet: the sandbox has NO network (do not try curl/wget/requests). Use search_images "
+                  "(Wikipedia, Wikimedia Commons, Openverse, with author and licence) and download_file "
+                  + ("to bring them into imagenes/ of the workspace; download the real photo instead of leaving a placeholder, "
+                     "check it matches the request and credit each image (imagenes/creditos.json). " if ws else
+                     "into the user's files; show it with the link it returns and credit author and licence. "))
+        return t
+
+    def tool_search_images(self, call_id: str, args: dict) -> dict:
+        q = str(args.get("query", "")).strip()
+        try:
+            limit = max(1, min(10, int(args.get("limit") or 6)))
+        except (TypeError, ValueError):
+            limit = 6
+        try:
+            res = media_fetch.search_images(q, str(args.get("source") or "auto"), limit, "en" if self.t.lang == "en" else "es")
+        except media_fetch.MediaError as e:
+            raise AgentError(e.message)
+        if not res:
+            raise AgentError(f"No encontré imágenes para «{q}»", "Prueba con el nombre completo, en inglés, o source=commons")
+        lines = []
+        for i, r in enumerate(res, 1):
+            self.image_meta[r["url"]] = r
+            self.image_meta[r.get("original_url") or r["url"]] = r
+            lines.append(f"{i}. {r['title']} — {r.get('width')}×{r.get('height')} px · {r.get('license') or 'licencia desconocida'}"
+                         f" · autor: {r.get('author') or 'desconocido'} · {r['source']}\n   url: {r['url']}\n   ficha: {r.get('page_url') or '-'}")
+        return {"ok": True, "summary": f"{len(res)} imágenes para «{q}»",
+                "sources": [{"title": r["title"], "url": r.get("page_url") or r["url"], "kind": "web",
+                             "snippet": media_fetch.credit_line(r)} for r in res],
+                "content": "Candidatas (comprueba que la imagen corresponde de verdad a lo que buscas por el título/ficha; "
+                           "si no, descarta o busca otra). Descarga la elegida con download_file(url=…). Conserva autor y "
+                           "licencia para acreditarla en el documento.\n" + "\n".join(lines)}
+
+    def _dl_default_path(self, args: dict) -> str:
+        meta = self.image_meta.get(str(args.get("url", "")).strip())
+        name = media_fetch.slug((meta or {}).get("title", "").rsplit(".", 1)[0] or urlsplit_name(str(args.get("url", ""))))
+        return f"imagenes/{name}"
+
+    def tool_download_file(self, call_id: str, args: dict) -> dict:
+        url = str(args.get("url", "")).strip()
+        try:
+            max_px = max(200, min(6000, int(args.get("max_px") or 2000)))
+        except (TypeError, ValueError):
+            max_px = 2000
+        want = str(args.get("path") or "").strip()
+        base = want or self._dl_default_path(args)
+        suffix = "." + base.rsplit(".", 1)[1].lower() if "." in base.rsplit("/", 1)[-1] else ""
+        try:
+            got = media_fetch.fetch_any(url, suffix, max_px, "png" if suffix == ".png" else None)
+        except media_fetch.MediaError as e:
+            raise AgentError(e.message)
+        rel = (base[: -len(suffix)] if suffix else base) + got["ext"]
+        meta = self.image_meta.get(url)
+        credit = media_fetch.credit_line(meta) if meta else ""
+        size_txt = (f"{got['width']}×{got['height']} px (original {got['original_size'][0]}×{got['original_size'][1]})"
+                    if got["kind"] == "image" else f"{len(got['data']) // 1024} KB")
+        if self.workspace is not None:
+            def save(db, ws, svc):
+                out = svc.write(db, ws, rel, got["data"])
+                cred_path = "imagenes/creditos.json"
+                if got["kind"] == "image" and meta:  # one place with every picture's credit, for the document's credits section
+                    import json as _json
+                    try:
+                        cur = _json.loads(svc.read(ws, cred_path)["content"] or "{}")
+                    except Exception:  # noqa: BLE001
+                        cur = {}
+                    cur[rel] = {k: meta.get(k) for k in ("title", "author", "license", "license_url", "page_url", "source")}
+                    svc.write(db, ws, cred_path, _json.dumps(cur, ensure_ascii=False, indent=1).encode())
+                db.commit()
+                return out
+            self._ws_call(save)
+            hint = ""
+            if got["kind"] == "image":
+                hint = (f"\nEn LaTeX: \\includegraphics[width=0.45\\linewidth]{{{rel}}} (o usa sah_tex.figure). "
+                        "Compila con latexmk -g para que detecte el archivo nuevo.")
+            return {"ok": True, "summary": f"{rel} ({size_txt})", "workspace": {"changed": [rel]},
+                    "content": f"Guardado en el workspace: {rel} — {size_txt}." + (f"\nCrédito: {credit}" if credit else "")
+                               + (f"\nTodos los créditos están en imagenes/creditos.json." if credit else "") + hint}
+        with SessionLocal() as db:
+            user = db.get(User, self.t.user_id)
+            try:
+                f = sandbox.store_bytes(db, user, rel.rsplit("/", 1)[-1], got["data"], folder="Descargas", project_id=self.project_id,
+                                        generated_by="download")
+            except Exception as e:  # noqa: BLE001 (quota, type)
+                raise AgentError(f"No se pudo guardar el archivo: {e}")
+        if not f:
+            raise AgentError("El tipo de archivo no está permitido")
+        show = (f"\nPara mostrarla dentro de tu respuesta escribe: ![descripción](/api/v1/files/{f['id']}/content)"
+                if got["kind"] == "image" else "")
+        return {"ok": True, "summary": f"{f['filename']} ({size_txt})", "files": [f],
+                "content": f"Guardado en los archivos del usuario (carpeta Descargas): «{f['filename']}» — {size_txt}."
+                           + (f"\nCrédito: {credit}" if credit else "") + show}
 
     # -------------------------------------------------------------- skills
 
@@ -1834,7 +2036,8 @@ class Runner:
                         res = {"ok": True, "summary": "Límite de dos búsquedas documentales alcanzado",
                                "content": "Ya dispones de hasta doce fragmentos. Sintetiza la respuesta con esos "
                                           "resultados y sus rutas exactas; no hagas más búsquedas."}
-                    elif tname in WS_WRITE_TOOLS and not self._sub_may_write(targs, scope):
+                    elif tname in WS_WRITE_TOOLS and not self._sub_may_write(
+                            {**targs, "path": targs.get("path") or (self._dl_default_path(targs) if tname == "download_file" else "")}, scope):
                         res = {"ok": False, "summary": "Fuera de su zona de escritura",
                                "content": f"You may only write inside: {', '.join(scope)}. Put your work there, or report "
                                           "what should change elsewhere so the main assistant does it."}
@@ -1851,11 +2054,30 @@ class Runner:
                     changed.update((res.get("workspace") or {}).get("changed") or [])
                     messages.append({"role": "tool", "tool_call_id": cid,
                                      "content": str(res.get("content") or res.get("summary"))[:TOOL_RESULT_CHARS]})
+            if not re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip() and not self.stop():
+                # it ran out of steps (or only thought): ask once for the final report instead of returning nothing
+                messages.append({"role": "user", "content": "Escribe ahora tu informe final, sin llamar a más herramientas: qué "
+                                 "has hecho, qué archivos has creado o cambiado, qué falló o queda pendiente y los resultados."})
+                try:
+                    self._fit(messages, max_out)
+                    text, _calls, _ = self._llm_step(messages, None, max_out, thinking=False)
+                except Exception:  # noqa: BLE001
+                    text = ""
         finally:
             scheduler.end_request(inst.id)
             with self.ws_claims_lock:
                 self.ws_claims.pop(call_id, None)
-        text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip() or "(el agente no devolvió texto)"
+        text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
+        if not text:
+            last = "; ".join(f"{x['label']}: {x['summary'][:80]}" for x in steps[-5:]) or "ningún paso"
+            text = (f"(el agente no devolvió informe) Pasos: {len(steps)}. Archivos cambiados: "
+                    f"{', '.join(sorted(changed)[:15]) or 'ninguno'}. Últimos pasos: {last}. Comprueba el resultado tú mismo.")
+        unverified = not steps and bool(re.search(r"(/work/|\.(tex|py|csv|json|md|pdf|bib|xlsx|docx)\b|workspace|archivos?|ficheros?|capítulos?)",
+                                                  task, re.I))
+        if unverified:
+            text = ("⚠ SIN VERIFICAR: este agente no abrió ningún archivo ni fuente (no tenía herramientas o no las usó). Lo que "
+                    "sigue es una opinión del modelo: sus citas, líneas y cifras NO son evidencia hasta que las compruebes tú "
+                    "(grep/ws_read). No apliques sus correcciones sin verificarlas.\n\n") + text
         seen, uniq = set(), []
         for x in sources:
             key = x.get("url") or x.get("source_path")
@@ -1868,7 +2090,7 @@ class Runner:
         exact_catalog = "\n".join(
             f"- [{x.get('filename') or 'documento'}" + (f", p. {x['page']}" if x.get("page") else "")
             + f"] `{x['source_path']}`" for x in exact_docs)
-        out = {"ok": True, "summary": f"{name}: {len(steps)} pasos" + (f", {len(uniq)} fuentes" if uniq else "")
+        out = {"ok": True, "summary": f"{name}: {len(steps)} pasos" + (" · SIN VERIFICAR" if unverified else "") + (f", {len(uniq)} fuentes" if uniq else "")
                + (f", {len(changed)} archivo(s)" if changed else ""),
                "agent": {"name": name, "task": task[:500], "steps": steps, "report": text[:20000]},
                "sources": uniq[:15], "content": f"Report from agent '{name}':\n{text[:16000]}"}
@@ -2202,7 +2424,7 @@ class Runner:
             return False  # the director left the person's documents out of this answer
         if name in ("db_schema", "db_query"):
             return bool(self.db_names)
-        if name in ("web_search", "fetch_url"):
+        if name in ("web_search", "fetch_url", "search_images", "download_file"):
             return self.flags["web"]
         if name in ("use_skill", "read_skill_file", "find_skills", "install_skill"):
             return self.flags["skills"]
@@ -2786,7 +3008,7 @@ class Runner:
                     if name == "delegate_task" and self.preferred_agent \
                             and (res.get("agent") or {}).get("name") == self.preferred_agent:
                         preferred_agent_completed = True
-                    if name in WS_WRITE_TOOLS and res.get("ok"):
+                    if name in WS_WRITE_TOOLS and name != "download_file" and res.get("ok"):
                         self.unverified = True
                     elif name == "ws_run":
                         self.unverified = False

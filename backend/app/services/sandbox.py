@@ -20,6 +20,7 @@ from ..models import Skill, User, UserFile
 from ..settings_store import get_setting
 from . import files as files_svc
 from . import orchestrator, storage
+from . import sandbox_helpers as helpers
 from .uploads import safe_name
 
 OUT_FOLDER = "Resultados de código"
@@ -27,7 +28,7 @@ MAX_OUTPUT_FILES = 20
 MAX_OUTPUT_BYTES = 100 * 1024 * 1024
 MAX_INPUT_BYTES = 300 * 1024 * 1024
 MAX_KEPT_BYTES = 2 * 1024 * 1024 * 1024  # working files a conversation keeps between runs
-SKIP_PARTS = {"in", "skills", "__pycache__", ".cache", ".config", ".npm", ".local", "node_modules"}
+SKIP_PARTS = {"in", "skills", ".sah", "__pycache__", ".cache", ".config", ".npm", ".local", "node_modules"}
 
 
 class SandboxError(Exception):
@@ -90,7 +91,7 @@ def _kept_files(root: Path) -> dict[str, Path]:
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         rel_dir = Path(dirpath).relative_to(root)
         if rel_dir == Path("."):
-            dirnames[:] = [d for d in dirnames if d not in ("in", "skills")]
+            dirnames[:] = [d for d in dirnames if d not in ("in", "skills", ".sah")]
         dirnames[:] = [d for d in dirnames if not (Path(dirpath) / d).is_symlink()]
         for name in filenames:
             p = Path(dirpath) / name
@@ -177,7 +178,8 @@ def run(db: Session, user: User, *, code: str, language: str = "python", inputs:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 dst.write_text(text)
         restored = restore_conversation_files(conversation_id, work) if conversation_id else set()
-        (work / {"python": ".main.py", "bash": ".main.sh", "node": ".main.js"}[language]).write_text(code)
+        helpers.install(work / ".sah")
+        (work / {"python": ".main.py", "bash": ".main.sh", "node": ".main.js"}[language]).write_text(helpers.with_path(code, language))
         before = _snapshot(work)
         limit = int(timeout_s or get_setting(db, "code_exec_timeout_s") or 120)
         try:

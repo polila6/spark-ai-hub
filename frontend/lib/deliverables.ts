@@ -16,7 +16,7 @@ export function deliverablesOf(tools?: any[]): Deliverable[] {
     if (!t) continue;
     if (t.canvas?.id) add({ kind: "canvas", ref: String(t.canvas.id), name: String(t.canvas.title ?? "Documento") });
     for (const p of t.workspace?.changed ?? []) add({ kind: "ws", ref: String(p), name: String(p).split("/").pop() || String(p) });
-    for (const f of t.code?.files ?? []) {
+    for (const f of [...(t.code?.files ?? []), ...(t.files ?? [])]) {  // files from run_code and files downloaded from the web
       const id = f.id ?? f.file_id;
       if (id) add({ kind: "file", ref: String(id), name: String(f.filename ?? f.name ?? "archivo"), file: f });
     }

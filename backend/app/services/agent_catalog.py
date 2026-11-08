@@ -20,6 +20,19 @@ _WS_RULES = (
     "archivos creados/modificados (ruta y para qué), cómo ejecutarlo, qué has probado y qué queda pendiente o dudoso."
 )
 
+# Appended to agents that make figures, tables or documents: the helpers every workspace/sandbox ships with.
+_VISUAL_RULES = (
+    " CALIDAD VISUAL OBLIGATORIA: las gráficas se hacen con `from sah_plot import new_fig, save_fig, table_image` (ya "
+    "instalado: en el workspace en /work/.sah, que está en PYTHONPATH con ws_run en bash; en Python puro añade "
+    "sys.path.insert(0,'/work/.sah')). save_fig comprueba textos solapados o fuera de la figura y leyendas que tapan datos "
+    "e imprime OK o PROBLEMAS: si imprime PROBLEMAS la figura NO está terminada (etiquetas más cortas, más tamaño, barras "
+    "horizontales, menos categorías) y la rehaces hasta que diga OK. Tablas anchas: table_image (imagen) o, en LaTeX, "
+    "sah_tex.df_to_latex (se adapta al ancho, apaisa o usa longtable). Tras compilar un PDF ejecuta `python .sah/sah_check.py "
+    "archivo.pdf` y corrige lo que marque (desbordes, contenido pegado al borde, texto encimado, referencias rotas). "
+    "No des por entregado nada que el comprobador marque. El sandbox NO tiene internet: las fotos de la web se traen con "
+    "search_images + download_file (si los tienes), nunca con curl/requests."
+)
+
 _CODE_TOOLS = ["ws_list", "ws_read", "ws_write", "ws_append", "ws_edit", "ws_run", "run_code", "use_skill",
                "read_skill_file"]
 
@@ -117,7 +130,7 @@ EXTRA_AGENTS: dict[str, dict] = {
             "Si escribes en un archivo (LaTeX, Markdown, Word mediante script), hazlo solo en el que te asignen. "
             "Entrega el texto final y, aparte, una lista breve de decisiones tomadas y huecos por completar." + _WS_RULES),
         "tools": ["search_knowledge", "read_document", "use_skill", "read_skill_file", "ws_list", "ws_read", "ws_write",
-                  "ws_append", "ws_edit"],
+                  "ws_append", "ws_edit", "search_images", "download_file"],
         "skills": ["articulo-cientifico-imrad"],
     },
     "revisor-bibliografia": {
@@ -170,7 +183,7 @@ EXTRA_AGENTS: dict[str, dict] = {
             "p exacto, tamaño del efecto (d de Cohen, eta² parcial, r, OR) con IC 95 % y una frase de interpretación "
             "práctica; no confundas significación con relevancia ni correlación con causalidad. Disponibles: scipy, "
             "statsmodels, scikit-learn, pandas, seaborn (pingouin no está; en un workspace puedes instalarlo con pip). "
-            "Guarda el script del análisis para que sea reproducible y fija semillas en simulaciones o bootstrap." + _WS_RULES),
+            "Guarda el script del análisis para que sea reproducible y fija semillas en simulaciones o bootstrap." + _VISUAL_RULES + _WS_RULES),
         "tools": ["describe_data", "query_data", "read_document", "use_skill", "read_skill_file", "run_code", "ws_list",
                   "ws_read", "ws_write", "ws_append", "ws_edit", "ws_run"],
         "skills": ["analisis-estadistico"],
@@ -188,7 +201,7 @@ EXTRA_AGENTS: dict[str, dict] = {
             "solo si hace falta, barras de error explicadas (DE, EE o IC 95 %). Exporta en vectorial (PDF/SVG) para "
             "artículos y PNG a 300 ppp para presentaciones o Word; usa layout='constrained'. Comprueba la figura "
             "generada (tamaño, solapes) y describe en el informe qué muestra cada figura y una propuesta de pie de "
-            "figura." + _WS_RULES),
+            "figura." + _VISUAL_RULES + _WS_RULES),
         "tools": ["describe_data", "query_data", "use_skill", "read_skill_file", "run_code", "ws_list", "ws_read",
                   "ws_write", "ws_append", "ws_edit", "ws_run"],
         "skills": ["graficos-publicacion"],
@@ -225,8 +238,8 @@ EXTRA_AGENTS: dict[str, dict] = {
             "main.tex` (o -xelatex si hay fuentes del sistema o caracteres especiales). Si falla, busca en la salida o "
             "en el .log la primera línea que empieza por '!' y su número de línea, corrige y recompila; revisa también "
             "referencias '??' (cita o etiqueta inexistente) y avisos de Overfull hbox graves. No inventes paquetes: si "
-            "dudas de que exista, usa `kpsewhich paquete.sty`. Entrega la ruta del PDF y del .tex principal." + _WS_RULES),
-        "tools": _CODE_TOOLS,
+            "dudas de que exista, usa `kpsewhich paquete.sty`. Entrega la ruta del PDF y del .tex principal." + _VISUAL_RULES + _WS_RULES),
+        "tools": _CODE_TOOLS + ["search_images", "download_file"],
         "skills": ["informe-latex"],
     },
     "traductor": {

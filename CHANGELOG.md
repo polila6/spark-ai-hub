@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.20.0 — 2026-11-08
+Workspace review (a long LaTeX report on opinion polls): what went wrong, fixed for every part of the hub.
+
+* **Web pictures can finally reach a document.** The sandbox has no network (by design), so the model could only fetch the *text*
+  of pages and ended with placeholder «cards». New tools `search_images` (Wikipedia lead photo, Wikimedia Commons, Openverse, each
+  with author and licence) and `download_file` (the hub downloads it: public addresses only, ≤ 40 MB, pictures checked, rotated,
+  resized and converted to JPEG/PNG so LaTeX/Word accept them; also PDF, CSV, JSON, text, xlsx, docx, zip). In a workspace the file
+  lands in `imagenes/` and its credit in `imagenes/creditos.json`; in a chat or project it is saved in the user's files («Descargas»)
+  and shown as a blue link. Available to sub-agents inside their write scope. `fetch_url` now says «use download_file» for pictures
+  and reads raw wikitext.
+* **Charts and tables that do not overflow.** Every workspace (`.sah/`) and chat sandbox run ships `sah_plot` (`new_fig`, `save_fig`,
+  `table_image`: measures every text, wraps long titles and category names, rotates/shrinks ticks, moves legends that cover data,
+  grows the figure, and prints OK or PROBLEMAS), `sah_tex` (`df_to_latex` — fits the width, landscape or longtable —, `figure`) and
+  `sah_check` (PDF: Overfull boxes with lines, ink near the page edge, overprinted words, undefined references/citations, missing
+  files; pictures: cut-off content). The system prompt and the figure/LaTeX/statistics agents require them before delivering.
+* **The built-in «revisor» agent had no tools**, so it could not open the files it was asked to review and *invented* quotes, line
+  numbers and figures that did not exist. It now reads files and documents, must quote literally, and says what it could not read.
+  Any sub-agent that finishes without having opened a single file or source while the task refers to files is marked «SIN VERIFICAR»
+  for the lead model. A sub-agent that ends without text (ran out of steps) is asked once for its final report and otherwise returns
+  a summary of what it did, instead of «no devolvió texto».
+* **Image generation no longer eats the turn**: six failed generations took three hours. An image still queued after 5 minutes stops
+  waiting, and after two failures the generator is off for that turn (the message points to `search_images`).
+* Workspace guidance: no synthetic data for real-world reports, verify recent facts before calling them hypothetical, verify what
+  sub-agents return.
+* **Workspace layout redesigned**: chat in the middle (widest), file tree + terminal on the left, viewer/editor on the right only while a
+  file is open; draggable splitters with remembered widths, collapsible side panels, single-column tabs on narrow windows, example prompts
+  in an empty chat; the page uses the full window width.
+
 ## 0.19.9 — 2026-11-07
 * **«Conectar herramientas» → Python: a full guided tutorial** for calling the hub from your own program. Fourteen steps with your real
   address, model and key: key in an environment variable, first call, multi-turn chat with a system prompt, streaming, thinking control

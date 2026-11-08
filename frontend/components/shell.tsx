@@ -320,7 +320,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Link href="/" className="text-sm font-semibold lg:hidden">Spark AI Hub</Link>
           <UserMenu />
         </header>
-        <main id="main" className="mx-auto w-full max-w-[1500px] flex-1 px-3 pb-24 pt-4 sm:px-6 sm:py-6 lg:pb-6">{children}</main>
+        {/* the workspace uses the whole window; every other page keeps the centred, width-limited column */}
+        <main id="main" className={path.startsWith("/workspace") ? "w-full flex-1 px-2 pb-24 pt-3 sm:px-3 sm:py-3 lg:pb-3" : "mx-auto w-full max-w-[1500px] flex-1 px-3 pb-24 pt-4 sm:px-6 sm:py-6 lg:pb-6"}>{children}</main>
         <MobileTabs onMore={() => setOpen(true)} />
         <TermsGate />
         <SetupGate />

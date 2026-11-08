@@ -41,7 +41,8 @@ PDF_PAGES = 60
 ARCHIVE_PAUSE = 60  # seconds without asking the Wayback Machine after it refused us
 ARCHIVE = "https://web.archive.org/web/2id_/"  # id_: original bytes, without the Wayback toolbar or rewritten links
 TEXT_TYPES = ("text/html", "application/xhtml+xml", "text/plain", "text/markdown", "application/json",
-              "application/xml", "text/xml", "application/rss+xml", "application/atom+xml", "text/csv")
+              "application/xml", "text/xml", "application/rss+xml", "application/atom+xml", "text/csv", "text/x-wiki",
+              "text/tab-separated-values", "text/x-markdown", "application/x-ndjson")
 TRY_ANOTHER = ("Prueba con otro resultado de la búsqueda u otra fuente sobre lo mismo (para artículos científicos: "
                "la versión en arXiv, PubMed/Europe PMC o el enlace DOI).")
 
@@ -490,6 +491,9 @@ def _to_page(r: dict) -> dict:
         else:
             title, text = "", body.decode(_charset(r["content_type"]) or "utf-8", errors="replace")
         return {"url": r["url"], "title": title, "text": text.strip(), "content_type": ct or "text/html"}
+    if ct.startswith("image/"):
+        raise WebError(f"Es una imagen ({ct}), no hay texto que leer. Para guardarla en el workspace o en los archivos del "
+                       "usuario usa download_file con esta misma URL (y search_images para encontrar fotos con su licencia).")
     raise WebError(f"Tipo de contenido no legible: {ct}. " + TRY_ANOTHER)
 
 

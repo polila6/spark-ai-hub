@@ -2,7 +2,7 @@
 // The workspace assistant: a chat whose turns run on the server (they continue when the page is left and
 // re-attach on return) with the ws_* tools on this workspace. Messages use the shared chat actions (copy, edit and
 // regenerate, reply quoting a selection, resume from a point).
-import { ListPlus, Loader2, MessageSquarePlus, Send, Sparkles, Square } from "lucide-react";
+import { FileCode, FileSpreadsheet, FileText, ListPlus, Loader2, MessageSquarePlus, Send, Sparkles, Square, Wrench } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnswerMarkdown } from "@/components/deliverable-link";
 import { Badge, Button, cx } from "@/components/ui";
@@ -14,6 +14,7 @@ import { CodeBlock, MessageActions, MessageEditor, MSG_GROUP, quoteMarkdown, quo
 import { JumpToEnd, useStickToBottom } from "@/components/stick-to-bottom";
 import { effortBody, EffortSlider, PermChips, useEffort } from "@/components/effort";
 import { useAutoGrow, useConfirm } from "./common";
+import { PanelHeader } from "./layout";
 
 export type ChatMsg = { id?: number; role: string; content: string; tools?: any[]; pending?: boolean; reasoning?: string; activity?: Activity; metrics?: any;
   queued?: "queued" | "added" | "late"; key?: string };
@@ -149,61 +150,77 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
   }
   async function stop() { if (cid) await api(`/api/v1/playground/conversations/${cid}/cancel`, { method: "POST" }).catch(() => {}); abort.current?.abort(); }
   const suggestions = [
-    L("Con datos.csv hazme un Excel con un resumen por mes y un gráfico", "From data.csv make an Excel with a monthly summary and a chart"),
-    L("Genera un informe PDF de 2 páginas con las conclusiones de informe.md", "Make a 2-page PDF report from the conclusions in report.md"),
-    L("Crea un script que limpie los CSV de la carpeta datos/ y pruébalo", "Write a script that cleans the CSVs in data/ and test it"),
-    L("Revisa mi código de análisis, ejecuta los tests y arregla lo que falle", "Review my analysis code, run the tests and fix what fails"),
+    { icon: <FileSpreadsheet />, title: L("Datos a Excel", "Data to Excel"), text: L("Con datos.csv hazme un Excel con un resumen por mes y un gráfico", "From data.csv make an Excel with a monthly summary and a chart") },
+    { icon: <FileText />, title: L("Informe PDF", "PDF report"), text: L("Genera un informe PDF de 2 páginas con las conclusiones de informe.md", "Make a 2-page PDF report from the conclusions in report.md") },
+    { icon: <FileCode />, title: L("Script y prueba", "Script and test"), text: L("Crea un script que limpie los CSV de la carpeta datos/ y pruébalo", "Write a script that cleans the CSVs in data/ and test it") },
+    { icon: <Wrench />, title: L("Revisar y arreglar", "Review and fix"), text: L("Revisa mi código de análisis, ejecuta los tests y arregla lo que falle", "Review my analysis code, run the tests and fix what fails") },
   ];
   const queuedCount = msgs.filter((m) => m.queued === "queued").length;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-        <Sparkles className="h-3.5 w-3.5 text-accent" />
-        <span className="text-xs font-semibold">{L("Asistente", "Assistant")}</span>{model && <Badge className="max-w-[140px] truncate">{model}</Badge>}
-        {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-info" />}
-        <div className="ml-auto flex items-center gap-0.5">
-          <Button size="sm" variant="ghost" className="!h-7 !px-2" disabled={busy} onClick={() => load(true).catch((e) => push("error", e.message))} title={L("Nueva conversación (los archivos se quedan)", "New conversation (files stay)")}><MessageSquarePlus className="h-3.5 w-3.5" /></Button>
-          {actions}
-        </div>
-      </div>
-      <div ref={list} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 text-sm">
-        {msgs.length === 0 && <div className="space-y-2 text-xs text-muted">
-          <p>{L("Pídele trabajo sobre tus archivos: escribe el código, lo ejecuta aquí y corrige los errores él solo. Los archivos que toque aparecen como enlaces para abrirlos. Por ejemplo:", "Ask it to work on your files: it writes the code, runs it here and fixes errors on its own. Files it touches appear as links to open them. For example:")}</p>
-          {suggestions.map((s) => <button key={s} type="button" className="block w-full rounded-lg border border-border p-2 text-left hover:bg-elevated" onClick={() => { setInput(s); box.current?.focus(); }}>{s}</button>)}
-        </div>}
-        {msgs.map((m, i) => {
-          const last = i === msgs.length - 1;
-          const isUser = m.role === "user";
-          if (editing === i) return <div key={i} className="flex justify-end"><MessageEditor initial={m.content} busy={busy} onCancel={() => setEditing(null)} onSave={(t) => regenerate(i, t)} /></div>;
-          return (
-            <div key={i} className={cx("flex flex-col", MSG_GROUP, isUser ? "items-end" : "items-stretch")}>
-              <WsMessage m={m} onOpen={onOpen} queued={last && m.pending ? queuedCount : undefined} />
-              {!m.pending && <MessageActions role={m.role} text={m.content} busy={busy}
-                onReply={isUser ? undefined : () => quote(quoteStart(m.content))}
-                onEdit={isUser && m.id != null ? () => setEditing(i) : undefined}
-                onRegenerate={m.id == null ? undefined : isUser ? (last ? () => regenerate(i) : undefined)
-                  : last && msgs[i - 1]?.role === "user" && msgs[i - 1]?.id != null ? () => regenerate(i - 1) : undefined}
-                onResume={!last && m.id != null ? () => resumeFrom(i) : undefined} />}
+      <PanelHeader icon={<Sparkles className="text-accent" />} title={L("Asistente", "Assistant")}>
+        {model && <Badge className="max-w-[160px] truncate">{model}</Badge>}
+        {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-info" aria-label={L("Trabajando", "Working")} />}
+        <Button size="sm" variant="ghost" className="!h-7 !px-2" disabled={busy} onClick={() => load(true).catch((e) => push("error", e.message))} title={L("Nueva conversación (los archivos se quedan)", "New conversation (files stay)")}>
+          <MessageSquarePlus className="h-3.5 w-3.5" /><span className="hidden text-xs sm:inline">{L("Nueva", "New")}</span>
+        </Button>
+        {actions}
+      </PanelHeader>
+      <div ref={list} className="min-h-0 flex-1 overflow-y-auto px-3 py-4 text-sm sm:px-6">
+        <div className="mx-auto w-full max-w-3xl space-y-4">
+          {msgs.length === 0 && (
+            <div className="flex flex-col items-center gap-5 pb-4 pt-6 text-center sm:pt-12">
+              <div className="rounded-2xl bg-accent/12 p-3 text-accent"><Sparkles className="h-6 w-6" /></div>
+              <div className="space-y-1.5">
+                <h2 className="text-base font-semibold">{L("¿Qué hacemos en este workspace?", "What shall we do in this workspace?")}</h2>
+                <p className="mx-auto max-w-md text-xs text-muted">{L("Pídele trabajo sobre tus archivos: escribe el código, lo ejecuta aquí y corrige los errores él solo. Los archivos que toque aparecen como enlaces para abrirlos. Por ejemplo:", "Ask it to work on your files: it writes the code, runs it here and fixes errors on its own. Files it touches appear as links to open them. For example:")}</p>
+              </div>
+              <div className="grid w-full gap-2 text-left sm:grid-cols-2">
+                {suggestions.map((s) => (
+                  <button key={s.title} type="button" disabled={!cid} onClick={() => { setInput(s.text); box.current?.focus(); }}
+                    className="group flex gap-3 rounded-xl border border-border bg-surface p-3 text-left shadow-sm transition hover:border-accent/50 hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60">
+                    <span className="mt-0.5 shrink-0 text-accent [&>svg]:h-4 [&>svg]:w-4">{s.icon}</span>
+                    <span className="min-w-0"><span className="block text-xs font-semibold">{s.title}</span><span className="mt-0.5 block text-xs text-muted">{s.text}</span></span>
+                  </button>))}
+              </div>
             </div>
-          );
-        })}
+          )}
+          {msgs.map((m, i) => {
+            const last = i === msgs.length - 1;
+            const isUser = m.role === "user";
+            if (editing === i) return <div key={i} className="flex justify-end"><MessageEditor initial={m.content} busy={busy} onCancel={() => setEditing(null)} onSave={(t) => regenerate(i, t)} /></div>;
+            return (
+              <div key={i} className={cx("flex flex-col", MSG_GROUP, isUser ? "items-end" : "items-stretch")}>
+                <WsMessage m={m} onOpen={onOpen} queued={last && m.pending ? queuedCount : undefined} />
+                {!m.pending && <MessageActions role={m.role} text={m.content} busy={busy}
+                  onReply={isUser ? undefined : () => quote(quoteStart(m.content))}
+                  onEdit={isUser && m.id != null ? () => setEditing(i) : undefined}
+                  onRegenerate={m.id == null ? undefined : isUser ? (last ? () => regenerate(i) : undefined)
+                    : last && msgs[i - 1]?.role === "user" && msgs[i - 1]?.id != null ? () => regenerate(i - 1) : undefined}
+                  onResume={!last && m.id != null ? () => resumeFrom(i) : undefined} />}
+              </div>
+            );
+          })}
+        </div>
       </div>
       <JumpToEnd show={away} onClick={jump} />
       <SelectionQuote root={list} onQuote={quote} />
       {confirmElement}
-      <form className="shrink-0 space-y-1.5 border-t border-border p-2" onSubmit={(e) => { e.preventDefault(); send(); }}>
-        <textarea ref={box} rows={2} value={input} onChange={(e) => setInput(e.target.value)} placeholder={busy ? L("Añade indicaciones a la tarea en curso (no la interrumpe)…", "Add instructions to the running task (it is not interrupted)…") : L("¿Qué hacemos en este workspace?", "What shall we do in this workspace?")}
-          aria-label={L("Mensaje para el asistente", "Message for the assistant")}
-          className="w-full resize-none rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-subtle transition focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
-        <div className="flex flex-wrap items-center gap-2">
-          <PermChips value={effort} onChange={setEffort} canThink canWeb canResearch={false} />
-          <EffortSlider value={effort} onChange={setEffort} compact />
-          <span className="hidden text-[10.5px] text-subtle xl:inline">{L("Mayús+Enter: nueva línea", "Shift+Enter: new line")}</span>
-          {busy && <Button type="button" size="sm" variant="danger" className="ml-auto" onClick={stop} title={L("Detiene la tarea", "Stops the task")}><Square className="h-3.5 w-3.5" />{L("Parar", "Stop")}</Button>}
-          <Button type="submit" size="sm" variant="primary" className={busy ? undefined : "ml-auto"} disabled={!input.trim() || !cid}
-            title={busy ? L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it") : undefined}>
-            {busy ? <><ListPlus className="h-3.5 w-3.5" />{L("Añadir a la tarea", "Add to the task")}</> : <><Send className="h-3.5 w-3.5" />{L("Enviar", "Send")}</>}</Button>
+      <form className="shrink-0 px-3 pb-3 pt-2 sm:px-6" onSubmit={(e) => { e.preventDefault(); send(); }}>
+        <div className="mx-auto w-full max-w-3xl space-y-1.5 rounded-2xl border border-border bg-bg p-2 shadow-card transition focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/25">
+          <textarea ref={box} rows={2} value={input} onChange={(e) => setInput(e.target.value)} placeholder={busy ? L("Añade indicaciones a la tarea en curso (no la interrumpe)…", "Add instructions to the running task (it is not interrupted)…") : L("¿Qué hacemos en este workspace?", "What shall we do in this workspace?")}
+            aria-label={L("Mensaje para el asistente", "Message for the assistant")}
+            className="w-full resize-none bg-transparent px-2 py-1.5 text-sm text-fg placeholder:text-subtle focus:outline-none"
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
+          <div className="flex flex-wrap items-center gap-2">
+            <PermChips value={effort} onChange={setEffort} canThink canWeb canResearch={false} />
+            <EffortSlider value={effort} onChange={setEffort} compact />
+            <span className="hidden text-[10.5px] text-subtle xl:inline">{L("Mayús+Enter: nueva línea", "Shift+Enter: new line")}</span>
+            {busy && <Button type="button" size="sm" variant="danger" className="ml-auto" onClick={stop} title={L("Detiene la tarea", "Stops the task")}><Square className="h-3.5 w-3.5" />{L("Parar", "Stop")}</Button>}
+            <Button type="submit" size="sm" variant="primary" className={busy ? undefined : "ml-auto"} disabled={!input.trim() || !cid}
+              title={busy ? L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it") : undefined}>
+              {busy ? <><ListPlus className="h-3.5 w-3.5" />{L("Añadir a la tarea", "Add to the task")}</> : <><Send className="h-3.5 w-3.5" />{L("Enviar", "Send")}</>}</Button>
+          </div>
         </div>
       </form>
     </div>

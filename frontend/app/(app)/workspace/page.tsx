@@ -1,30 +1,38 @@
 "use client";
 // Workspace: a persistent remote folder per user with files, an editor with previews, a sandboxed terminal and an
-// assistant that writes, runs and fixes code in it (workspace tools ws_*). Desktop: resizable panels
-// (files | editor + terminal | assistant) remembered in this browser; mobile: one panel at a time.
+// assistant that writes, runs and fixes code in it (workspace tools ws_*).
+// Desktop: three resizable zones remembered in this browser — LEFT files + terminal, CENTER the chat (the main
+// focus), RIGHT the file viewer/editor (only there while a file is open). Both side panels collapse to a thin rail.
+// Narrow screens: one column with Files | Chat | Viewer tabs.
 import {
-  FileCode, FilePlus2, FileText, FolderOpen, FolderPlus, HardDriveDownload, Info, Loader2, PanelBottom, PanelLeft, PanelLeftClose, PanelRight,
-  PanelRightClose, RefreshCw, Search, Sparkles, SquareTerminal, Upload, X,
+  Download, FileCode, FilePlus2, FileText, FolderOpen, FolderPlus, HardDriveDownload, Info, LifeBuoy, Loader2, PanelLeftClose, PanelRightClose,
+  RefreshCw, Search, Sparkles, SquareTerminal, Upload, X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
-import { Guide } from "@/components/guide";
+import { GuideBody } from "@/components/guide";
 import { Button, Field, Input, Modal, Notice, Progress, Select, Tip, cx } from "@/components/ui";
 import { Assistant } from "@/components/workspace/assistant";
 import {
-  type Draft, type Entry, FileIcon, type Run, RUNNABLE, Splitter, type Ws, baseName, ext, parentOf, rawUrl, useConfirm, useMedia, usePersisted,
+  type Draft, type Entry, FileIcon, type Run, RUNNABLE, Splitter, type Ws, baseName, ext, parentOf, rawUrl, useConfirm, usePersisted,
 } from "@/components/workspace/common";
+import { PanelHeader, Rail, ZoneTabs, useWidth } from "@/components/workspace/layout";
 import { ManageDialog, WorkspaceSwitcher, WsDialog } from "@/components/workspace/switcher";
 import { Terminal } from "@/components/workspace/terminal";
 import { FileTree, type TreeAction } from "@/components/workspace/tree";
 import { Viewer } from "@/components/workspace/viewer";
 import { api, upload } from "@/lib/api";
 import { bytes } from "@/lib/format";
-import { useL } from "@/lib/i18n";
+import { GUIDES } from "@/lib/guides";
+import { useI18n, useL } from "@/lib/i18n";
 import { useToast } from "@/lib/providers";
 
-type Layout = { files: number; chat: number; term: number; showFiles: boolean; showChat: boolean; showTerm: boolean };
-const LAYOUT: Layout = { files: 260, chat: 380, term: 240, showFiles: true, showChat: true, showTerm: true };
+/** Remembered layout: widths of the side panels, height of the terminal and which panels are open. */
+type Layout = { left: number; right: number; term: number; leftOpen: boolean; termOpen: boolean; rightCollapsed: boolean };
+const LAYOUT: Layout = { left: 288, right: 520, term: 240, leftOpen: true, termOpen: true, rightCollapsed: false };
+const LEFT_MIN = 200, LEFT_MAX = 560, RIGHT_MIN = 320, CHAT_MIN = 360;
+/** Below this width of the workspace area the three zones become tabs. */
+const NARROW = 820;
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const LAST_KEY = "sah-ws-last";
 
@@ -35,7 +43,6 @@ export default function WorkspacePage() {
   const list: Ws[] = data?.workspaces ?? [];
   const [wid, setWid] = useState<string | null>(null);
   const ws = list.find((w) => w.id === wid) ?? list[0];
-  const [layout, setLayout] = usePersisted<Layout>("sah-ws-layout", LAYOUT);
   const [wsDialog, setWsDialog] = useState<null | { w?: Ws }>(null);
   const [manage, setManage] = useState(false);
   const dirty = useRef(0);
@@ -82,34 +89,29 @@ export default function WorkspacePage() {
   const limits = data?.limits;
   const used = ws?.size_bytes ?? 0;
   const max = (limits?.max_gb ?? 10) * 1e9;
-  const toggle = (k: "showFiles" | "showChat" | "showTerm") => setLayout((l) => ({ ...l, [k]: !l[k] }));
-  const PanelBtn = ({ k, icon, label }: { k: "showFiles" | "showChat" | "showTerm"; icon: React.ReactNode; label: string }) => (
-    <button type="button" onClick={() => toggle(k)} aria-pressed={layout[k]} title={label}
-      className={cx("grid h-8 w-8 place-items-center rounded-lg transition", layout[k] ? "bg-accent/12 text-accent" : "text-muted hover:bg-elevated hover:text-fg")}>{icon}</button>
+  // left part of the sticky top bar: which workspace + how much space it uses
+  const header = (
+    <>
+      <WorkspaceSwitcher list={list} current={ws} onSwitch={switchTo} onNew={() => setWsDialog({})} onRename={(w) => setWsDialog({ w })} onManage={() => setManage(true)} onDelete={deleteWs} />
+      {ws && limits && (
+        <div className="hidden items-center gap-2 text-[11px] text-muted md:flex" title={L("Espacio usado en este workspace", "Space used in this workspace")}>
+          <Progress value={(used / max) * 100} tone={used / max > 0.9 ? "danger" : used / max > 0.75 ? "warn" : "accent"} className="w-24" />
+          <span className="tabular-nums">{bytes(used)} / {limits.max_gb} GB</span>
+          <Tip text={L(`Cada comando puede durar hasta ${Math.round(limits.timeout_s / 60)} min. ${limits.packages ? "Sin internet salvo para instalar paquetes con pip/npm." : "Sin internet."} Todo se ejecuta aislado en el Spark.`, `Each command can run for up to ${Math.round(limits.timeout_s / 60)} min. ${limits.packages ? "No internet except to install packages with pip/npm." : "No internet."} Everything runs isolated on the Spark.`)}>
+            <button type="button" aria-label={L("Límites", "Limits")} className="text-subtle hover:text-muted"><Info className="h-3.5 w-3.5" /></button>
+          </Tip>
+        </div>
+      )}
+    </>
   );
   return (
-    <div className="flex h-[calc(100dvh-10.5rem)] min-h-[480px] flex-col gap-3 lg:h-[calc(100dvh-6.5rem)]">
-      <div className="flex shrink-0 flex-wrap items-center gap-2">
-        <WorkspaceSwitcher list={list} current={ws} onSwitch={switchTo} onNew={() => setWsDialog({})} onRename={(w) => setWsDialog({ w })} onManage={() => setManage(true)} onDelete={deleteWs} />
-        {ws && limits && (
-          <div className="hidden items-center gap-2 text-[11px] text-muted sm:flex" title={L("Espacio usado en este workspace", "Space used in this workspace")}>
-            <Progress value={(used / max) * 100} tone={used / max > 0.9 ? "danger" : used / max > 0.75 ? "warn" : "accent"} className="w-20" />
-            <span className="tabular-nums">{bytes(used)} / {limits.max_gb} GB</span>
-            <Tip text={L(`Cada comando puede durar hasta ${Math.round(limits.timeout_s / 60)} min. ${limits.packages ? "Sin internet salvo para instalar paquetes con pip/npm." : "Sin internet."} Todo se ejecuta aislado en el Spark.`, `Each command can run for up to ${Math.round(limits.timeout_s / 60)} min. ${limits.packages ? "No internet except to install packages with pip/npm." : "No internet."} Everything runs isolated on the Spark.`)}>
-              <button type="button" aria-label={L("Límites", "Limits")} className="text-subtle hover:text-muted"><Info className="h-3.5 w-3.5" /></button>
-            </Tip>
-          </div>
-        )}
-        <div className="ml-auto hidden items-center gap-0.5 rounded-xl border border-border bg-surface p-0.5 lg:flex" role="group" aria-label={L("Paneles", "Panels")}>
-          <PanelBtn k="showFiles" icon={<PanelLeft className="h-4 w-4" />} label={L("Mostrar/ocultar archivos", "Show/hide files")} />
-          <PanelBtn k="showTerm" icon={<PanelBottom className="h-4 w-4" />} label={L("Mostrar/ocultar terminal (Ctrl+`)", "Show/hide terminal (Ctrl+`)")} />
-          <PanelBtn k="showChat" icon={<PanelRight className="h-4 w-4" />} label={L("Mostrar/ocultar asistente", "Show/hide assistant")} />
-        </div>
-      </div>
-      <Guide id="workspace" className="!mb-0 shrink-0" />
-      {limits && !limits.code_enabled && <Notice tone="warn">{L("La ejecución de código está desactivada: puedes editar archivos, pero el terminal y el asistente no podrán ejecutar nada. Un administrador puede activarla en Ajustes.", "Code execution is disabled: you can edit files, but the terminal and the assistant cannot run anything. An administrator can enable it in Settings.")}</Notice>}
-      {!ws ? <div className="grid flex-1 place-items-center"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
-        : <WorkspaceIDE key={ws.id} ws={ws} limits={limits} layout={layout} setLayout={setLayout} onDirty={onDirty} onSizes={onSizes} />}
+    <div className="flex h-[calc(100dvh-10.5rem)] min-h-[480px] flex-col gap-2 lg:h-[calc(100dvh-5rem)]">
+      {!ws
+        ? <>
+            <div className="flex shrink-0 items-center gap-2 rounded-2xl border border-border bg-surface px-2.5 py-2 shadow-card">{header}</div>
+            <div className="grid flex-1 place-items-center"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
+          </>
+        : <WorkspaceIDE key={ws.id} ws={ws} limits={limits} header={header} onDirty={onDirty} onSizes={onSizes} />}
       {wsDialog && <WsDialog w={wsDialog.w} onClose={() => setWsDialog(null)} onSubmit={saveWs} />}
       {manage && <ManageDialog list={list} current={ws} maxGb={limits?.max_gb} onClose={() => setManage(false)} onOpen={(id) => { setManage(false); switchTo(id); }}
         onNew={() => setWsDialog({})} onRename={(w) => setWsDialog({ w })} onDelete={deleteWs} />}
@@ -118,15 +120,24 @@ export default function WorkspacePage() {
   );
 }
 
-type Pane = "files" | "editor" | "terminal" | "chat";
+/** Which zone shows on narrow screens. */
+type Zone = "files" | "chat" | "viewer";
 type NameDialog = { kind: "file" | "dir" | "rename" | "move"; entry?: Entry; folder: string; value: string };
 
-function WorkspaceIDE({ ws, limits, layout, setLayout, onDirty, onSizes }: {
-  ws: Ws; limits: any; layout: Layout; setLayout: (v: Layout | ((p: Layout) => Layout)) => void; onDirty: (n: number) => void; onSizes: () => void;
+function WorkspaceIDE({ ws, limits, header, onDirty, onSizes }: {
+  ws: Ws; limits: any; header: React.ReactNode; onDirty: (n: number) => void; onSizes: () => void;
 }) {
   const L = useL();
+  const { lang } = useI18n();
   const { push } = useToast();
-  const desktop = useMedia("(min-width: 1024px)");
+  const [layout, setLayout] = usePersisted<Layout>("sah-ws-layout2", LAYOUT);
+  const box = useRef<HTMLDivElement>(null);
+  const boxW = useWidth(box);
+  const narrow = boxW !== null && boxW < NARROW;
+  const narrowRef = useRef(narrow);
+  narrowRef.current = narrow;
+  const [zone, setZone] = useState<Zone>("chat");
+  const [guideOpen, setGuideOpen] = useState(false);
   const base = `/api/v1/workspaces/${ws.id}`;
   const { data: tree, mutate: mutTree } = useSWR(`${base}/tree`);
   const entries: Entry[] = useMemo(() => tree?.entries ?? [], [tree]);
@@ -141,7 +152,6 @@ function WorkspaceIDE({ ws, limits, layout, setLayout, onDirty, onSizes }: {
   const [closed, setClosed] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState("");
   const [fileVersion, setFileVersion] = useState(0);
-  const [pane, setPane] = useState<Pane>("editor");
   const [dialog, setDialog] = useState<NameDialog | null>(null);
   const [importTo, setImportTo] = useState<string | null>(null);
   const [uploading, setUploading] = useState<{ done: number; total: number } | null>(null);
@@ -149,12 +159,13 @@ function WorkspaceIDE({ ws, limits, layout, setLayout, onDirty, onSizes }: {
   const fileInput = useRef<HTMLInputElement>(null);
   const uploadTo = useRef("");
   const saveRef = useRef<(() => Promise<void>) | null>(null);
-  const center = useRef<HTMLDivElement>(null);
+  const leftCol = useRef<HTMLElement>(null);
   const wasRunning = useRef<Set<string>>(new Set());
   const pruned = useRef(false);
   const { confirm, confirmElement } = useConfirm();
   const dirtyCount = Object.keys(drafts).length;
   const active = open.active && open.tabs.includes(open.active) ? open.active : null;
+  const hasFiles = open.tabs.length > 0;
   const selEntry = sel ? byPath.get(sel) : undefined;
   const targetDir = sel ? (selEntry?.type === "dir" ? sel : parentOf(sel)) : "";
 
@@ -184,19 +195,20 @@ function WorkspaceIDE({ ws, limits, layout, setLayout, onDirty, onSizes }: {
     for (let i = 1; i < parts.length + (self ? 1 : 0); i++) n.delete(parts.slice(0, i).join("/"));
     return n;
   });
+  // opening a file expands the viewer (desktop) or switches to the Viewer tab (narrow)
   const openFile = useCallback((p: string) => {
     setOpen((o) => ({ tabs: o.tabs.includes(p) ? o.tabs : [...o.tabs, p], active: p }));
-    setSel(p); expandTo(p); setPane("editor");
-  }, [setOpen]);
+    setSel(p); expandTo(p);
+    setLayout((l) => (l.rightCollapsed ? { ...l, rightCollapsed: false } : l));
+    if (narrowRef.current) setZone("viewer");
+  }, [setOpen, setLayout]);
   // a link to a file from a chat answer elsewhere (/workspace#open=path) opens it here
   useEffect(() => {
     const m = window.location.hash.match(/^#open=(.+)$/);
     if (m) { openFile(decodeURIComponent(m[1])); window.history.replaceState(null, "", window.location.pathname); }
   }, [openFile]);
-  const reveal = (dir: string) => {
-    setSel(dir || null); if (dir) expandTo(dir, true);
-    if (desktop) setLayout((l) => ({ ...l, showFiles: true })); else setPane("files");
-  };
+  const showFiles = () => { setLayout((l) => (l.leftOpen ? l : { ...l, leftOpen: true })); if (narrowRef.current) setZone("files"); };
+  const reveal = (dir: string) => { setSel(dir || null); if (dir) expandTo(dir, true); showFiles(); };
   async function closeTab(p: string) {
     if (drafts[p] && !(await confirm({ title: L("¿Cerrar sin guardar?", "Close without saving?"), danger: true, text: L(`${baseName(p)} tiene cambios sin guardar que se perderán.`, `${baseName(p)} has unsaved changes that will be lost.`) }))) return;
     setDrafts((d) => { const n = { ...d }; delete n[p]; return n; });
@@ -227,17 +239,22 @@ function WorkspaceIDE({ ws, limits, layout, setLayout, onDirty, onSizes }: {
     const h = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       if (e.key.toLowerCase() === "s" && active) { e.preventDefault(); saveRef.current?.(); }
-      if (e.key === "`") { e.preventDefault(); if (desktop) setLayout((l) => ({ ...l, showTerm: !l.showTerm })); else setPane((p) => (p === "terminal" ? "editor" : "terminal")); }
+      if (e.key === "`") {
+        e.preventDefault();
+        setLayout((l) => ({ ...l, termOpen: !l.termOpen, leftOpen: l.termOpen ? l.leftOpen : true }));
+        if (narrowRef.current) setZone("files");
+      }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [active, desktop, setLayout]);
+  }, [active, setLayout]);
 
   async function run(command: string): Promise<boolean> {
     try {
       await api(`${base}/run`, { method: "POST", json: { command, background: true } });
       await mutRuns();
-      if (desktop) setLayout((l) => (l.showTerm ? l : { ...l, showTerm: true })); else setPane("terminal");
+      setLayout((l) => (l.termOpen && l.leftOpen ? l : { ...l, termOpen: true, leftOpen: true }));
+      if (narrowRef.current) setZone("files");
       return true;
     } catch (e: any) { push("error", e.message); return false; }
   }
@@ -305,135 +322,194 @@ function WorkspaceIDE({ ws, limits, layout, setLayout, onDirty, onSizes }: {
     } catch (e: any) { push("error", e.message); }
   }
 
+  // ------------------------------------------------------------------ layout
+  const patch = (p: Partial<Layout>) => setLayout((l) => ({ ...l, ...p }));
+  const width = () => box.current?.clientWidth ?? 1200;
   const termActions = (
-    <button type="button" className="rounded p-1 text-[#8b949e] max-lg:hidden hover:bg-[#30363d] hover:text-[#e6edf3]" title={L("Ocultar el terminal (Ctrl+`)", "Hide the terminal (Ctrl+`)")} onClick={() => setLayout((l) => ({ ...l, showTerm: false }))}><X className="h-3.5 w-3.5" /></button>
+    <button type="button" className="rounded p-1 text-[#8b949e] hover:bg-[#30363d] hover:text-[#e6edf3]" title={L("Ocultar el terminal (Ctrl+`)", "Hide the terminal (Ctrl+`)")} onClick={() => patch({ termOpen: false })}><X className="h-3.5 w-3.5" /></button>
   );
   const lastRun = runs[runs.length - 1];
   const sameName = (p: string) => open.tabs.some((t) => t !== p && baseName(t) === baseName(p));
   const ib = "!h-7 !w-7";
+  const dirFor = () => (targetDir ? byPath.get(targetDir) ?? null : null);
+  // what is visible: on narrow screens only the selected zone; on desktop the viewer exists only while a file is open
+  const showLeft = narrow ? zone === "files" : layout.leftOpen;
+  const leftRail = !narrow && !layout.leftOpen;
+  const showChat = narrow ? zone === "chat" : true;
+  const showRight = narrow ? zone === "viewer" : hasFiles && !layout.rightCollapsed;
+  const rightRail = !narrow && hasFiles && layout.rightCollapsed;
+  const guide = GUIDES.workspace;
+  const toggle = (on: boolean, onClick: () => void, icon: React.ReactNode, label: string, disabled = false) => (
+    <button type="button" onClick={onClick} aria-pressed={on} title={label} aria-label={label} disabled={disabled}
+      className={cx("grid h-8 w-8 place-items-center rounded-lg transition disabled:cursor-not-allowed disabled:opacity-40 [&>svg]:h-4 [&>svg]:w-4",
+        on ? "bg-accent/12 text-accent" : "text-muted hover:bg-elevated hover:text-fg")}>{icon}</button>
+  );
 
   return (
-    <div className="flex min-h-[360px] flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-card lg:flex-row">
-      {/* mobile: one panel at a time */}
-      <div className="flex shrink-0 border-b border-border lg:hidden" role="tablist">
-        {([["files", L("Archivos", "Files"), <FolderOpen key="i" className="h-4 w-4" />, 0], ["editor", L("Editor", "Editor"), <FileCode key="i" className="h-4 w-4" />, dirtyCount],
-          ["terminal", L("Terminal", "Terminal"), <SquareTerminal key="i" className="h-4 w-4" />, running], ["chat", L("Asistente", "Assistant"), <Sparkles key="i" className="h-4 w-4" />, 0]] as const).map(([p, label, icon, n]) => (
-          <button key={p} type="button" role="tab" aria-selected={pane === p} onClick={() => setPane(p)}
-            className={cx("relative flex flex-1 flex-col items-center gap-0.5 py-1.5 text-[11px]", pane === p ? "text-accent" : "text-muted")}>
-            {icon}{label}{n > 0 && <span className="absolute right-[18%] top-1 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[9px] font-bold text-accent-fg">{n}</span>}
-            {pane === p && <span className="absolute inset-x-4 bottom-0 h-0.5 rounded-full bg-accent" />}
-          </button>))}
-      </div>
-
-      {/* files */}
-      <aside className={cx("flex min-h-0 min-w-0 flex-col max-lg:flex-1 lg:w-[var(--w)] lg:max-w-[35%] lg:shrink-0", pane !== "files" && "max-lg:hidden", !layout.showFiles && "lg:hidden")}
-        style={{ "--w": `${layout.files}px` } as React.CSSProperties} aria-label={L("Archivos", "Files")}>
-        <div className="flex h-10 shrink-0 items-center gap-0.5 border-b border-border pl-3 pr-1">
-          <span className="mr-auto text-xs font-semibold">{L("Archivos", "Files")}</span>
-          <Button size="icon" variant="ghost" className={ib} title={L(`Nuevo archivo en /${targetDir}`, `New file in /${targetDir}`)} onClick={() => action("newfile", targetDir ? byPath.get(targetDir) ?? null : null)}><FilePlus2 className="h-4 w-4" /></Button>
-          <Button size="icon" variant="ghost" className={ib} title={L(`Nueva carpeta en /${targetDir}`, `New folder in /${targetDir}`)} onClick={() => action("newdir", targetDir ? byPath.get(targetDir) ?? null : null)}><FolderPlus className="h-4 w-4" /></Button>
-          <Button size="icon" variant="ghost" className={ib} title={L(`Subir archivos a /${targetDir} (o arrástralos a una carpeta)`, `Upload files to /${targetDir} (or drop them on a folder)`)} onClick={() => action("upload", targetDir ? byPath.get(targetDir) ?? null : null)}><Upload className="h-4 w-4" /></Button>
-          <Button size="icon" variant="ghost" className={ib} title={L("Traer desde Mis archivos", "Bring from My files")} onClick={() => setImportTo(targetDir)}><HardDriveDownload className="h-4 w-4" /></Button>
-          <Button size="icon" variant="ghost" className={ib} title={L("Actualizar", "Refresh")} onClick={refresh}><RefreshCw className="h-3.5 w-3.5" /></Button>
-          <Button size="icon" variant="ghost" className={cx(ib, "max-lg:hidden")} title={L("Ocultar archivos", "Hide files")} onClick={() => setLayout((l) => ({ ...l, showFiles: false }))}><PanelLeftClose className="h-4 w-4" /></Button>
-        </div>
-        <div className="shrink-0 px-2 pt-2">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-subtle" />
-            <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={L("Buscar archivo…", "Find a file…")} aria-label={L("Buscar archivo", "Find a file")}
-              onKeyDown={(e) => { if (e.key === "Escape") setFilter(""); }}
-              className="h-7 w-full rounded-lg border border-border bg-bg pl-7 pr-6 text-xs text-fg placeholder:text-subtle focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
-            {filter && <button type="button" className="absolute right-1.5 top-1/2 -translate-y-1/2 text-subtle hover:text-fg" onClick={() => setFilter("")} aria-label={L("Borrar búsqueda", "Clear search")}><X className="h-3.5 w-3.5" /></button>}
-          </div>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
-          {!tree ? <Loader2 className="m-3 h-4 w-4 animate-spin text-muted" />
-            : <>
-              <FileTree entries={entries} selected={sel} active={active} closed={closed} filter={filter}
-                onToggle={(p) => setClosed((c) => { const n = new Set(c); if (n.has(p)) n.delete(p); else n.add(p); return n; })}
-                onSelect={(e) => setSel(e.path)} onAction={action} onDropFiles={uploadFiles} onMove={move} />
-              {entries.length === 0 && <p className="px-3 text-center text-xs text-muted">{L("Carpeta vacía. Arrastra archivos aquí, usa ⬆ o pídele al asistente que cree algo.", "Empty folder. Drop files here, use ⬆ or ask the assistant to create something.")}</p>}
-            </>}
-        </div>
-        <div className="shrink-0 border-t border-border px-3 py-1.5 text-[10.5px] text-subtle">
-          {uploading ? <span className="flex items-center gap-1.5 text-info"><Loader2 className="h-3 w-3 animate-spin" />{L(`Subiendo ${uploading.done + 1} de ${uploading.total}…`, `Uploading ${uploading.done + 1} of ${uploading.total}…`)}</span>
-            : <span className="block truncate" title={L("Lo nuevo (archivos, carpetas, subidas) va a esta carpeta. Selecciona otra carpeta para cambiarla.", "New items (files, folders, uploads) go to this folder. Select another folder to change it.")}>
-                {L("Destino", "Target")}: /{targetDir} · {L("clic derecho para más acciones", "right click for more actions")}</span>}
-        </div>
-        <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) uploadFiles(uploadTo.current, e.target.files); e.target.value = ""; }} />
-      </aside>
-      {layout.showFiles && <div className="hidden lg:contents"><Splitter dir="x" label={L("Cambiar el ancho de los archivos", "Resize the files panel")} onReset={() => setLayout((l) => ({ ...l, files: LAYOUT.files }))}
-        onDelta={(d) => setLayout((l) => ({ ...l, files: clamp(l.files + d, 180, 520) }))} /></div>}
-
-      {/* editor + terminal */}
-      <div ref={center} className={cx("flex min-h-0 min-w-0 flex-1 flex-col", pane !== "editor" && pane !== "terminal" && "max-lg:hidden")}>
-        <section className={cx("flex min-h-0 flex-1 flex-col", pane !== "editor" && "max-lg:hidden")} aria-label={L("Editor", "Editor")}>
-          {open.tabs.length > 0 && (
-            <div className="flex h-10 shrink-0 items-end gap-px overflow-x-auto border-b border-border bg-elevated/40 px-1 pt-1" role="tablist" aria-label={L("Archivos abiertos", "Open files")}>
-              {open.tabs.map((p) => (
-                <div key={p} role="tab" aria-selected={p === active} title={p}
-                  onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(p); } }}
-                  className={cx("group flex h-full max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-lg border border-b-0 pl-2.5 pr-1 text-xs transition",
-                    p === active ? "border-border bg-surface text-fg" : "border-transparent text-muted hover:bg-elevated hover:text-fg")}>
-                  <button type="button" className="flex min-w-0 items-center gap-1.5" onClick={() => { setOpen((o) => ({ ...o, active: p })); setSel(p); expandTo(p); }}>
-                    <FileIcon path={p} type="file" />
-                    <span className="truncate">{baseName(p)}</span>
-                    {sameName(p) && <span className="truncate text-[10.5px] text-subtle">{parentOf(p) || "/"}</span>}
-                  </button>
-                  <button type="button" onClick={() => closeTab(p)} aria-label={L(`Cerrar ${baseName(p)}`, `Close ${baseName(p)}`)}
-                    className="grid h-5 w-5 shrink-0 place-items-center rounded text-subtle hover:bg-border/60 hover:text-fg">
-                    {drafts[p] ? <><span className="h-2 w-2 rounded-full bg-accent group-hover:hidden" title={L("Sin guardar", "Unsaved")} /><X className="hidden h-3 w-3 group-hover:block" /></> : <X className={cx("h-3 w-3", p !== active && "opacity-0 group-hover:opacity-100")} />}
-                  </button>
-                </div>))}
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      {/* sticky top bar: workspace name + size, global actions, panel toggles */}
+      <div className="z-10 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 rounded-2xl border border-border bg-surface px-2.5 py-2 shadow-card">
+        {header}
+        <div className="ml-auto flex items-center gap-1">
+          <Button size="sm" variant="ghost" className="!h-8" onClick={() => setGuideOpen((g) => !g)} aria-expanded={guideOpen} title={L("Cómo se usa el workspace", "How the workspace works")}>
+            <LifeBuoy className="h-4 w-4 text-accent" /><span className="hidden lg:inline">{L("¿Cómo se usa?", "How does it work?")}</span>
+          </Button>
+          <Button size="icon" variant="ghost" className="!h-8 !w-8" title={L("Descargar todo el workspace (ZIP)", "Download the whole workspace (ZIP)")} onClick={() => action("download", null)}><Download className="h-4 w-4" /></Button>
+          {!narrow && (
+            <div className="ml-1 flex items-center gap-0.5 rounded-xl border border-border bg-bg/60 p-0.5" role="group" aria-label={L("Paneles", "Panels")}>
+              {toggle(layout.leftOpen, () => patch({ leftOpen: !layout.leftOpen }), <FolderOpen />, L("Mostrar/ocultar archivos", "Show/hide files"))}
+              {toggle(layout.termOpen && layout.leftOpen, () => patch({ termOpen: !layout.termOpen, leftOpen: layout.termOpen ? layout.leftOpen : true }), <SquareTerminal />, L("Mostrar/ocultar terminal (Ctrl+`)", "Show/hide terminal (Ctrl+`)"))}
+              {toggle(hasFiles && !layout.rightCollapsed, () => patch({ rightCollapsed: !layout.rightCollapsed }), <FileCode />, hasFiles ? L("Mostrar/ocultar visor de archivos", "Show/hide file viewer") : L("Visor de archivos: se abre al elegir un archivo", "File viewer: opens when you pick a file"), !hasFiles)}
             </div>
           )}
-          <div className="min-h-0 flex-1">
-            {active ? <Viewer key={active} wid={ws.id} wsName={ws.name} path={active} version={fileVersion} draft={drafts[active]} onDraft={onDraft} saveRef={saveRef}
-                onSaved={(p) => { onDraft(p, null); refresh(); }} onRun={run} onReveal={reveal} onClose={() => closeTab(active)} />
-              : <div className={cx("grid h-full place-items-center p-6 transition", dropEditor && "bg-accent/[0.06] ring-2 ring-inset ring-accent/40")}
-                  onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDropEditor(true); } }} onDragLeave={() => setDropEditor(false)}
-                  onDrop={(e) => { e.preventDefault(); setDropEditor(false); uploadFiles(targetDir, e.dataTransfer.files); }}>
-                  <div className="max-w-md space-y-4 text-center">
-                    <div className="mx-auto w-fit rounded-full bg-elevated p-3 text-subtle"><FileText className="h-5 w-5" /></div>
-                    <p className="text-sm font-medium">{L("Ningún archivo abierto", "No file open")}</p>
-                    <ol className="space-y-1.5 text-left text-xs text-muted">
-                      <li><span className="mr-1.5 font-semibold text-accent">1.</span>{L("Abre un archivo en la columna Archivos (clic derecho o ⋯ para renombrar, mover, descargar…). Puedes tener varios abiertos en pestañas.", "Open a file from the Files column (right click or ⋯ to rename, move, download…). You can keep several open in tabs.")}</li>
-                      <li><span className="mr-1.5 font-semibold text-accent">2.</span>{L(`Arrastra aquí tus datos para subirlos a /${targetDir}, o suéltalos sobre una carpeta concreta.`, `Drop your data here to upload it to /${targetDir}, or drop it on a specific folder.`)}</li>
-                      <li><span className="mr-1.5 font-semibold text-accent">3.</span>{L("Ejecuta lo que quieras en el terminal de abajo, o pídele al asistente que escriba y pruebe el código por ti.", "Run anything in the terminal below, or ask the assistant to write and test the code for you.")}</li>
-                    </ol>
-                    <div className="flex flex-wrap justify-center gap-2">
-                      <Button size="sm" variant="outline" onClick={() => action("newfile", targetDir ? byPath.get(targetDir) ?? null : null)}><FilePlus2 className="h-3.5 w-3.5" />{L("Nuevo archivo", "New file")}</Button>
-                      <Button size="sm" variant="outline" onClick={() => action("upload", targetDir ? byPath.get(targetDir) ?? null : null)}><Upload className="h-3.5 w-3.5" />{L("Subir archivos", "Upload files")}</Button>
-                      {byPath.has("LEEME.md") && <Button size="sm" variant="ghost" onClick={() => openFile("LEEME.md")}>LEEME.md</Button>}
-                    </div>
-                  </div>
-                </div>}
-          </div>
-        </section>
-        {layout.showTerm && <div className="hidden lg:contents"><Splitter dir="y" label={L("Cambiar la altura del terminal", "Resize the terminal")} onReset={() => setLayout((l) => ({ ...l, term: LAYOUT.term }))}
-          onDelta={(d) => setLayout((l) => ({ ...l, term: clamp(l.term - d, 110, Math.max(160, (center.current?.clientHeight ?? 600) - 140)) }))} /></div>}
-        <div className={cx("min-h-0 max-lg:flex-1 lg:h-[var(--h)] lg:max-h-[75%] lg:shrink-0", pane !== "terminal" && "max-lg:hidden", !layout.showTerm && "lg:hidden")} style={{ "--h": `${layout.term}px` } as React.CSSProperties}>
-          <Terminal runs={runs} onRun={run} onStop={stopRun} onOpen={openFile} codeEnabled={!!limits?.code_enabled} timeoutMin={limits ? Math.round(limits.timeout_s / 60) : undefined} packages={limits?.packages}
-            onClear={async () => { try { await api(`${base}/runs`, { method: "DELETE" }); await mutRuns(); } catch (e: any) { push("error", e.message); } }} actions={termActions} />
         </div>
-        {!layout.showTerm && (
-          <button type="button" onClick={() => setLayout((l) => ({ ...l, showTerm: true }))} className="hidden h-8 shrink-0 items-center gap-2 border-t border-border px-3 text-xs text-muted transition hover:bg-elevated hover:text-fg lg:flex">
-            <SquareTerminal className="h-3.5 w-3.5" />{L("Terminal", "Terminal")}
-            {running > 0 ? <span className="flex items-center gap-1 text-info"><Loader2 className="h-3 w-3 animate-spin" />{L(`${running} en marcha`, `${running} running`)}</span>
-              : lastRun && <span className="truncate font-mono text-[11px] text-subtle">$ {lastRun.command.split("\n")[0]} · {lastRun.timed_out ? L("tiempo agotado", "timed out") : `exit ${lastRun.exit_code}`}</span>}
-            <span className="ml-auto text-[10.5px] text-subtle">Ctrl+`</span>
-          </button>
-        )}
       </div>
+      {guideOpen && guide && (
+        <section className="max-h-[40vh] shrink-0 overflow-y-auto rounded-2xl border border-accent/25 bg-accent/[0.04] px-4 py-3" aria-label={lang === "en" ? "Guide" : "Guía"}>
+          <GuideBody g={guide} />
+        </section>
+      )}
+      {limits && !limits.code_enabled && <Notice tone="warn">{L("La ejecución de código está desactivada: puedes editar archivos, pero el terminal y el asistente no podrán ejecutar nada. Un administrador puede activarla en Ajustes.", "Code execution is disabled: you can edit files, but the terminal and the assistant cannot run anything. An administrator can enable it in Settings.")}</Notice>}
 
-      {/* assistant */}
-      {layout.showChat && <div className="hidden lg:contents"><Splitter dir="x" label={L("Cambiar el ancho del asistente", "Resize the assistant")} onReset={() => setLayout((l) => ({ ...l, chat: LAYOUT.chat }))}
-        onDelta={(d) => setLayout((l) => ({ ...l, chat: clamp(l.chat - d, 300, 760) }))} /></div>}
-      <aside className={cx("flex min-h-0 min-w-0 flex-col max-lg:flex-1 lg:w-[var(--w)] lg:max-w-[45%] lg:shrink-0", pane !== "chat" && "max-lg:hidden", !layout.showChat && "lg:hidden")}
-        style={{ "--w": `${layout.chat}px` } as React.CSSProperties} aria-label={L("Asistente", "Assistant")}>
-        <Assistant wid={ws.id} onFiles={refresh} onOpen={openFile}
-          actions={<Button size="icon" variant="ghost" className={cx(ib, "max-lg:hidden")} title={L("Ocultar el asistente", "Hide the assistant")} onClick={() => setLayout((l) => ({ ...l, showChat: false }))}><PanelRightClose className="h-4 w-4" /></Button>} />
-      </aside>
+      {/* the three zones */}
+      <div ref={box} className="flex min-h-[360px] min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
+        {narrow && (
+          <ZoneTabs value={zone} onChange={setZone} label={L("Zonas del workspace", "Workspace zones")} tabs={[
+            { id: "files", label: L("Archivos", "Files"), icon: <FolderOpen />, badge: running },
+            { id: "chat", label: L("Chat", "Chat"), icon: <Sparkles /> },
+            { id: "viewer", label: L("Visor", "Viewer"), icon: <FileCode />, badge: dirtyCount || undefined },
+          ]} />
+        )}
+        <div className="flex min-h-0 flex-1">
+          {/* LEFT: files + terminal */}
+          {leftRail && <Rail side="left" expandLabel={L("Mostrar archivos", "Show files")} onExpand={() => patch({ leftOpen: true })} items={[
+            { key: "files", icon: <FolderOpen />, label: L("Archivos", "Files"), onClick: () => patch({ leftOpen: true }) },
+            { key: "term", icon: running ? <Loader2 /> : <SquareTerminal />, spin: running > 0, label: L("Terminal", "Terminal"), badge: running || undefined, onClick: () => patch({ leftOpen: true, termOpen: true }) },
+          ]} />}
+          {showLeft && (
+            <aside ref={leftCol} aria-label={L("Archivos", "Files")} style={narrow ? undefined : { width: layout.left }}
+              className={cx("flex min-h-0 min-w-0 flex-col", narrow ? "flex-1" : "min-w-[200px] shrink bg-elevated/20")}>
+              <PanelHeader icon={<FolderOpen />} title={L("Archivos", "Files")}>
+                <Button size="icon" variant="ghost" className={ib} title={L(`Nuevo archivo en /${targetDir}`, `New file in /${targetDir}`)} onClick={() => action("newfile", dirFor())}><FilePlus2 className="h-4 w-4" /></Button>
+                <Button size="icon" variant="ghost" className={ib} title={L(`Nueva carpeta en /${targetDir}`, `New folder in /${targetDir}`)} onClick={() => action("newdir", dirFor())}><FolderPlus className="h-4 w-4" /></Button>
+                <Button size="icon" variant="ghost" className={ib} title={L(`Subir archivos a /${targetDir} (o arrástralos a una carpeta)`, `Upload files to /${targetDir} (or drop them on a folder)`)} onClick={() => action("upload", dirFor())}><Upload className="h-4 w-4" /></Button>
+                <Button size="icon" variant="ghost" className={ib} title={L("Traer desde Mis archivos", "Bring from My files")} onClick={() => setImportTo(targetDir)}><HardDriveDownload className="h-4 w-4" /></Button>
+                <Button size="icon" variant="ghost" className={ib} title={L("Actualizar", "Refresh")} onClick={refresh}><RefreshCw className="h-3.5 w-3.5" /></Button>
+                {!narrow && <Button size="icon" variant="ghost" className={ib} title={L("Ocultar archivos", "Hide files")} onClick={() => patch({ leftOpen: false })}><PanelLeftClose className="h-4 w-4" /></Button>}
+              </PanelHeader>
+              <div className="shrink-0 px-2 pt-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-subtle" />
+                  <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={L("Buscar archivo…", "Find a file…")} aria-label={L("Buscar archivo", "Find a file")}
+                    onKeyDown={(e) => { if (e.key === "Escape") setFilter(""); }}
+                    className="h-8 w-full rounded-lg border border-border bg-bg pl-7 pr-6 text-xs text-fg placeholder:text-subtle focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
+                  {filter && <button type="button" className="absolute right-1.5 top-1/2 -translate-y-1/2 text-subtle hover:text-fg" onClick={() => setFilter("")} aria-label={L("Borrar búsqueda", "Clear search")}><X className="h-3.5 w-3.5" /></button>}
+                </div>
+              </div>
+              <div className="min-h-[96px] flex-1 overflow-y-auto p-1.5">
+                {!tree ? <Loader2 className="m-3 h-4 w-4 animate-spin text-muted" />
+                  : <>
+                    <FileTree entries={entries} selected={sel} active={active} closed={closed} filter={filter}
+                      onToggle={(p) => setClosed((c) => { const n = new Set(c); if (n.has(p)) n.delete(p); else n.add(p); return n; })}
+                      onSelect={(e) => setSel(e.path)} onAction={action} onDropFiles={uploadFiles} onMove={move} />
+                    {entries.length === 0 && (
+                      <div className="mx-2 mt-4 rounded-xl border border-dashed border-border px-3 py-5 text-center text-xs text-muted">
+                        <Upload className="mx-auto mb-2 h-5 w-5 text-subtle" />
+                        {L("Carpeta vacía. Arrastra archivos aquí, usa ⬆ o pídele al asistente que cree algo.", "Empty folder. Drop files here, use ⬆ or ask the assistant to create something.")}
+                      </div>
+                    )}
+                  </>}
+              </div>
+              <div className="shrink-0 border-t border-border px-3 py-1.5 text-[10.5px] text-subtle">
+                {uploading ? <span className="flex items-center gap-1.5 text-info"><Loader2 className="h-3 w-3 animate-spin" />{L(`Subiendo ${uploading.done + 1} de ${uploading.total}…`, `Uploading ${uploading.done + 1} of ${uploading.total}…`)}</span>
+                  : <span className="block truncate" title={L("Lo nuevo (archivos, carpetas, subidas) va a esta carpeta. Selecciona otra carpeta para cambiarla.", "New items (files, folders, uploads) go to this folder. Select another folder to change it.")}>
+                      {L("Destino", "Target")}: /{targetDir} · {L("clic derecho para más acciones", "right click for more actions")}</span>}
+              </div>
+              <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) uploadFiles(uploadTo.current, e.target.files); e.target.value = ""; }} />
+
+              {/* terminal (collapsible) */}
+              {layout.termOpen ? <>
+                <Splitter dir="y" label={L("Cambiar la altura del terminal", "Resize the terminal")} onReset={() => patch({ term: LAYOUT.term })}
+                  onDelta={(d) => setLayout((l) => ({ ...l, term: clamp(l.term - d, 110, Math.max(160, (leftCol.current?.clientHeight ?? 600) - 200)) }))} />
+                <div className="min-h-0 shrink-0" style={{ height: layout.term, maxHeight: "70%" }}>
+                  <Terminal runs={runs} onRun={run} onStop={stopRun} onOpen={openFile} codeEnabled={!!limits?.code_enabled} timeoutMin={limits ? Math.round(limits.timeout_s / 60) : undefined} packages={limits?.packages}
+                    onClear={async () => { try { await api(`${base}/runs`, { method: "DELETE" }); await mutRuns(); } catch (e: any) { push("error", e.message); } }} actions={termActions} />
+                </div>
+              </> : (
+                <button type="button" onClick={() => patch({ termOpen: true })} className="flex h-9 shrink-0 items-center gap-2 border-t border-border px-3 text-xs text-muted transition hover:bg-elevated hover:text-fg">
+                  <SquareTerminal className="h-3.5 w-3.5" />{L("Terminal", "Terminal")}
+                  {running > 0 ? <span className="flex items-center gap-1 text-info"><Loader2 className="h-3 w-3 animate-spin" />{L(`${running} en marcha`, `${running} running`)}</span>
+                    : lastRun && <span className="min-w-0 truncate font-mono text-[11px] text-subtle">$ {lastRun.command.split("\n")[0]} · {lastRun.timed_out ? L("tiempo agotado", "timed out") : `exit ${lastRun.exit_code}`}</span>}
+                  <span className="ml-auto shrink-0 text-[10.5px] text-subtle">Ctrl+`</span>
+                </button>
+              )}
+            </aside>
+          )}
+          {showLeft && !narrow && <Splitter dir="x" label={L("Cambiar el ancho de los archivos", "Resize the files panel")} onReset={() => patch({ left: LAYOUT.left })}
+            onDelta={(d) => setLayout((l) => ({ ...l, left: clamp(l.left + d, LEFT_MIN, Math.max(LEFT_MIN, Math.min(LEFT_MAX, width() - CHAT_MIN - (hasFiles && !l.rightCollapsed ? RIGHT_MIN : 0)))) }))} />}
+
+          {/* CENTER: the chat */}
+          <section aria-label={L("Asistente", "Assistant")} className={cx("flex min-h-0 min-w-0 flex-1 flex-col bg-surface", !narrow && "min-w-[320px]", !showChat && "hidden")}>
+            <Assistant wid={ws.id} onFiles={refresh} onOpen={openFile} />
+          </section>
+
+          {/* RIGHT: viewer / editor / previews */}
+          {showRight && !narrow && <Splitter dir="x" label={L("Cambiar el ancho del visor", "Resize the viewer")} onReset={() => patch({ right: LAYOUT.right })}
+            onDelta={(d) => setLayout((l) => ({ ...l, right: clamp(l.right - d, RIGHT_MIN, Math.max(RIGHT_MIN, width() - CHAT_MIN - (l.leftOpen ? l.left : 44))) }))} />}
+          {showRight && (
+            <section aria-label={L("Visor de archivos", "File viewer")} style={narrow ? undefined : { width: layout.right }}
+              className={cx("flex min-h-0 min-w-0 flex-col", narrow ? "flex-1" : "min-w-[300px] shrink bg-surface")}>
+              {hasFiles && (
+                <div className="flex h-11 shrink-0 items-end border-b border-border bg-elevated/40">
+                  <div className="flex h-full min-w-0 flex-1 items-end gap-px overflow-x-auto px-1 pt-1.5" role="tablist" aria-label={L("Archivos abiertos", "Open files")}>
+                    {open.tabs.map((p) => (
+                      <div key={p} role="tab" aria-selected={p === active} title={p}
+                        onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(p); } }}
+                        className={cx("group flex h-full max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-lg border border-b-0 pl-2.5 pr-1 text-xs transition",
+                          p === active ? "border-border bg-surface text-fg" : "border-transparent text-muted hover:bg-elevated hover:text-fg")}>
+                        <button type="button" className="flex min-w-0 items-center gap-1.5" onClick={() => { setOpen((o) => ({ ...o, active: p })); setSel(p); expandTo(p); }}>
+                          <FileIcon path={p} type="file" />
+                          <span className="truncate">{baseName(p)}</span>
+                          {sameName(p) && <span className="truncate text-[10.5px] text-subtle">{parentOf(p) || "/"}</span>}
+                        </button>
+                        <button type="button" onClick={() => closeTab(p)} aria-label={L(`Cerrar ${baseName(p)}`, `Close ${baseName(p)}`)}
+                          className="grid h-5 w-5 shrink-0 place-items-center rounded text-subtle hover:bg-border/60 hover:text-fg">
+                          {drafts[p] ? <><span className="h-2 w-2 rounded-full bg-accent group-hover:hidden" title={L("Sin guardar", "Unsaved")} /><X className="hidden h-3 w-3 group-hover:block" /></> : <X className={cx("h-3 w-3", p !== active && "opacity-0 group-hover:opacity-100")} />}
+                        </button>
+                      </div>))}
+                  </div>
+                  {!narrow && <Button size="icon" variant="ghost" className={cx(ib, "mx-1 mb-2 shrink-0")} title={L("Ocultar el visor", "Hide the viewer")} onClick={() => patch({ rightCollapsed: true })}><PanelRightClose className="h-4 w-4" /></Button>}
+                </div>
+              )}
+              <div className="min-h-0 flex-1">
+                {active ? <Viewer key={active} wid={ws.id} wsName={ws.name} path={active} version={fileVersion} draft={drafts[active]} onDraft={onDraft} saveRef={saveRef}
+                    onSaved={(p) => { onDraft(p, null); refresh(); }} onRun={run} onReveal={reveal} onClose={() => closeTab(active)} />
+                  : <div className={cx("grid h-full place-items-center p-6 transition", dropEditor && "bg-accent/[0.06] ring-2 ring-inset ring-accent/40")}
+                      onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDropEditor(true); } }} onDragLeave={() => setDropEditor(false)}
+                      onDrop={(e) => { e.preventDefault(); setDropEditor(false); uploadFiles(targetDir, e.dataTransfer.files); }}>
+                      <div className="max-w-md space-y-4 text-center">
+                        <div className="mx-auto w-fit rounded-full bg-elevated p-3 text-subtle"><FileText className="h-5 w-5" /></div>
+                        <p className="text-sm font-medium">{L("Ningún archivo abierto", "No file open")}</p>
+                        <ol className="space-y-1.5 text-left text-xs text-muted">
+                          <li><span className="mr-1.5 font-semibold text-accent">1.</span>{L("Abre un archivo en la pestaña Archivos (clic derecho o ⋯ para renombrar, mover, descargar…). Puedes tener varios abiertos en pestañas.", "Open a file from the Files tab (right click or ⋯ to rename, move, download…). You can keep several open in tabs.")}</li>
+                          <li><span className="mr-1.5 font-semibold text-accent">2.</span>{L(`Arrastra aquí tus datos para subirlos a /${targetDir}, o suéltalos sobre una carpeta concreta.`, `Drop your data here to upload it to /${targetDir}, or drop it on a specific folder.`)}</li>
+                          <li><span className="mr-1.5 font-semibold text-accent">3.</span>{L("Ejecuta lo que quieras en el terminal (pestaña Archivos), o pídele al asistente que escriba y pruebe el código por ti.", "Run anything in the terminal (Files tab), or ask the assistant to write and test the code for you.")}</li>
+                        </ol>
+                        <div className="flex flex-wrap justify-center gap-2">
+                          <Button size="sm" variant="outline" onClick={() => action("newfile", dirFor())}><FilePlus2 className="h-3.5 w-3.5" />{L("Nuevo archivo", "New file")}</Button>
+                          <Button size="sm" variant="outline" onClick={() => action("upload", dirFor())}><Upload className="h-3.5 w-3.5" />{L("Subir archivos", "Upload files")}</Button>
+                          {byPath.has("LEEME.md") && <Button size="sm" variant="ghost" onClick={() => openFile("LEEME.md")}>LEEME.md</Button>}
+                        </div>
+                      </div>
+                    </div>}
+              </div>
+            </section>
+          )}
+          {rightRail && <Rail side="right" expandLabel={L("Mostrar el visor", "Show the viewer")} onExpand={() => patch({ rightCollapsed: false })}
+            items={[{ key: "viewer", icon: <FileCode />, label: L("Visor de archivos", "File viewer"), badge: dirtyCount || undefined, onClick: () => patch({ rightCollapsed: false }) }]}
+            vertical={active ? baseName(active) : undefined} />}
+        </div>
+      </div>
 
       {dialog && <NameDialogView dialog={dialog} entries={entries} onChange={(value) => setDialog((d) => (d ? { ...d, value } : d))} onClose={() => setDialog(null)} onSubmit={submitDialog} />}
       {importTo !== null && <ImportDialog wid={ws.id} folder={importTo} onClose={() => setImportTo(null)} onDone={() => { setImportTo(null); refresh(); }} />}

@@ -24,6 +24,7 @@ from ..models import User, UserFile, Workspace
 from ..settings_store import get_setting
 from . import files as files_svc
 from . import orchestrator
+from . import sandbox_helpers as helpers
 from .sandbox import SandboxError, store_bytes
 
 MAX_TEXT_READ = 2 * 1024 * 1024
@@ -336,7 +337,7 @@ def bash_scripts(command: str, job: str = "/job", work: str = "/work") -> tuple[
             f"( while [ ! -e {stop} ] && kill -0 $$; do sleep 0.5; done; "
             f"[ -e {stop} ] && kill -USR1 $$ ) >/dev/null 2>&1 &\n"
             "wait \"$child\"\n")
-    return main, f"cd {work}\n{normalize_command(command)}\n"
+    return main, f"cd {work}\n{helpers.with_path(normalize_command(command), 'bash')}\n"
 
 
 def run(db: Session, ws: Workspace, command: str, *, language: str = "bash", timeout_s: int | None = None,
@@ -347,13 +348,15 @@ def run(db: Session, ws: Workspace, command: str, *, language: str = "bash", tim
         raise SandboxError("La ejecución de código está desactivada.", "Un administrador puede activarla en Ajustes → Sistema.")
     base = ensure(ws)
     _check_quota(db, ws)
+    helpers.install(base / ".sah")
     before = _snapshot(base)
     rid = run_id or uuid.uuid4().hex
     job = get_settings().data_root / "sandbox" / rid
     job.mkdir(parents=True)
     try:
         if language in ("python", "node"):
-            (job / {"python": ".main.py", "node": ".main.js"}[language]).write_text(normalize_command(command))
+            (job / {"python": ".main.py", "node": ".main.js"}[language]).write_text(
+                helpers.with_path(normalize_command(command), language))
         else:
             main, cmd = bash_scripts(command)
             (job / ".cmd.sh").write_text(cmd)
