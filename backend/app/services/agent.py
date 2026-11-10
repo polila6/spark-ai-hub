@@ -36,7 +36,7 @@ from ..settings_store import branding, get_setting
 from . import canvas as canvas_svc
 from . import director
 from . import memory as memory_svc
-from . import dataq, kb, llm, media_fetch, remote_db, sandbox, scheduler, vision, web, web_tools, workflows
+from . import dataq, kb, llm, loopguard, media_fetch, remote_db, research_tools, sandbox, scheduler, vision, web, web_tools, workflows
 from . import skills as skills_svc
 from . import files as files_svc
 from . import turns as turns_svc
@@ -53,7 +53,12 @@ MAX_MINUTES_CHAT, MAX_MINUTES_WORKSPACE = 30, 240  # fallbacks of agent_max_minu
 THINKING_MIN_TOKENS = 16384  # with thinking on, a step needs room for the reasoning AND the answer
 COMPACT_AT = 0.7  # compact the turn's working messages when the prompt passes this share of the window
 COMPACT_KEEP = 0.2  # share of the window kept verbatim (most recent steps) when compacting
-MAX_NUDGES_CHAT, MAX_NUDGES_WORKSPACE = 6, 30  # "continue" reminders per turn (2 in a row at most)
+MAX_NUDGES_CHAT, MAX_NUDGES_WORKSPACE = 6, 60  # "continue" reminders per turn (2 in a row in chat, NUDGES_ROW_WORKSPACE in a workspace)
+NUDGES_ROW_WORKSPACE = 5
+MAX_ROLLOVERS_WORKSPACE = 3  # a workspace turn that hits its time/step limit with the goal unmet goes on in a new segment (this many times)
+AUDIT_MIN_STEPS = 6  # a workspace turn with at least this many steps is audited against the request before it may finish
+MAX_AUDITS = 3
+GOAL_DONE = "objetivos cumplidos"  # the sentinel of a passed audit (also matched in English: «goals met»)
 SUB_MAX_STEPS = 8
 IMAGE_QUEUE_WAIT_S = 300  # a generated image that has not even started after this long stops holding the turn
 IMAGE_FAILS_MAX = 2  # after this many failed generations in a turn the generator is switched off for it
@@ -428,14 +433,36 @@ def announces_work(text: str) -> bool:
     return bool(ANNOUNCE_RE.search(last))
 
 
+HANDOFF_RE = re.compile(
+    r"(?:escribe|escr[ií]beme|di|dime|d[ií]me|env[ií]a|responde|resp[oó]ndeme|manda|pon|teclea|write|type|say|reply)\s*(?:con\s*)?[«\"'“*_`]*\s*"
+    r"(?:contin[uú]a(?:r)?|sigue|seguir|adelante|continue|go on|go ahead|proceed)\b"
+    r"|(?:cuando\s+(?:quieras|me\s+(?:lo\s+)?(?:pidas|digas))|si\s+(?:quieres|lo\s+deseas),?)\s+(?:sigo|contin[uú]o|retomo|lo\s+(?:sigo|retomo))"
+    r"|retomo\s+(?:exactamente\s+)?(?:por|desde|en)\s+el\s+(?:paso|punto)"
+    r"|(?:i(?:'ll| will)|shall i|want me to)\s+(?:continue|go on|carry on)\b", re.I)
+PERMISSION_Q_RE = re.compile(
+    r"(?:¿\s*(?:quieres|deseas|prefieres)\s+que\s+(?:siga|contin[uú]e|continúe|prosiga|lo\s+haga|empiece|proceda|retome)|"
+    r"¿\s*(?:sigo|contin[uú]o|procedo|empiezo|retomo|paso\s+a)\b|¿\s*te\s+parece\s+bien\s+que|"
+    r"¿\s*(?:contin[uú]amos|seguimos)\b|(?:shall|should)\s+i\s+(?:continue|proceed|go on)|do\s+you\s+want\s+me\s+to\s+(?:continue|proceed|go on))",
+    re.I)
+
+
+def hands_off(text: str) -> bool:
+    """The step ends by asking the user to say «continúa» / by asking permission to go on (the user does not want that:
+    in a workspace the model goes on by itself and only stops for a decision only the user can take)."""
+    tail = (text or "").strip()[-700:]
+    return bool(tail) and bool(HANDOFF_RE.search(tail) or PERMISSION_Q_RE.search(tail))
+
+
 def continue_reason(text: str, plan: list[dict], unverified: bool, nudges_in_row: int, nudges_total: int,
-                    max_total: int) -> str | None:
+                    max_total: int, row_limit: int = 2) -> str | None:
     """Why the loop goes on although the model ended its step without tool calls (None = the turn is done).
 
     plan: items still pending/in progress; verify: workspace files written but never run/checked since; empty: no
     answer text at all (e.g. only reasoning); announced: the text promises work that was not done."""
-    if nudges_in_row >= 2 or nudges_total >= max_total:
+    if nudges_in_row >= row_limit or nudges_total >= max_total:
         return None
+    if hands_off(text):
+        return "handoff"
     if plan_open(plan):
         return "plan"
     if unverified:
@@ -457,6 +484,43 @@ def nudge_message(reason: str, plan: list[dict], lang: str = "es") -> str:
                 ("Continue with the plan. Open steps:\n" + pend + "\nDo them now with the tools, without announcing it "
                  "first. If you really are done (or a step is impossible), mark everything completed with update_plan "
                  "and give the final summary."))
+    if reason == "handoff":
+        pend = "\n".join(f"- [{i['status']}] {i['content']}" for i in plan_open(plan)[:20])
+        return (("NO pidas al usuario que escriba «continúa» ni le preguntes si sigues: la tarea no ha terminado y tú la "
+                 "continúas solo, ahora." + (("\nPendiente:\n" + pend) if pend else "") + "\nSolo puedes detenerte si te falta una "
+                 "decisión o un dato que únicamente el usuario puede dar: entonces haz UNA pregunta concreta y nada más. En "
+                 "otro caso llama ya a la herramienta del siguiente paso.") if es else
+                ("Do NOT ask the user to write «continue» or whether to go on: the task is not finished and you carry on "
+                 "by yourself, now." + (("\nPending:\n" + pend) if pend else "") + "\nStop only if you lack a decision or "
+                 "data that only the user can give: then ask ONE concrete question and nothing else. Otherwise call the "
+                 "tool for the next step now."))
+    if reason == "audit":
+        pend = "\n".join(f"- [{i['status']}] {i['content']}" for i in plan_open(plan)[:20])
+        return (("AUDITORÍA DE OBJETIVOS antes de terminar. Relee la petición ORIGINAL del usuario y tu plan. Para CADA requisito "
+                 "explícito (entregables y formatos, cantidad de capítulos/figuras/tablas, calidad visual sin solapes, imágenes "
+                 "reales y no dibujadas, referencias reales, documento compilado y revisado, etc.) indica «cumplido» con su "
+                 "prueba (ruta del archivo, salida del compilador o del comprobador, captura mirada) o «PENDIENTE»."
+                 + (("\nPasos aún abiertos en tu plan:\n" + pend) if pend else "") +
+                 "\nSi hay algo pendiente o sin verificar NO escribas el resumen final: trabájalo ahora con las herramientas. "
+                 "Si TODO está cumplido y verificado, escribe el resumen final con el título «✅ Objetivos cumplidos», una "
+                 "tabla requisito → evidencia y dónde están los archivos. No pidas permiso ni mandes al usuario escribir "
+                 "«continúa»; solo puedes parar para hacer UNA pregunta que únicamente el usuario pueda responder.") if es else
+                ("GOAL AUDIT before finishing. Re-read the user's ORIGINAL request and your plan. For EACH explicit requirement "
+                 "(deliverables and formats, number of chapters/figures/tables, visual quality without overlaps, real pictures "
+                 "not hand-drawn ones, real references, document compiled and reviewed, etc.) say «met» with its proof (file "
+                 "path, compiler or checker output, screenshot looked at) or «PENDING»."
+                 + (("\nOpen plan steps:\n" + pend) if pend else "") +
+                 "\nIf anything is pending or unverified do NOT write the final summary: work on it now with the tools. If "
+                 "EVERYTHING is met and verified, write the final summary titled «✅ Goals met», a requirement → evidence table "
+                 "and where the files are. Do not ask permission or tell the user to write «continue»; stop only to ask ONE "
+                 "question that only the user can answer."))
+    if reason == "audit_fail":
+        return ("Tu respuesta no confirma que todo esté cumplido (falta el título «✅ Objetivos cumplidos»). Si queda algo "
+                "pendiente o sin verificar, hazlo ahora con las herramientas; si de verdad está todo cumplido y verificado, "
+                "repite el resumen final con ese título." if es else
+                "Your answer does not confirm everything is met (the «✅ Goals met» title is missing). If anything is pending or "
+                "unverified do it now with the tools; if everything really is met and verified, repeat the final summary with "
+                "that title.")
     if reason == "verify":
         return ("Antes de terminar, comprueba que lo que has escrito funciona: ejecútalo, compílalo o pruébalo con ws_run, "
                 "revisa la salida y corrige los errores. Después da el resumen final." if es else
@@ -683,10 +747,40 @@ WEB_TOOLS = [
                        "Then call download_file with the chosen `url` to bring it into the workspace / the user's files.",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "What the picture shows (a person's full name works well)"},
+            "queries": {"type": "array", "items": {"type": "string"},
+                        "description": "Several searches at once (up to 6), e.g. scientific name, common name, English name"},
             "source": {"type": "string", "enum": ["auto", "wikipedia", "commons", "openverse"],
                        "description": "auto = Wikipedia's main photo first, then Commons, then Openverse"},
-            "limit": {"type": "integer", "description": "How many candidates (default 6)"}},
+            "limit": {"type": "integer", "description": "How many candidates per search (default 6)"}}}}},
+    {"type": "function", "function": {
+        "name": "extract_images",
+        "description": "List the pictures of a web page (article, museum or institution page) with their alt text and captions, "
+                       "biggest and captioned first. Use it when a page you found has the right photo or diagram; then "
+                       "download_file the chosen `url`. Check the page's licence before using it and credit the source page.",
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "The web page"},
+            "limit": {"type": "integer", "description": "How many pictures (default 20)"},
+            "min_px": {"type": "integer", "description": "Skip pictures narrower than this (default 200)"}},
+            "required": ["url"]}}},
+    {"type": "function", "function": {
+        "name": "search_papers",
+        "description": "Find real scholarly papers (OpenAlex, Crossref): title, authors, year, journal, DOI, citations and abstract. "
+                       "Use it to build a bibliography of verifiable references; then doi_to_bibtex for the BibTeX entries.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Topic, title words or authors"},
+            "limit": {"type": "integer", "description": "How many papers (default 8, max 20)"},
+            "year_from": {"type": "integer"}, "year_to": {"type": "integer"},
+            "open_access": {"type": "boolean", "description": "Only papers with a free full text"},
+            "source": {"type": "string", "enum": ["auto", "openalex", "crossref"]}},
             "required": ["query"]}}},
+    {"type": "function", "function": {
+        "name": "doi_to_bibtex",
+        "description": "Get the BibTeX entry of one or several DOIs from Crossref (up to 12). In a workspace, save_to appends the "
+                       "new entries to that .bib file (existing keys are not duplicated) so you do not type them by hand.",
+        "parameters": {"type": "object", "properties": {
+            "dois": {"type": "array", "items": {"type": "string"}, "description": "DOIs like 10.1038/nature12345"},
+            "save_to": {"type": "string", "description": "Workspace .bib file to append to, e.g. informe/references.bib"}},
+            "required": ["dois"]}}},
     {"type": "function", "function": {
         "name": "download_file",
         "description": "Download a picture or file from a public URL into the workspace (path) or, in a chat, into the user's "
@@ -708,6 +802,8 @@ WEB_TOOLS = [
                        "--convert-to pdf).",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string", "description": "Workspace path of a PNG/JPG image or a PDF"},
+            "paths": {"type": "array", "items": {"type": "string"},
+                      "description": "Several workspace images checked together (up to 6), e.g. every picture you downloaded"},
             "file": {"type": "string", "description": "Chat only: name or id of an attached or generated file"},
             "pages": {"type": "string", "description": "PDF pages, e.g. \"1-3,8\" (at most 6 per call; default the first ones)"},
             "question": {"type": "string", "description": "What to check or describe; omit for a layout-defect review"}}}}},
@@ -913,7 +1009,7 @@ BUILTIN_AGENTS = {
                                      "fuentes más fiables y contrasta los datos. Devuelve un informe estructurado con "
                                      "los hallazgos, cifras y fechas, citando cada dato con su URL. Indica lo que no "
                                      "hayas podido verificar.",
-                     "tools": ["web_search", "fetch_url", "fetch_urls", "search_images"]},
+                     "tools": ["web_search", "fetch_url", "fetch_urls", "search_images", "extract_images", "search_papers"]},
     "documentalista": {"description": "Busca y lee en los documentos del usuario (base de conocimiento y adjuntos).",
                        "instructions": "Eres un documentalista. Empieza con una consulta precisa a search_knowledge y "
                                        "haz una segunda solo si los primeros resultados son insuficientes. Lee con "
@@ -940,13 +1036,14 @@ BUILTIN_AGENTS = {
     "general": {"description": "Agente de propósito general con las instrucciones que le des (campo instructions).",
                 "instructions": "Eres un agente auxiliar. Cumple la tarea con las herramientas disponibles y devuelve "
                                 "un resultado completo y conciso.",
-                "tools": ["web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "download_file",
-                          "search_knowledge", "read_document",
+                "tools": ["web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "extract_images",
+                          "search_papers", "doi_to_bibtex", "download_file", "search_knowledge", "read_document",
                           "describe_data", "query_data", "use_skill", "read_skill_file", "ws_list", "ws_read", "ws_write",
                           "ws_append", "ws_edit", "ws_run", "view_image"]},
 }
-WEB_SAVE_TOOLS = {"fetch_url", "fetch_urls", "http_request", "crawl_site"}  # write into the workspace only when given save_to/save_dir
-SUB_AGENT_TOOLS = {"web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "download_file", "view_image", "search_knowledge", "read_document", "describe_data", "query_data",
+WEB_SAVE_TOOLS = {"fetch_url", "fetch_urls", "http_request", "crawl_site", "doi_to_bibtex"}  # write into the workspace only when given save_to/save_dir
+SUB_AGENT_TOOLS = {"web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "extract_images", "search_papers",
+                   "doi_to_bibtex", "download_file", "view_image", "search_knowledge", "read_document", "describe_data", "query_data",
                    "use_skill", "read_skill_file", "run_code"} | WS_TOOLS  # ws_* only inside a workspace
 from .agent_catalog import EXTRA_AGENTS  # noqa: E402 - specialised agents (programador, tester, estadistico…)
 
@@ -954,7 +1051,7 @@ BUILTIN_AGENTS.update({k: v for k, v in EXTRA_AGENTS.items() if k not in BUILTIN
 
 TOOL_LABELS = {"generate_image": "Generando imagen", "edit_image": "Editando imagen", "search_knowledge": "Buscando en tus documentos",
                "read_document": "Leyendo documento", "describe_data": "Analizando datos", "query_data": "Consultando datos",
-               "save_memory": "Guardando en memoria", "web_search": "Buscando en internet", "fetch_url": "Leyendo página web", "fetch_urls": "Leyendo varias páginas", "http_request": "Consultando una API", "crawl_site": "Rastreando un sitio", "search_images": "Buscando imágenes", "download_file": "Descargando archivo", "view_image": "Mirando la imagen",
+               "save_memory": "Guardando en memoria", "web_search": "Buscando en internet", "fetch_url": "Leyendo página web", "fetch_urls": "Leyendo varias páginas", "http_request": "Consultando una API", "crawl_site": "Rastreando un sitio", "search_images": "Buscando imágenes", "extract_images": "Buscando imágenes en la página", "search_papers": "Buscando artículos", "doi_to_bibtex": "Obteniendo referencias", "download_file": "Descargando archivo", "view_image": "Mirando la imagen",
                "use_skill": "Cargando skill", "read_skill_file": "Leyendo archivo de skill", "find_skills": "Buscando skills",
                "install_skill": "Instalando skill", "delegate_task": "Agente trabajando", "compact_context": "Contexto compactado",
                "run_code": "Ejecutando código", "canvas_write": "Escribiendo en el lienzo",
@@ -1049,6 +1146,7 @@ class Runner:
         self.image_failures = 0
         self._vision_cache: bool | None = None
         self._steered = False  # an urgent user message interrupted the current generation
+        self._loop_hit: tuple[str, str] | None = None  # (reasoning|text, why) when loopguard cut the last stream
         self._steer_t = 0.0
         self.image_meta: dict[str, dict] = {}  # url -> author/licence of pictures found by search_images
         self.canvas_id: uuid.UUID | None = None
@@ -1239,10 +1337,21 @@ class Runner:
             lines.append(self._media_guidance(es, True))
             lines.append(("Trabaja hasta terminar la tarea de verdad: aquí no hay un límite pequeño de pasos. Antes de dar "
                           "algo por hecho, verifícalo (ejecuta, compila, abre la salida o pasa los tests) y corrige hasta "
-                          "que funcione; no termines con el trabajo a medias ni con «voy a…»." if es else
+                          "que funcione; no termines con el trabajo a medias ni con «voy a…». OBJETIVOS: al empezar, convierte la "
+                          "petición en una lista de requisitos comprobables dentro de tu plan (update_plan) e incluye pasos de "
+                          "verificación (compilar, comprobador, mirar las páginas). La tarea NO termina hasta que todos se "
+                          "cumplan y estén verificados: nunca cierres con «escribe continúa», «cuando quieras sigo» ni con "
+                          "«¿sigo?»; si el trabajo es largo, continúa tú solo (el contexto se compacta solo). Solo te detienes "
+                          "para una decisión o dato que únicamente el usuario puede dar: entonces haces UNA pregunta concreta. "
+                          "Antes de terminar se te pedirá una auditoría de objetivos contra la petición original." if es else
                           "Work until the task is really finished: there is no small step limit here. Verify before "
                           "claiming something works (run, compile, open the output, run the tests) and fix until it does; "
-                          "never stop half-way or with «I will…»."))
+                          "never stop half-way or with «I will…». GOALS: at the start turn the request into a list of checkable "
+                          "requirements in your plan (update_plan) with verification steps (compile, checker, look at the pages). "
+                          "The task is NOT over until all are met and verified: never close with «write continue», «tell me when "
+                          "to go on» or «shall I go on?»; if the work is long, carry on by yourself (the context compacts "
+                          "itself). Stop only for a decision or data only the user can give: then ask ONE concrete question. "
+                          "Before finishing you will be asked for a goal audit against the original request."))
             lines.append(("Archivos actuales:\n" if es else "Current files:\n") + listing)
         if tools_on and self.flags["code"] and self.workspace is None:
             lines.append("Código: run_code ejecuta Python, bash o Node en un entorno aislado sin internet. Úsalo para "
@@ -1913,13 +2022,7 @@ class Runner:
                       "(pages=\"1-4\", etc.): un modelo de visión pequeño revisa capturas de las páginas y te dice qué se ve mal; "
                       "sus avisos pueden ser falsos, confírmalos antes de corregir, y revisa al menos las páginas con figuras, "
                       "tablas anchas y la portada. ")
-            if web:
-                t += ("Imágenes de internet: el sandbox NO tiene red (curl/wget/requests fallan: no lo intentes). Usa search_images "
-                      "(fotos de Wikipedia, Wikimedia Commons, Openverse con autor y licencia) y download_file para traerlas "
-                      + ("a imagenes/ del workspace; descarga la foto real de cada persona o lugar en vez de dejar un hueco o una "
-                         "tarjeta de respaldo, comprueba que el resultado corresponde a lo pedido y acredita cada imagen "
-                         "(autor, licencia, enlace; están en imagenes/creditos.json). " if ws else
-                         "a los archivos del usuario; para mostrarla en la respuesta usa el enlace que te devuelve. Acredita autor y licencia. "))
+            t += self._image_policy(True, web, ws)
             return t
         t = ("Legible charts and tables: use `from sah_plot import new_fig, save_fig, table_image` " + ("(installed in /work/.sah) " if ws else "(available) ")
              + "— save_fig(fig, 'figs/x.png') checks and fixes overlapping text, text outside the figure and legends covering data, "
@@ -1931,13 +2034,52 @@ class Runner:
                   "overprinted text, broken references) before saying you are done. Then look at the result with view_image "
                   "(pages=\"1-4\"): a small vision model reviews page screenshots and says what looks wrong; its remarks can be "
                   "false, confirm them before fixing, and check at least the pages with figures, wide tables and the cover. ")
-        if web:
-            t += ("Pictures from the internet: the sandbox has NO network (do not try curl/wget/requests). Use search_images "
-                  "(Wikipedia, Wikimedia Commons, Openverse, with author and licence) and download_file "
-                  + ("to bring them into imagenes/ of the workspace; download the real photo instead of leaving a placeholder, "
-                     "check it matches the request and credit each image (imagenes/creditos.json). " if ws else
-                     "into the user's files; show it with the link it returns and credit author and licence. "))
+        t += self._image_policy(False, web, ws)
         return t
+
+    @staticmethod
+    def _image_policy(es: bool, web: bool, ws: bool) -> str:
+        """Where each kind of picture comes from: real ones from the internet, charts drawn by the LaTeX figure agent."""
+        if es:
+            if not web:
+                return ("Imágenes: la búsqueda en internet está desactivada en este turno, así que no hay fotos reales: no dibujes "
+                        "a mano animales, personas, fósiles ni lugares con matplotlib/TikZ (parecen falsos); omite esas figuras "
+                        "y avisa al usuario de que activando Internet las traerías. Los gráficos de datos y diagramas sí puedes "
+                        "hacerlos. ")
+            return ("POLÍTICA DE IMÁGENES (obligatoria). El sandbox NO tiene red (curl/wget/requests fallan: no lo intentes), pero tú "
+                    "SÍ tienes internet con tus herramientas. 1) Fotos, retratos, reconstrucciones, fósiles, seres vivos, lugares, "
+                    "mapas históricos o paleogeográficos y cualquier imagen del mundo real: búscalas con search_images (varias "
+                    "consultas por tema: nombre científico y común, en inglés y en español; queries=[...] hace varias a la vez), "
+                    "si la web de un artículo tiene la imagen, extract_images(url) lista sus imágenes con su pie; descárgalas con "
+                    "download_file" + (" a imagenes/ del workspace" if ws else " a los archivos del usuario")
+                    + ", MÍRALAS con view_image (ruta o varias en una llamada) para comprobar que son lo que buscas y descarta las "
+                    "que no lo sean, y acredita cada una (autor, licencia, enlace"
+                    + ("; están en imagenes/creditos.json" if ws else "") + "). NUNCA dibujes a mano con matplotlib/TikZ siluetas ni "
+                    "«reconstrucciones» de animales, personas o lugares, ni uses generate_image para figuras de un informe: parecen "
+                    "falsas. Si de verdad no existe imagen real, omite la figura y dilo. 2) Gráficos, diagramas, líneas de tiempo, "
+                    "árboles filogenéticos, esquemas, mapas de calor y tablas visuales: llama al agente graficador-latex con "
+                    "delegate_task (dale los datos o rutas de los CSV, qué debe mostrar y una carpeta propia en write_paths); "
+                    "dibuja en LaTeX/TikZ/pgfplots, sin solapes y con la tipografía del documento. Solo una gráfica de datos muy "
+                    "simple puede hacerse tú con sah_plot. 3) Para referencias bibliográficas reales usa search_papers y "
+                    "doi_to_bibtex (nunca inventes DOI ni digas que no hay red). ")
+        if not web:
+            return ("Pictures: web search is off this turn, so there are no real photos: do not hand-draw animals, people, fossils or "
+                    "places with matplotlib/TikZ (they look fake); leave those figures out and tell the user turning the Internet on "
+                    "would bring them. Data charts and diagrams are fine. ")
+        return ("IMAGE POLICY (mandatory). The sandbox has NO network (curl/wget/requests fail: do not try) but YOU have internet "
+                "through your tools. 1) Photos, portraits, reconstructions, fossils, living things, places, historical or "
+                "palaeogeographic maps and any real-world picture: find them with search_images (several queries per subject: "
+                "scientific and common name, English and Spanish; queries=[...] runs several at once); if an article page has the "
+                "picture, extract_images(url) lists its images with captions; download them with download_file"
+                + (" into imagenes/ of the workspace" if ws else " into the user's files")
+                + ", LOOK at them with view_image to check they are what you wanted and drop the ones that are not, and credit each "
+                "(author, licence, link" + ("; imagenes/creditos.json has them" if ws else "") + "). NEVER hand-draw silhouettes or "
+                "«reconstructions» of animals, people or places with matplotlib/TikZ, nor use generate_image for report figures: "
+                "they look fake. If no real picture exists, leave the figure out and say so. 2) Charts, diagrams, timelines, "
+                "phylogenetic trees, schematics, heatmaps and visual tables: call the graficador-latex agent with delegate_task "
+                "(give it the data or CSV paths, what to show and its own folder in write_paths); it draws in LaTeX/TikZ/pgfplots "
+                "with no overlaps, in the document's typeface. Only a very simple data chart may be made by you with sah_plot. "
+                "3) For real references use search_papers and doi_to_bibtex (never invent DOIs or claim there is no network). ")
 
     def _vision_ok(self) -> bool:
         if self._vision_cache is None:
@@ -1948,7 +2090,44 @@ class Runner:
                 self._vision_cache = False
         return self._vision_cache
 
+    def _view_many(self, call_id: str, paths: list[str], question: str | None) -> dict:
+        """view_image over several workspace pictures at once (e.g. every photo just downloaded)."""
+        shots: list[tuple[str, bytes]] = []
+        for rel in paths[:6]:
+            def grab(db, ws, svc, rel=rel):
+                p, _ = svc.raw(ws, rel)
+                return p
+            src = self._ws_call(grab)
+            if src.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+                raise AgentError(f"{rel}: con paths solo se miran imágenes (para un PDF usa path y pages)")
+            if src.stat().st_size > 25 * 1024 * 1024:
+                raise AgentError(f"{rel} pesa más de 25 MB")
+            shots.append((rel, src.read_bytes()))
+        self.emit({"type": "tool_progress", "id": call_id, "message": f"Mirando {len(shots)} imágenes con el modelo de visión…"})
+        q = question or ("Para CADA imagen (usa su etiqueta) di en una línea qué muestra exactamente (especie, objeto, lugar, "
+                         "mapa, gráfico…), si es una foto/ilustración real o un dibujo esquemático, y si está borrosa, cortada, "
+                         "vacía o es un logotipo/icono. No inventes lo que no se vea.")
+        with SessionLocal() as db:
+            helper = vision.helper_model(db, self.model)
+            if helper is None:
+                raise AgentError("No hay ningún modelo con visión instalado.", "Instala uno en Modelos (p. ej. qwen3-vl:4b-instruct).")
+            alias = helper.alias
+            parts: list[str] = []
+            for i in range(0, len(shots), 3):
+                chunk = shots[i:i + 3]
+                try:
+                    parts.append(vision.analyze(helper, [b for _, b in chunk], q, [l for l, _ in chunk]))
+                except (EngineError, scheduler.SchedulingError) as e:
+                    raise AgentError(f"El modelo de visión no pudo responder: {getattr(e, 'message', e)}")
+        return {"ok": True, "summary": f"{len(shots)} imágenes vistas con {alias}",
+                "content": f"Qué muestra cada imagen (modelo {alias}):\n" + "\n\n".join(x for x in parts if x)
+                           + "\n\nAVISO: un modelo pequeño puede confundirse. Descarta las que no correspondan a lo que buscabas, "
+                             "las borrosas, las diminutas y los logotipos; si dudas, busca otra."}
+
     def tool_view_image(self, call_id: str, args: dict) -> dict:
+        many = [str(x).strip() for x in (args.get("paths") or []) if str(x).strip()] if isinstance(args.get("paths"), list) else []
+        if many and self.workspace is not None:
+            return self._view_many(call_id, many, str(args.get("question") or "").strip() or None)
         path = str(args.get("path") or "").strip()
         ref = str(args.get("file") or "").strip()
         question = str(args.get("question") or "").strip() or None
@@ -2017,29 +2196,129 @@ class Runner:
                            "de ello solo si sah_check tampoco marca nada." + (f"\nCapturas guardadas en: {', '.join(saved)}" if saved else "")}
 
     def tool_search_images(self, call_id: str, args: dict) -> dict:
-        q = str(args.get("query", "")).strip()
+        qs = [str(x).strip() for x in (args.get("queries") or []) if str(x).strip()] if isinstance(args.get("queries"), list) else []
+        if str(args.get("query", "")).strip():
+            qs.insert(0, str(args["query"]).strip())
+        qs = list(dict.fromkeys(qs))[:6]
+        if not qs:
+            raise AgentError("Falta query o queries")
         try:
             limit = max(1, min(10, int(args.get("limit") or 6)))
         except (TypeError, ValueError):
             limit = 6
+        per = limit if len(qs) == 1 else min(limit, 4)
+        lang = "en" if self.t.lang == "en" else "es"
+        blocks, srcs, n, seen, errors = [], [], 0, set(), []
+        for q in qs:
+            try:
+                res = media_fetch.search_images(q, str(args.get("source") or "auto"), per, lang)
+            except media_fetch.MediaError as e:
+                errors.append(f"«{q}»: {e.message}")
+                continue
+            res = [r for r in res if r["url"] not in seen]
+            seen.update(r["url"] for r in res)
+            if not res:
+                blocks.append(f"## «{q}»: sin resultados nuevos (prueba el nombre en inglés, el científico o source=commons)")
+                continue
+            lines = []
+            for i, r in enumerate(res, 1):
+                self.image_meta[r["url"]] = r
+                self.image_meta[r.get("original_url") or r["url"]] = r
+                n += 1
+                lines.append(f"{i}. {r['title']} — {r.get('width')}×{r.get('height')} px · {r.get('license') or 'licencia desconocida'}"
+                             f" · autor: {r.get('author') or 'desconocido'} · {r['source']} · coincidencia con la búsqueda: "
+                             f"{r.get('match', '?')}\n   url: {r['url']}\n   ficha: {r.get('page_url') or '-'}")
+                srcs.append({"title": r["title"], "url": r.get("page_url") or r["url"], "kind": "web",
+                             "snippet": media_fetch.credit_line(r)})
+            blocks.append(f"## «{q}»\n" + "\n".join(lines))
+        if not n:
+            raise AgentError("No encontré imágenes para " + ", ".join(f"«{q}»" for q in qs) + (f" ({'; '.join(errors)})" if errors else ""),
+                             "Prueba con el nombre completo, en inglés, el nombre científico o source=commons; o busca la página con "
+                             "web_search y usa extract_images(url)")
+        return {"ok": True, "summary": f"{n} imágenes para " + ", ".join(f"«{q}»" for q in qs), "sources": srcs,
+                "content": "Candidatas (la coincidencia solo compara palabras del título/ficha: antes de usarlas, descárgalas y mira "
+                           "cada una con view_image; descarta las que no sean lo que buscas). Descarga la elegida con "
+                           "download_file(url=…). Conserva autor y licencia para acreditarla en el documento.\n\n"
+                           + "\n\n".join(blocks) + (("\n\nErrores: " + "; ".join(errors)) if errors else "")}
+
+    def tool_extract_images(self, call_id: str, args: dict) -> dict:
+        url = str(args.get("url", "")).strip()
         try:
-            res = media_fetch.search_images(q, str(args.get("source") or "auto"), limit, "en" if self.t.lang == "en" else "es")
-        except media_fetch.MediaError as e:
-            raise AgentError(e.message)
-        if not res:
-            raise AgentError(f"No encontré imágenes para «{q}»", "Prueba con el nombre completo, en inglés, o source=commons")
+            out = research_tools.page_images(url, int(args.get("limit") or 20), int(args.get("min_px") or 200))
+        except research_tools.ToolError as e:
+            raise AgentError(e.message, e.hint)
+        except (TypeError, ValueError):
+            raise AgentError("limit y min_px deben ser números")
+        if not out["images"]:
+            raise AgentError("La página no tiene imágenes utilizables (quizá se cargan con JavaScript)",
+                             "Prueba search_images con el tema, o busca otra página con web_search")
         lines = []
-        for i, r in enumerate(res, 1):
-            self.image_meta[r["url"]] = r
-            self.image_meta[r.get("original_url") or r["url"]] = r
-            lines.append(f"{i}. {r['title']} — {r.get('width')}×{r.get('height')} px · {r.get('license') or 'licencia desconocida'}"
-                         f" · autor: {r.get('author') or 'desconocido'} · {r['source']}\n   url: {r['url']}\n   ficha: {r.get('page_url') or '-'}")
-        return {"ok": True, "summary": f"{len(res)} imágenes para «{q}»",
-                "sources": [{"title": r["title"], "url": r.get("page_url") or r["url"], "kind": "web",
-                             "snippet": media_fetch.credit_line(r)} for r in res],
-                "content": "Candidatas (comprueba que la imagen corresponde de verdad a lo que buscas por el título/ficha; "
-                           "si no, descarta o busca otra). Descarga la elegida con download_file(url=…). Conserva autor y "
-                           "licencia para acreditarla en el documento.\n" + "\n".join(lines)}
+        for i, im in enumerate(out["images"], 1):
+            self.image_meta[im["url"]] = {"title": im["alt"] or im["caption"] or f"imagen de {out['title']}", "author": "",
+                                          "license": "ver la página de origen", "page_url": out["url"],
+                                          "source": urlsplit_host(out["url"])}
+            size = f"{im['width']}×{im['height']} px" if im.get("width") and im.get("height") else "tamaño desconocido"
+            lines.append(f"{i}. {size}" + (f" · {im['kind']}" if im["kind"] == "principal" else "")
+                         + (f" · pie: {im['caption']}" if im["caption"] else "") + (f" · alt: {im['alt']}" if im["alt"] else "")
+                         + f"\n   url: {im['url']}")
+        return {"ok": True, "summary": f"{len(out['images'])} imágenes de {urlsplit_host(url)}",
+                "sources": [{"title": out["title"][:100], "url": out["url"], "kind": "web", "snippet": ""}],
+                "content": f"Imágenes de «{out['title']}» ({out['url']}), {out['total']} en total. Antes de usar una, descárgala con "
+                           "download_file(url=…), mírala con view_image y comprueba la licencia en la página; acredita la página "
+                           "de origen.\n" + "\n".join(lines)}
+
+    def tool_search_papers(self, call_id: str, args: dict) -> dict:
+        def num(k):
+            try:
+                return int(args[k]) if args.get(k) else None
+            except (TypeError, ValueError):
+                return None
+        try:
+            res = research_tools.search_papers(str(args.get("query", "")), int(args.get("limit") or 8), num("year_from"), num("year_to"),
+                                               str(args.get("source") or "auto"), bool(args.get("open_access")))
+        except research_tools.ToolError as e:
+            raise AgentError(e.message, e.hint)
+        if not res:
+            raise AgentError("No encontré artículos para esa búsqueda", "Prueba con palabras clave en inglés o quita el filtro de años")
+        return {"ok": True, "summary": f"{len(res)} artículos ({res[0]['source']})",
+                "sources": [{"title": r["title"][:120], "url": ("https://doi.org/" + r["doi"]) if r["doi"] else (r["oa_url"] or ""),
+                             "kind": "web", "snippet": f"{', '.join(r['authors'][:2])} ({r.get('year') or 's. f.'}) {r.get('venue') or ''}"[:240]}
+                            for r in res if r["doi"] or r["oa_url"]],
+                "content": "Artículos reales encontrados (cita solo lo que figura aquí; para la entrada BibTeX usa doi_to_bibtex "
+                           "con el DOI; el resumen puede faltar):\n" + "\n".join(research_tools.format_paper(i, p) for i, p in enumerate(res, 1))}
+
+    def tool_doi_to_bibtex(self, call_id: str, args: dict) -> dict:
+        dois = [str(x).strip() for x in (args.get("dois") or []) if str(x).strip()] if isinstance(args.get("dois"), list) else []
+        if not dois:
+            raise AgentError("Falta la lista dois")
+        entries, bad = [], []
+        for d in dois[:research_tools.MAX_DOIS]:
+            try:
+                entries.append(research_tools.bibtex(d))
+            except research_tools.ToolError as e:
+                bad.append(e.message)
+        if not entries:
+            raise AgentError("No se obtuvo ninguna entrada: " + "; ".join(bad))
+        text = "\n\n".join(entries)
+        res = {"ok": True, "summary": f"{len(entries)} entradas BibTeX" + (f" · {len(bad)} fallidas" if bad else "")}
+        save_to = str(args.get("save_to") or "").strip()
+        note = ""
+        if save_to and self.workspace is not None:
+            def merge(db, ws, svc):
+                try:
+                    cur = svc.read(ws, save_to)["content"] or ""
+                except Exception:  # noqa: BLE001
+                    cur = ""
+                new, added, skipped = research_tools.merge_bib(cur, entries)
+                svc.write(db, ws, save_to, new.encode())
+                db.commit()
+                return added, skipped
+            added, skipped = self._ws_call(merge)
+            res["workspace"] = {"changed": [save_to]}
+            note = (f"\nGuardadas en {save_to}: {len(added)} nuevas ({', '.join(added)[:300]})"
+                    + (f"; ya estaban: {', '.join(skipped)}" if skipped else "") + ". Cítalas con \\cite{clave}.")
+        res["content"] = text[:9000] + note + (("\nFallaron: " + "; ".join(bad)) if bad else "")
+        return res
 
     def _dl_default_path(self, args: dict) -> str:
         meta = self.image_meta.get(str(args.get("url", "")).strip())
@@ -2727,7 +3006,8 @@ class Runner:
             return False  # the director left the person's documents out of this answer
         if name in ("db_schema", "db_query"):
             return bool(self.db_names)
-        if name in ("web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "download_file"):
+        if name in ("web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "download_file",
+                    "extract_images", "search_papers", "doi_to_bibtex"):
             return self.flags["web"]
         if name == "view_image":
             return self._vision_ok() and (self.workspace is not None or self.flags["code"])
@@ -2856,7 +3136,8 @@ class Runner:
         return due
 
     def _llm_step(self, messages: list[dict], specs: list[dict] | None, max_tokens: int, thinking: bool | None = None,
-                  on_delta=None, on_reasoning=None, usage: dict | None = None, interruptible: bool = False) -> tuple[str, dict, str | None]:
+                  on_delta=None, on_reasoning=None, usage: dict | None = None, interruptible: bool = False,
+                  main: bool = False) -> tuple[str, dict, str | None]:
         body = {"messages": messages, **{k: v for k, v in self.t.params.items() if k not in ("aspect", "max_tokens")},
                 "max_tokens": max_tokens, **({"tools": specs} if specs else {})}
         if thinking is not None and self.model.backend == "vllm":
@@ -2866,6 +3147,10 @@ class Runner:
         out: list[str] = []
         finish = None
         told = 0.0  # a long file written as a tool argument takes minutes: say how it goes (at most once per second)
+        rguard, tguard = loopguard.LoopGuard(max_total=loopguard.REASONING_MAX_CHARS), loopguard.LoopGuard(min_chars=4000)
+        looped = False  # (only the main loop reads self._loop_hit: sub-agents run in parallel threads)
+        if main:
+            self._loop_hit = None
         for chunk in llm.stream_json(self.model, payload, cancel_check=self._steer_check if interruptible else self.stop):
             if chunk.get("usage") and usage is not None:
                 for k in ("prompt_tokens", "completion_tokens"):
@@ -2878,10 +3163,18 @@ class Runner:
                 rpiece = d.get("reasoning_content") or d.get("reasoning") or ""
                 if rpiece and on_reasoning:
                     on_reasoning(rpiece)
+                if rpiece and rguard.feed(rpiece):
+                    looped = True
+                    if main:
+                        self._loop_hit = ("reasoning", rguard.reason)
                 if piece:
                     out.append(piece)
                     if on_delta:
                         on_delta(piece)
+                    if tguard.feed(piece):
+                        looped = True
+                        if main:
+                            self._loop_hit = ("text", tguard.reason)
                 for tc in d.get("tool_calls") or []:
                     c = calls.setdefault(tc.get("index", 0), {"id": None, "name": "", "args": ""})
                     c["id"] = tc.get("id") or c["id"]
@@ -2894,6 +3187,8 @@ class Runner:
                                    "chars": len(c["args"])})
                 if ch.get("finish_reason"):
                     finish = ch["finish_reason"]
+            if looped:
+                break  # looping: stop paying for it (closing the stream aborts the generation)
         return "".join(out), calls, finish
 
     # -------------------------------------------------------------- plan, inbox, mid-turn compaction
@@ -3202,10 +3497,19 @@ class Runner:
         es = self.t.lang != "en"
         deadline = time.monotonic() + self.max_seconds
         max_nudges = MAX_NUDGES_WORKSPACE if self.workspace is not None else MAX_NUDGES_CHAT
+        row_limit = NUDGES_ROW_WORKSPACE if self.workspace is not None else 2
+        rollovers = 0  # workspace: how many times the time/step limit was lifted because the goal was not met yet
+        seg_step0 = 0  # step number where the current segment started
+        audits = 0  # goal audits asked this turn (workspace)
+        audit_open = False  # the last message asked for an audit and its answer has not come yet
+        goal_met = False
+        work_steps = 0  # steps that called tools
         step = 0
         ctx_retries = 0
         continuations = 0  # an answer cut by max_tokens is continued automatically (3 times at most)
         think_retries = 0  # steps cut while still reasoning (no text, no tool call)
+        loops = 0  # streams cut because the model was going round in circles (loopguard)
+        think_off = 0  # steps left without thinking after a loop
         nudges = nudges_in_row = 0
         glue = False
         last = False
@@ -3214,9 +3518,33 @@ class Runner:
         while True:
             if self.stop():
                 break
-            if not last and (step >= self.max_steps or time.monotonic() > deadline):
+            if not last and (step - seg_step0 >= self.max_steps or time.monotonic() > deadline):
+                limit_hit = "steps" if step - seg_step0 >= self.max_steps else "time"
+                why = (f"{self.max_steps} pasos" if limit_hit == "steps" else f"{round(self.max_seconds / 60)} min")
+                if self.workspace is not None and not goal_met and rollovers < MAX_ROLLOVERS_WORKSPACE and not self.stop():
+                    # The goal is not met yet: the safety limit only closes this segment. Compact and go on by itself
+                    # (the user asked for tasks that finish, not for «continúa» after every few hours).
+                    rollovers += 1
+                    seg_step0 = step
+                    deadline = time.monotonic() + self.max_seconds
+                    nudges_in_row = 0
+                    limit_hit = None
+                    self._compact_turn(messages, step_tokens, force=True)
+                    self.emit({"type": "warning", "message": (
+                        f"Tramo de trabajo terminado ({why}); la tarea sigue y continúa sola (tramo {rollovers + 1} de "
+                        f"{MAX_ROLLOVERS_WORKSPACE + 1})." if es else f"Work segment finished ({why}); the task goes on by itself "
+                        f"(segment {rollovers + 1} of {MAX_ROLLOVERS_WORKSPACE + 1}).")})
+                    pend = "\n".join(f"- [{i['status']}] {i['content']}" for i in plan_open(self.plan)[:20])
+                    messages.append({"role": "user", "content": (
+                        "[Continuación automática] El tramo anterior llegó a su límite de seguridad pero la tarea NO ha terminado. "
+                        "Sigue donde lo dejaste, sin repetir lo ya hecho y sin pedir permiso." + (("\nPendiente según tu plan:\n" + pend) if pend else
+                                                                                                    "\nRelee la petición original y comprueba qué falta.")
+                        if es else "[Automatic continuation] The previous segment hit its safety limit but the task is NOT finished. "
+                        "Go on where you left off, without repeating what is done and without asking permission."
+                        + (("\nPending in your plan:\n" + pend) if pend else "\nRe-read the original request and check what is missing."))})
+            if not last and (step - seg_step0 >= self.max_steps or time.monotonic() > deadline):
                 # Safety net (admin settings): one last step without tools to report what is done and what is left.
-                limit_hit = "steps" if step >= self.max_steps else "time"
+                limit_hit = "steps" if step - seg_step0 >= self.max_steps else "time"
                 last = True
                 why = (f"{self.max_steps} pasos" if limit_hit == "steps" else f"{round(self.max_seconds / 60)} min")
                 self.emit({"type": "warning", "message": f"Se ha alcanzado el límite de seguridad del turno ({why}). "
@@ -3246,7 +3574,7 @@ class Runner:
                                   {"delegate_task", "search_knowledge", "read_document"}]
                 text, calls, finish = self._llm_step(messages, step_specs if not last else None, fit_tokens,
                                                      step_thinking, on_delta, on_reasoning, usage_total,
-                                                     interruptible=not last)
+                                                     interruptible=not last, main=True)
             except EngineError as e:
                 if ctx_retries < 3 and is_context_error(e.message):
                     # the estimate was too optimistic: be stricter, compact the turn's steps and retry
@@ -3257,7 +3585,8 @@ class Runner:
                         self.emit({"type": "warning", "message": "El mensaje no cabía en el contexto; se ha recortado y reintentado."})
                     continue
                 raise
-            step_thinking = self.t.thinking
+            step_thinking = self.t.thinking and think_off <= 0
+            think_off -= 1
             if usage_total.get("last_prompt"):  # calibrate chars/token on this conversation
                 self.ratio = max(1.5, min(6.0, chars / max(1, usage_total["last_prompt"])))
                 self.emit({"type": "context", "used": usage_total["last_prompt"] + usage_total.get("last_completion", 0),
@@ -3280,6 +3609,35 @@ class Runner:
                 nudges_in_row = 0
                 continue
             self._steered = False
+            if self._loop_hit and not self.stop():
+                kind, why = self._loop_hit
+                self._loop_hit = None
+                loops += 1
+                if kind == "text" and text.strip():
+                    text = loopguard.cut_repeat(text)
+                    if glue and text_out:
+                        text_out[-1] += text
+                    else:
+                        text_out.append(text)
+                    glue = False
+                    messages.append({"role": "assistant", "content": text})
+                think_off = 3 if loops < 3 else 10 ** 6  # the third loop of a turn: no more thinking until it ends
+                step -= 1  # the cut stream is not a step
+                step_thinking = False
+                self.emit({"type": "warning", "message": (
+                    f"El modelo entró en un bucle ({why}); se ha cortado y se continúa " + ("sin razonar." if loops >= 3 else
+                                                                                           "sin razonar en los próximos pasos.")
+                    if es else f"The model went into a loop ({why}); it was cut and the work goes on without reasoning.")})
+                messages.append({"role": "user", "content": (
+                    "[Aviso del sistema] Tu " + ("razonamiento" if kind == "reasoning" else "respuesta") + " se repetía en bucle "
+                    f"({why}) y se ha cortado. No vuelvas a deliberar lo mismo: con lo que ya sabes, decide AHORA la siguiente acción "
+                    "concreta y ejecútala llamando a la herramienta (o, si ya está todo hecho, da el resumen final). Si te falta un dato "
+                    "que solo el usuario puede dar, pregúntalo en una frase." if es else
+                    "[System notice] Your " + ("reasoning" if kind == "reasoning" else "answer") + f" was looping ({why}) and was cut. "
+                    "Do not deliberate the same again: with what you know, decide the next concrete action NOW and run it by "
+                    "calling the tool (or, if everything is done, give the final summary).")})
+                if loops <= 12:
+                    continue
             if not calls and not text.strip() and finish == "length" and len(reasoning) > r0 and think_retries < 2 \
                     and not self.stop():
                 # The whole budget went into reasoning: retry with more room, then without thinking. Not an answer.
@@ -3324,12 +3682,28 @@ class Runner:
             if not calls:
                 if last:
                     break
+                was_audit, audit_open = audit_open, False
                 reason = continue_reason(text, self.plan, self.unverified and self.flags["code"], nudges_in_row,
-                                         nudges, max_nudges) if specs else \
+                                         nudges, max_nudges, row_limit) if specs else \
                     ("empty" if not text.strip() and nudges_in_row < 2 and nudges < max_nudges else None)
+                asking = text.strip().endswith("?") and not hands_off(text)  # a real question: the user has to answer
+                if specs and self.workspace is not None and reason is None and not asking:
+                    low = (text or "").lower()
+                    if GOAL_DONE in low or "goals met" in low:
+                        goal_met = True  # the audit passed (or the model closed with its own «objetivos cumplidos» summary)
+                    elif was_audit:
+                        if audits < MAX_AUDITS:
+                            reason = "audit_fail"
+                    elif not goal_met and audits < MAX_AUDITS and work_steps >= AUDIT_MIN_STEPS and nudges < max_nudges:
+                        reason = "audit"
+                elif was_audit and asking:
+                    goal_met = True  # it stopped to ask the user something: that is a legitimate end
                 if reason:
                     nudges += 1
                     nudges_in_row += 1
+                    if reason == "audit":
+                        audits += 1
+                        audit_open = True
                     if reason == "verify":
                         self.unverified = False  # asked once; do not insist
                     messages += [{"role": "assistant", "content": text or ""},
@@ -3341,6 +3715,7 @@ class Runner:
                     continue
                 break
             nudges_in_row = 0
+            work_steps += 1
             assistant_msg, results = self._calls_to_msg(text, calls)
             messages.append(assistant_msg)
             self.emit({"type": "status", "status": "tool"})

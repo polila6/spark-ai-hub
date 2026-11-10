@@ -73,7 +73,7 @@ function UsersTab() {
     <div className="space-y-4">
       <div className="flex justify-end"><Button variant="primary" onClick={() => { setRes(null); setOpen(true); }}><UserPlus className="h-4 w-4" />{t("users.invite")}</Button></div>
       <Card>
-        <Table head={[t("auth.username"), t("common.name"), t("users.role"), t("common.status"), L("último acceso", "last login"), L("espacio", "space"), L("trabajos", "jobs"), t("common.actions")]}>
+        <Table head={[t("auth.username"), t("common.name"), t("users.role"), t("common.status"), L("último acceso", "last login"), L("espacio", "space"), L("trabajos", "jobs"), t("common.actions")]} hide={[2, 5, 6, 7]}>
           {data?.filter((u: any) => u.signup_status !== "pending").map((u: any) => (
             <tr key={u.id}>
               <Td className="font-medium">{u.username}<div className="text-[11px] text-muted">{u.email}</div></Td>
@@ -84,7 +84,7 @@ function UsersTab() {
               <Td className="text-xs text-muted">{u.last_login_at ? ago(u.last_login_at, lang) : L("nunca", "never")}</Td>
               <Td className="text-xs">{bytes(u.used_bytes)}</Td>
               <Td>{u.active_jobs}</Td>
-              <Td><div className="flex gap-1">{u.manageable && <>
+              <Td><div className="flex flex-wrap gap-1 max-md:min-w-[9rem]">{u.manageable && <>
                 {!u.activated && <Button size="sm" variant="ghost" onClick={async () => { try { setRes(await api(`/api/v1/users/${u.id}/invite`, { method: "POST" })); setOpen(true); } catch (x: any) { push("error", x.message); } }}>{L("Reenviar invitación", "Resend invitation")}</Button>}
                 {u.activated && <Button size="sm" variant="ghost" onClick={async () => { setRes(await api(`/api/v1/users/${u.id}/reset-link?send_email=true`, { method: "POST" })); setOpen(true); }}>{t("users.reset")}</Button>}</>}
                 {u.id !== me?.id && u.manageable && (u.is_active ? <Button size="sm" variant="ghost" onClick={async () => { await api(`/api/v1/users/${u.id}`, { method: "DELETE" }); mutate(); }}>{t("users.deactivate")}</Button>

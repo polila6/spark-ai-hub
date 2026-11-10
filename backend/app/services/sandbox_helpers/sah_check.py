@@ -58,6 +58,27 @@ def check_log(log: Path, min_pt: float = 3.0) -> list[str]:
     return issues
 
 
+def _char_clashes(page, limit: int = 8000) -> int:
+    """Pairs of letters whose boxes overlap (text drawn over text). Doubled letters of fake-bold are ignored."""
+    chars = [c for c in page.chars[:limit] if c.get("text", "").strip() and c["x1"] > c["x0"] and c["bottom"] > c["top"]]
+    chars.sort(key=lambda c: c["x0"])
+    hits = 0
+    for i, a in enumerate(chars):
+        for b in chars[i + 1:i + 60]:
+            if b["x0"] >= a["x1"] - 0.3:
+                break
+            w = min(a["x1"], b["x1"]) - max(a["x0"], b["x0"])
+            h = min(a["bottom"], b["bottom"]) - max(a["top"], b["top"])
+            if w <= 0.8 or h <= 0.8:
+                continue
+            if a["text"] == b["text"] and abs(a["x0"] - b["x0"]) < 1.2 and abs(a["top"] - b["top"]) < 1.2:
+                continue
+            small = min((a["x1"] - a["x0"]) * (a["bottom"] - a["top"]), (b["x1"] - b["x0"]) * (b["bottom"] - b["top"]))
+            if w * h > 0.45 * small:
+                hits += 1
+    return hits
+
+
 def check_pdf(pdf: Path, pages: str | None = None, margin_mm: float = 10.0) -> list[str]:
     import pdfplumber
     from PIL import Image
@@ -102,8 +123,9 @@ def check_pdf(pdf: Path, pages: str | None = None, margin_mm: float = 10.0) -> l
                                                                     (b["x1"] - b["x0"]) * (b["bottom"] - b["top"])):
                             hits += 1
                             break
-                if hits >= 2:
-                    clash.append(f"p.{p} ({hits} palabras encimadas)")
+                chars = _char_clashes(page)  # (letters on letters also when the words are merged into one)
+                if hits >= 2 or chars >= 4:
+                    clash.append(f"p.{p} ({max(hits, chars // 4)} palabras encimadas)")
     if near:
         issues.append(f"contenido a menos de {margin_mm:g} mm del borde: " + ", ".join(near[:20]) + (" …" if len(near) > 20 else ""))
     if clash:

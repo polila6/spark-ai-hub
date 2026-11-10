@@ -87,7 +87,7 @@ function JobsInner() {
         onConfirm={async () => { await bulk.run({ ids: sel.list(), action: "delete" }, (n) => L(`${n} borrados`, `${n} deleted`)); setConfirmDelete(false); }} />
       <Card>
         {!data ? <Skeleton className="h-40" /> : data.items.length === 0 ? <Empty /> : (
-          <Table head={[<SelectBox key="all" checked={sel.all} indeterminate={sel.some} onChange={() => sel.toggleAll()} label={L("Seleccionar todos", "Select all")} />, t("common.name"), t("jobs.type"), t("jobs.class"), t("common.status"), t("jobs.progress"), t("common.created"), tr("duración", "duration")]}>
+          <Table head={[<SelectBox key="all" checked={sel.all} indeterminate={sel.some} onChange={() => sel.toggleAll()} label={L("Seleccionar todos", "Select all")} />, t("common.name"), t("jobs.type"), t("jobs.class"), t("common.status"), t("jobs.progress"), t("common.created"), tr("duración", "duration")]} hide={[4, 7, 8]}>
             {data.items.map((j: any) => (
               <tr key={j.id} className={`cursor-pointer hover:bg-elevated/40 ${sel.has(j.id) ? "bg-accent/5" : ""}`} onClick={() => setOpen(j.id)}>
                 <Td className="w-8"><SelectBox checked={sel.has(j.id)} onChange={(_, shift) => sel.toggle(j.id, shift)} label={L("Seleccionar este trabajo", "Select this job")} /></Td>

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.23.0 — 2026-11-10
+Review of the «ballenas» workspace (two turns of 4 h each: 263 pages, but photographs drawn by hand, charts with overlapping text, the
+task cut off twice with «escribe continúa», minutes of looping reasoning) and what it teaches.
+
+* **Real pictures, never hand-drawn ones.** The director now keeps the web on in every workspace turn (a bare «continúa» had switched
+  it off, so the model believed it had no network and drew silhouettes of fossils with matplotlib). A mandatory image policy:
+  photos, fossils, animals, people, places and historical maps come from the internet (`search_images` → `download_file`, checked
+  with `view_image`, credited); hand-drawn «reconstructions» and `generate_image` for report figures are forbidden. New tools:
+  **`extract_images(url)`** (the pictures of a web page with captions; Wikimedia thumbnails resolved to the original),
+  **`search_images(queries=[…])`** (several searches at once, results ranked by how well title/description match, shown as
+  «coincidencia alta/media/baja»), **`view_image(paths=[…])`** (checks up to 6 downloaded pictures in one call: what each shows,
+  real photo or schematic, blurry/logo), **`search_papers`** (OpenAlex → Crossref: real title/authors/year/DOI/abstract) and
+  **`doi_to_bibtex`** (Crossref; `save_to` appends to a `.bib` without duplicating keys). Wikipedia pages no longer fail with 403.
+* **Charts are drawn in LaTeX by a specialist.** New built-in agent **`graficador-latex`** (TikZ/pgfplots/forest) and a sandbox helper
+  **`sah_fig`** (`build()` writes a standalone `.tex`, compiles it, checks it and prints OK/PROBLEMAS, makes a preview PNG;
+  `fig_tex()` returns the figure block). The main assistant is told to delegate every chart, diagram, timeline, tree and heatmap to it.
+  `sah_check` now also finds letters printed over letters when the words are merged (it missed two overlapping labels before).
+* **Tasks finish.** In a workspace the assistant no longer ends with «escribe continúa» / «¿sigo?» (detected and refused up to 5
+  times in a row); it turns the request into checkable requirements; **before finishing it must pass a goal audit** against the
+  original request (proof for each requirement; sentinel «✅ Objetivos cumplidos»); and when a segment reaches the admin time/step limit
+  with the goal unmet it **compacts the context and continues by itself** (up to 3 extra segments) instead of stopping. It still
+  stops, with one concrete question, when only the user can decide.
+* **No more thinking loops.** `loopguard` watches the reasoning (and the answer) while it streams: the same sentence ≥ 4 times,
+  many sentences starting alike, a repeated 300-character block, near-incompressible text, or 40 000 characters of reasoning without
+  acting. The stream is cut at once (the generation is aborted), the model is told it was looping and must act, thinking is off for the
+  next steps (for the rest of the turn after the third loop) and the user sees a warning. In the studied workspace 3.8 of 4 hours were
+  model generation for 68 steps.
+* Built-in agents `investigador`, `redactor-cientifico`, `revisor-bibliografia` (now starts with `search_papers`) and
+  `general` use the new tools. In-UI guides, tool names and the admin hint about the time limit were updated.
+* Frontend: layout redesign for phones and small desktop screens (see below).
+
 ## 0.22.1 — 2026-11-08
 * **Robot server: it lost its GPU and kept answering «ok».** After two days the `sah-robot` container could no longer use the GPU
   («Failed to initialize NVML», «CUDA error: unknown error»: the driver reset the device under the running container), so every

@@ -94,7 +94,7 @@ export default function WorkspacePage() {
     <>
       <WorkspaceSwitcher list={list} current={ws} onSwitch={switchTo} onNew={() => setWsDialog({})} onRename={(w) => setWsDialog({ w })} onManage={() => setManage(true)} onDelete={deleteWs} />
       {ws && limits && (
-        <div className="hidden items-center gap-2 text-[11px] text-muted md:flex" title={L("Espacio usado en este workspace", "Space used in this workspace")}>
+        <div className="hidden items-center gap-2 whitespace-nowrap text-[11px] text-muted md:flex" title={L("Espacio usado en este workspace", "Space used in this workspace")}>
           <Progress value={(used / max) * 100} tone={used / max > 0.9 ? "danger" : used / max > 0.75 ? "warn" : "accent"} className="w-24" />
           <span className="tabular-nums">{bytes(used)} / {limits.max_gb} GB</span>
           <Tip text={L(`Cada comando puede durar hasta ${Math.round(limits.timeout_s / 60)} min. ${limits.packages ? "Sin internet salvo para instalar paquetes con pip/npm." : "Sin internet."} Todo se ejecuta aislado en el Spark.`, `Each command can run for up to ${Math.round(limits.timeout_s / 60)} min. ${limits.packages ? "No internet except to install packages with pip/npm." : "No internet."} Everything runs isolated on the Spark.`)}>
@@ -105,7 +105,7 @@ export default function WorkspacePage() {
     </>
   );
   return (
-    <div className="flex h-[calc(100dvh-10.5rem)] min-h-[480px] flex-col gap-2 lg:h-[calc(100dvh-5rem)]">
+    <div className="h-fill flex min-h-[420px] min-w-0 flex-col gap-1.5 max-sm:min-h-0 sm:gap-2">
       {!ws
         ? <>
             <div className="flex shrink-0 items-center gap-2 rounded-2xl border border-border bg-surface px-2.5 py-2 shadow-card">{header}</div>
@@ -121,7 +121,7 @@ export default function WorkspacePage() {
 }
 
 /** Which zone shows on narrow screens. */
-type Zone = "files" | "chat" | "viewer";
+type Zone = "files" | "chat" | "viewer" | "term";
 type NameDialog = { kind: "file" | "dir" | "rename" | "move"; entry?: Entry; folder: string; value: string };
 
 function WorkspaceIDE({ ws, limits, header, onDirty, onSizes }: {
@@ -242,7 +242,7 @@ function WorkspaceIDE({ ws, limits, header, onDirty, onSizes }: {
       if (e.key === "`") {
         e.preventDefault();
         setLayout((l) => ({ ...l, termOpen: !l.termOpen, leftOpen: l.termOpen ? l.leftOpen : true }));
-        if (narrowRef.current) setZone("files");
+        if (narrowRef.current) setZone("term");
       }
     };
     window.addEventListener("keydown", h);
@@ -254,7 +254,7 @@ function WorkspaceIDE({ ws, limits, header, onDirty, onSizes }: {
       await api(`${base}/run`, { method: "POST", json: { command, background: true } });
       await mutRuns();
       setLayout((l) => (l.termOpen && l.leftOpen ? l : { ...l, termOpen: true, leftOpen: true }));
-      if (narrowRef.current) setZone("files");
+      if (narrowRef.current) setZone("term");
       return true;
     } catch (e: any) { push("error", e.message); return false; }
   }
@@ -333,7 +333,10 @@ function WorkspaceIDE({ ws, limits, header, onDirty, onSizes }: {
   const ib = "!h-7 !w-7";
   const dirFor = () => (targetDir ? byPath.get(targetDir) ?? null : null);
   // what is visible: on narrow screens only the selected zone; on desktop the viewer exists only while a file is open
-  const showLeft = narrow ? zone === "files" : layout.leftOpen;
+  const showLeft = narrow ? zone === "files" || zone === "term" : layout.leftOpen;
+  // on phones the file tree and the terminal are separate tabs; on desktop they share the left column
+  const treeShown = !narrow || zone === "files";
+  const termShown = narrow ? zone === "term" : layout.termOpen;
   const leftRail = !narrow && !layout.leftOpen;
   const showChat = narrow ? zone === "chat" : true;
   const showRight = narrow ? zone === "viewer" : hasFiles && !layout.rightCollapsed;
@@ -348,7 +351,7 @@ function WorkspaceIDE({ ws, limits, header, onDirty, onSizes }: {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
       {/* sticky top bar: workspace name + size, global actions, panel toggles */}
-      <div className="z-10 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 rounded-2xl border border-border bg-surface px-2.5 py-2 shadow-card">
+      <div className="z-10 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border bg-surface px-2 py-1.5 sm:rounded-2xl sm:border sm:px-2.5 sm:py-2 sm:shadow-card">
         {header}
         <div className="ml-auto flex items-center gap-1">
           <Button size="sm" variant="ghost" className="!h-8" onClick={() => setGuideOpen((g) => !g)} aria-expanded={guideOpen} title={L("Cómo se usa el workspace", "How the workspace works")}>
@@ -372,12 +375,13 @@ function WorkspaceIDE({ ws, limits, header, onDirty, onSizes }: {
       {limits && !limits.code_enabled && <Notice tone="warn">{L("La ejecución de código está desactivada: puedes editar archivos, pero el terminal y el asistente no podrán ejecutar nada. Un administrador puede activarla en Ajustes.", "Code execution is disabled: you can edit files, but the terminal and the assistant cannot run anything. An administrator can enable it in Settings.")}</Notice>}
 
       {/* the three zones */}
-      <div ref={box} className="flex min-h-[360px] min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
+      <div ref={box} className="flex min-h-[300px] min-w-0 flex-1 flex-col overflow-hidden border-y border-border bg-surface max-sm:min-h-0 sm:min-h-[360px] sm:rounded-2xl sm:border sm:shadow-card">
         {narrow && (
           <ZoneTabs value={zone} onChange={setZone} label={L("Zonas del workspace", "Workspace zones")} tabs={[
-            { id: "files", label: L("Archivos", "Files"), icon: <FolderOpen />, badge: running },
             { id: "chat", label: L("Chat", "Chat"), icon: <Sparkles /> },
-            { id: "viewer", label: L("Visor", "Viewer"), icon: <FileCode />, badge: dirtyCount || undefined },
+            { id: "files", label: L("Archivos", "Files"), icon: <FolderOpen /> },
+            { id: "viewer", label: L("Editor", "Editor"), icon: <FileCode />, badge: dirtyCount || undefined },
+            { id: "term", label: L("Terminal", "Terminal"), icon: <SquareTerminal />, badge: running || undefined },
           ]} />
         )}
         <div className="flex min-h-0 flex-1">
@@ -389,6 +393,7 @@ function WorkspaceIDE({ ws, limits, header, onDirty, onSizes }: {
           {showLeft && (
             <aside ref={leftCol} aria-label={L("Archivos", "Files")} style={narrow ? undefined : { width: layout.left }}
               className={cx("flex min-h-0 min-w-0 flex-col", narrow ? "flex-1" : "min-w-[200px] shrink bg-elevated/20")}>
+              {treeShown && <>
               <PanelHeader icon={<FolderOpen />} title={L("Archivos", "Files")}>
                 <Button size="icon" variant="ghost" className={ib} title={L(`Nuevo archivo en /${targetDir}`, `New file in /${targetDir}`)} onClick={() => action("newfile", dirFor())}><FilePlus2 className="h-4 w-4" /></Button>
                 <Button size="icon" variant="ghost" className={ib} title={L(`Nueva carpeta en /${targetDir}`, `New folder in /${targetDir}`)} onClick={() => action("newdir", dirFor())}><FolderPlus className="h-4 w-4" /></Button>
@@ -425,17 +430,18 @@ function WorkspaceIDE({ ws, limits, header, onDirty, onSizes }: {
                   : <span className="block truncate" title={L("Lo nuevo (archivos, carpetas, subidas) va a esta carpeta. Selecciona otra carpeta para cambiarla.", "New items (files, folders, uploads) go to this folder. Select another folder to change it.")}>
                       {L("Destino", "Target")}: /{targetDir} · {L("clic derecho para más acciones", "right click for more actions")}</span>}
               </div>
+              </>}
               <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) uploadFiles(uploadTo.current, e.target.files); e.target.value = ""; }} />
 
               {/* terminal (collapsible) */}
-              {layout.termOpen ? <>
-                <Splitter dir="y" label={L("Cambiar la altura del terminal", "Resize the terminal")} onReset={() => patch({ term: LAYOUT.term })}
-                  onDelta={(d) => setLayout((l) => ({ ...l, term: clamp(l.term - d, 110, Math.max(160, (leftCol.current?.clientHeight ?? 600) - 200)) }))} />
-                <div className="min-h-0 shrink-0" style={{ height: layout.term, maxHeight: "70%" }}>
+              {termShown ? <>
+                {!narrow && <Splitter dir="y" label={L("Cambiar la altura del terminal", "Resize the terminal")} onReset={() => patch({ term: LAYOUT.term })}
+                  onDelta={(d) => setLayout((l) => ({ ...l, term: clamp(l.term - d, 110, Math.max(160, (leftCol.current?.clientHeight ?? 600) - 200)) }))} />}
+                <div className={cx("min-h-0", narrow ? "flex-1" : "shrink-0")} style={narrow ? undefined : { height: layout.term, maxHeight: "70%" }}>
                   <Terminal runs={runs} onRun={run} onStop={stopRun} onOpen={openFile} codeEnabled={!!limits?.code_enabled} timeoutMin={limits ? Math.round(limits.timeout_s / 60) : undefined} packages={limits?.packages}
                     onClear={async () => { try { await api(`${base}/runs`, { method: "DELETE" }); await mutRuns(); } catch (e: any) { push("error", e.message); } }} actions={termActions} />
                 </div>
-              </> : (
+              </> : narrow ? null : (
                 <button type="button" onClick={() => patch({ termOpen: true })} className="flex h-9 shrink-0 items-center gap-2 border-t border-border px-3 text-xs text-muted transition hover:bg-elevated hover:text-fg">
                   <SquareTerminal className="h-3.5 w-3.5" />{L("Terminal", "Terminal")}
                   {running > 0 ? <span className="flex items-center gap-1 text-info"><Loader2 className="h-3 w-3 animate-spin" />{L(`${running} en marcha`, `${running} running`)}</span>

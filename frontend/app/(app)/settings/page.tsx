@@ -291,7 +291,7 @@ function System() {
         </div>}
         <div className="grid gap-3 sm:grid-cols-4">
           {num("agent_max_steps_workspace", L("Workspace: pasos máximos por tarea", "Workspace: max steps per task"), L("Red de seguridad; trabaja hasta terminar el plan (5–5000)", "Safety net; it works until the plan is done (5–5000)"))}
-          {num("agent_max_minutes_workspace", L("Workspace: minutos máximos por tarea", "Workspace: max minutes per task"), L("Después resume y pide «continúa» (1–1440)", "Then it summarises and asks to continue (1–1440)"))}
+          {num("agent_max_minutes_workspace", L("Workspace: minutos máximos por tarea", "Workspace: max minutes per task"), L("Tramo de trabajo: si la tarea no ha terminado, compacta y sigue sola hasta 3 tramos más (1–1440)", "Work segment: if the task is not finished it compacts and goes on by itself for up to 3 more segments (1–1440)"))}
           {num("agent_max_steps_chat", L("Chat: pasos máximos por respuesta", "Chat: max steps per answer"), "5–5000")}
           {num("agent_max_minutes_chat", L("Chat: minutos máximos por respuesta", "Chat: max minutes per answer"), "1–1440")}
         </div>

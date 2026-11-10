@@ -31,7 +31,7 @@ export const Button = forwardRef<HTMLButtonElement, BtnProps>(function Button(
           ghost: "text-muted hover:bg-elevated hover:text-fg",
           danger: "bg-danger text-white hover:bg-danger/90",
         }[variant],
-        { sm: "h-8 px-3 text-xs", md: "h-9 px-4 text-sm", lg: "h-11 px-5 text-sm", icon: "h-9 w-9" }[size],
+        { sm: "h-8 px-3 text-xs max-sm:h-10", md: "h-9 px-4 text-sm max-sm:h-10", lg: "h-11 px-5 text-sm", icon: "h-9 w-9 max-sm:h-10 max-sm:w-10" }[size],
         className,
       )}
       {...rest}
@@ -52,7 +52,7 @@ export function Card({ className, children, ...rest }: React.HTMLAttributes<HTML
 }
 export function CardHeader({ title, subtitle, actions, icon }: { title: React.ReactNode; subtitle?: React.ReactNode; actions?: React.ReactNode; icon?: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/70 px-5 py-4">
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/70 px-4 py-3.5 sm:px-5 sm:py-4">
       <div className="flex min-w-0 items-start gap-3">
         {icon && <div className="mt-0.5 rounded-lg bg-accent/10 p-2 text-accent">{icon}</div>}
         <div className="min-w-0">
@@ -65,21 +65,21 @@ export function CardHeader({ title, subtitle, actions, icon }: { title: React.Re
   );
 }
 export function CardBody({ className, children }: { className?: string; children: React.ReactNode }) {
-  return <div className={cx("p-5", className)}>{children}</div>;
+  return <div className={cx("p-4 sm:p-5", className)}>{children}</div>;
 }
 
 // ---------------------------------------------------------------- PageHeader
 export function PageHeader({ title, subtitle, actions, icon }: { title: string; subtitle?: string; actions?: React.ReactNode; icon?: React.ReactNode }) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-      <div className="flex items-center gap-3">
-        {icon && <div className="rounded-xl bg-gradient-to-br from-accent/20 to-info/10 p-2.5 text-accent">{icon}</div>}
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight text-fg sm:text-2xl">{title}</h1>
-          {subtitle && <p className="mt-1 text-sm text-muted">{subtitle}</p>}
+    <div className="mb-4 flex flex-wrap items-end justify-between gap-3 sm:mb-6 sm:gap-4">
+      <div className="flex min-w-0 items-center gap-3">
+        {icon && <div className="shrink-0 rounded-xl bg-gradient-to-br from-accent/20 to-info/10 p-2 text-accent sm:p-2.5">{icon}</div>}
+        <div className="min-w-0">
+          <h1 className="text-lg font-semibold tracking-tight text-fg sm:text-xl lg:text-2xl">{title}</h1>
+          {subtitle && <p className="mt-0.5 line-clamp-2 text-[13px] text-muted sm:mt-1 sm:line-clamp-none sm:text-sm">{subtitle}</p>}
         </div>
       </div>
-      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      {actions && <div className="flex min-w-0 flex-wrap items-center gap-2 max-sm:w-full">{actions}</div>}
     </div>
   );
 }
@@ -121,17 +121,17 @@ export function StatusBadge({ state, label }: { state?: string | null; label?: s
 // ---------------------------------------------------------------- Inputs
 export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(function Input({ className, ...rest }, ref) {
   return (
-    <input ref={ref} className={cx("h-9 w-full rounded-lg border border-border bg-bg px-3 text-sm text-fg placeholder:text-subtle transition focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:opacity-60", className)} {...rest} />
+    <input ref={ref} className={cx("h-9 w-full rounded-lg border border-border bg-bg px-3 text-sm text-fg max-sm:h-10 max-sm:text-base placeholder:text-subtle transition focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:opacity-60", className)} {...rest} />
   );
 });
 export const Textarea = forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement>>(function Textarea({ className, ...rest }, ref) {
   return (
-    <textarea ref={ref} className={cx("w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-subtle transition focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25", className)} {...rest} />
+    <textarea ref={ref} className={cx("w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg max-sm:text-base placeholder:text-subtle transition focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25", className)} {...rest} />
   );
 });
 export function Select({ className, children, ...rest }: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
-    <select className={cx("h-9 w-full rounded-lg border border-border bg-bg px-2.5 text-sm text-fg focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25", className)} {...rest}>
+    <select className={cx("h-9 w-full rounded-lg border border-border bg-bg px-2.5 text-sm text-fg max-sm:h-10 max-sm:text-base focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25", className)} {...rest}>
       {children}
     </select>
   );
@@ -186,8 +186,12 @@ export function Modal({ open, onOpenChange, title, description, children, wide }
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[80] bg-black/40 backdrop-blur-sm data-[state=open]:animate-fade-in" />
-        <Dialog.Content className={cx("fixed left-1/2 top-1/2 z-[81] max-h-[90vh] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-surface shadow-2xl focus:outline-none", wide ? "max-w-4xl" : "max-w-lg")}>
-          <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+        <Dialog.Content className={cx("fixed z-[81] flex flex-col overflow-hidden border border-border bg-surface shadow-2xl focus:outline-none",
+          // phones: a bottom sheet that never grows past the visible screen; from sm up: centred dialog
+          "inset-x-0 bottom-0 max-h-[92dvh] rounded-t-2xl border-b-0 sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:max-h-[90dvh] sm:w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl sm:border-b",
+          wide ? "sm:max-w-4xl" : "sm:max-w-lg")}>
+          <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-border sm:hidden" aria-hidden />
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border px-4 py-3 sm:px-5 sm:py-4">
             <div>
               <Dialog.Title className="text-base font-semibold text-fg">{title}</Dialog.Title>
               {description && <Dialog.Description className="mt-1 text-xs text-muted">{description}</Dialog.Description>}
@@ -196,7 +200,7 @@ export function Modal({ open, onOpenChange, title, description, children, wide }
               <Button variant="ghost" size="icon" aria-label={t("common.close")}><X className="h-4 w-4" /></Button>
             </Dialog.Close>
           </div>
-          <div className="p-5">{children}</div>
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-5">{children}</div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -307,18 +311,21 @@ export function Code({ children, className }: { children: string; className?: st
   );
 }
 
-export function Table({ head, children, className }: { head: React.ReactNode[]; children: React.ReactNode; className?: string }) {
+// Columns that can be dropped on phones (`hide`: 1-based column numbers). Literal class names so Tailwind generates them.
+const HIDE_COL = ["", "max-md:[&_tr>*:nth-child(1)]:hidden", "max-md:[&_tr>*:nth-child(2)]:hidden", "max-md:[&_tr>*:nth-child(3)]:hidden", "max-md:[&_tr>*:nth-child(4)]:hidden",
+  "max-md:[&_tr>*:nth-child(5)]:hidden", "max-md:[&_tr>*:nth-child(6)]:hidden", "max-md:[&_tr>*:nth-child(7)]:hidden", "max-md:[&_tr>*:nth-child(8)]:hidden", "max-md:[&_tr>*:nth-child(9)]:hidden"];
+export function Table({ head, children, className, hide }: { head: React.ReactNode[]; children: React.ReactNode; className?: string; hide?: number[] }) {
   return (
-    <div className={cx("overflow-x-auto", className)}>
-      <table className="w-full text-left text-sm">
-        <thead><tr className="border-b border-border text-xs text-muted">{head.map((h, i) => <th key={i} className="whitespace-nowrap px-4 py-2.5 font-medium">{h}</th>)}</tr></thead>
+    <div className={cx("overflow-x-auto overscroll-x-contain", className)}>
+      <table className={cx("w-full text-left text-sm", hide?.map((i) => HIDE_COL[i]))}>
+        <thead><tr className="border-b border-border text-xs text-muted">{head.map((h, i) => <th key={i} className="whitespace-nowrap px-3 py-2.5 font-medium sm:px-4">{h}</th>)}</tr></thead>
         <tbody className="divide-y divide-border/60">{children}</tbody>
       </table>
     </div>
   );
 }
 export function Td({ children, className }: { children?: React.ReactNode; className?: string }) {
-  return <td className={cx("px-4 py-2.5 align-middle text-fg", className)}>{children}</td>;
+  return <td className={cx("px-3 py-2.5 align-middle text-fg sm:px-4", className)}>{children}</td>;
 }
 
 export function Confirm({ open, onOpenChange, title, text, onConfirm, danger, busy }: { open: boolean; onOpenChange: (o: boolean) => void; title: string; text: string; onConfirm: () => void; danger?: boolean; busy?: boolean }) {

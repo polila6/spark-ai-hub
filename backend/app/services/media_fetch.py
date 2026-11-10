@@ -148,7 +148,27 @@ def search_images(query: str, source: str = "auto", limit: int = 6, lang: str = 
             uniq.append(r)
     if not uniq and errors:
         raise MediaError("No se pudo buscar imágenes (" + "; ".join(errors) + ")")
+    for r in uniq:
+        r["match"], r["hits"] = relevance(query, r)
+    uniq.sort(key=lambda r: -r["hits"])  # (stable: equal matches keep the source order Wikipedia → Commons → Openverse)
     return uniq[:limit]
+
+
+def _fold(text: str) -> str:
+    import unicodedata
+
+    return "".join(c for c in unicodedata.normalize("NFD", text.lower()) if unicodedata.category(c) != "Mn")
+
+
+def relevance(query: str, r: dict) -> tuple[str, int]:
+    """How well a candidate's title/description/source page match the words of the query: ("alta"|"media"|"baja", hits)."""
+    words = {w for w in re.findall(r"[a-z0-9]{3,}", _fold(query))}
+    if not words:
+        return "media", 0
+    hay = _fold(" ".join(str(r.get(k) or "") for k in ("title", "description", "source", "page_url")))
+    hits = sum(1 for w in words if w in hay)
+    share = hits / len(words)
+    return ("alta" if share >= 0.6 else "media" if share >= 0.3 else "baja"), hits
 
 
 def process_image(body: bytes, ct: str, url: str = "", max_px: int = 2000, fmt: str | None = None) -> dict:

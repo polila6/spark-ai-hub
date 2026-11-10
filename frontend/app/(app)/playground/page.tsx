@@ -69,7 +69,7 @@ const MD_COMPONENTS = {
 const toolLabel = (n: string): string | undefined => ({
   run_code: tr("Código ejecutado", "Code run"), canvas_write: tr("Lienzo", "Canvas"), canvas_edit: tr("Lienzo editado", "Canvas edited"),
   deep_research: tr("Investigación a fondo", "Deep research"), schedule_task: tr("Tarea programada", "Task scheduled"),
-  web_search: tr("Búsqueda en internet", "Web search"), fetch_url: tr("Página web", "Web page"), fetch_urls: tr("Varias páginas", "Several pages"), http_request: tr("API", "API"), crawl_site: tr("Rastreo de sitio", "Site crawl"), search_images: tr("Buscando imágenes", "Searching images"), download_file: tr("Descargando archivo", "Downloading file"), view_image: tr("Mirando la imagen", "Looking at the image"), delegate_task: tr("Agente", "Agent"),
+  web_search: tr("Búsqueda en internet", "Web search"), fetch_url: tr("Página web", "Web page"), fetch_urls: tr("Varias páginas", "Several pages"), http_request: tr("API", "API"), crawl_site: tr("Rastreo de sitio", "Site crawl"), search_images: tr("Buscando imágenes", "Searching images"), extract_images: tr("Imágenes de una página", "Page images"), search_papers: tr("Buscando artículos", "Searching papers"), doi_to_bibtex: tr("Referencias BibTeX", "BibTeX references"), download_file: tr("Descargando archivo", "Downloading file"), view_image: tr("Mirando la imagen", "Looking at the image"), delegate_task: tr("Agente", "Agent"),
   generate_image: tr("Imagen generada", "Image generated"), edit_image: tr("Imagen editada", "Image edited"),
   search_knowledge: tr("Búsqueda en documentos", "Document search"), read_document: tr("Documento leído", "Document read"),
   query_data: tr("Consulta de datos", "Data query"), describe_data: tr("Datos analizados", "Data analysed"),
@@ -475,10 +475,10 @@ function Chat() {
   const queuedCount = msgs.filter((m) => m.queued === "queued").length;
   const newChat = () => { abort.current?.abort(); viewing.current = null; setCanvas(null); setCid(null); setMsgs([]); setAtts([]); setErr(null); setStatus(null); setCtxUsed(null); setEditing(null); setPreferredAgent(""); };
   return (
-    <div className={cx("grid h-[calc(100dvh-10.5rem)] gap-4 lg:h-[calc(100vh-7.5rem)]", canvas ? "lg:grid-cols-[230px_minmax(0,1fr)_minmax(0,1.1fr)]" : options ? "lg:grid-cols-[230px_minmax(0,1fr)] xl:grid-cols-[230px_minmax(0,1fr)_280px]" : "lg:grid-cols-[230px_minmax(0,1fr)]")}>
+    <div className={cx("h-fill grid min-w-0 gap-3 xl:gap-4", canvas ? "lg:grid-cols-[clamp(10rem,16vw,14.5rem)_minmax(0,1fr)_minmax(0,1fr)] xl:grid-cols-[clamp(12rem,15vw,14.5rem)_minmax(0,1fr)_minmax(0,1.1fr)]" : "lg:grid-cols-[clamp(11rem,19vw,14.5rem)_minmax(0,1fr)] 2xl:grid-cols-[14.5rem_minmax(0,1fr)]", !canvas && options && "min-[1700px]:grid-cols-[14.5rem_minmax(0,1fr)_280px]")}>
       <h1 className="sr-only">{L("Chat", "Chat")}</h1>
       {drawer && <div className="fixed inset-0 z-[60] bg-black/40 lg:hidden" onClick={() => setDrawer(false)} />}
-      <Card className={cx("flex-col overflow-hidden lg:flex", drawer ? "fixed inset-y-0 left-0 z-[61] flex w-[85vw] max-w-sm rounded-none" : "hidden")} onClick={(e) => { if (!selecting && (e.target as HTMLElement).closest("li button")) setDrawer(false); }}>
+      <Card className={cx("min-h-0 flex-col overflow-hidden lg:flex", drawer ? "fixed inset-y-0 left-0 z-[61] flex w-[85vw] max-w-sm rounded-none pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]" : "hidden")} onClick={(e) => { if (!selecting && (e.target as HTMLElement).closest("li button")) setDrawer(false); }}>
         <div className="space-y-2 border-b border-border p-3">
           <Button variant="primary" className="w-full" onClick={newChat}><MessageSquarePlus className="h-4 w-4" />{t("play.new")}</Button>
           <div className="flex items-center gap-1.5">
@@ -528,13 +528,13 @@ function Chat() {
           }} />
       </Card>
 
-      <Card className={cx("relative flex min-h-0 flex-col overflow-hidden", drag && "ring-2 ring-accent")}
+      <Card className={cx("relative flex min-h-0 min-w-0 flex-col overflow-hidden max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:shadow-none", drag && "ring-2 ring-accent")}
         onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
         onDrop={(e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); }}>
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border px-2 py-1.5 sm:gap-2 sm:px-3 sm:py-2">
           <Button size="icon" variant="ghost" className="lg:hidden" aria-label={L("Conversaciones", "Conversations")} onClick={() => setDrawer(true)}><MessagesSquare className="h-5 w-5 text-accent" /></Button>
           <Button size="sm" variant="ghost" className="lg:hidden" onClick={newChat}><MessageSquarePlus className="h-4 w-4" /></Button>
-          <Select aria-label={t("common.model")} className="h-8 w-auto min-w-0 max-w-[60vw] border-transparent bg-transparent text-sm font-medium hover:bg-elevated sm:max-w-[380px]" value={model} onChange={(e) => setModel(e.target.value)}>
+          <Select aria-label={t("common.model")} className="h-8 w-auto min-w-0 flex-1 border-transparent bg-transparent text-sm font-medium hover:bg-elevated max-sm:!h-10 sm:max-w-[380px] sm:flex-none" value={model} onChange={(e) => setModel(e.target.value)}>
             {chatModels.length === 0 && <option value="">{t("play.select_model")}</option>}
             {chatModels.map((m: any) => <option key={m.id} value={m.alias}>{m.alias === generalModel ? "★ " : ""}{m.alias}{m.capabilities.includes("vision") ? " 👁" : ""}{m.tools_enabled ? " 🛠" : ""}{m.runtime ? ` · ${L("en memoria", "loaded")}` : ` · ${L("hay que cargarlo", "needs loading")}`}</option>)}
           </Select>
@@ -550,8 +550,8 @@ function Chat() {
             <Tip text={L("Opciones: instrucciones, temperatura, longitud, prompts guardados y atajos", "Options: instructions, temperature, length, saved prompts and shortcuts")}><Button size="icon" variant={options ? "outline" : "ghost"} aria-label={L("Opciones del chat", "Chat options")} aria-expanded={options} onClick={() => setOptions(!options)}><SlidersHorizontal className="h-4 w-4" /></Button></Tip>
           </div>
         </div>
-        <div ref={listRef} className="flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-3xl space-y-7 px-4 py-6 sm:px-6">
+        <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <div className="mx-auto w-full max-w-3xl space-y-6 px-3 py-4 sm:space-y-7 sm:px-6 sm:py-6">
           {msgs.length === 0 && (
             <div className="pt-[6vh]">
               <p className="mb-6 text-center text-2xl font-semibold tracking-tight">{L("¿En qué trabajamos hoy?", "What are we working on today?")}</p>
@@ -601,7 +601,7 @@ function Chat() {
           </div>
         </div>
         <JumpToEnd show={away} onClick={jump} />
-        <form className="px-3 pb-3 pt-1 sm:px-6" onSubmit={(e) => { e.preventDefault(); send(); }}>
+        <form className="shrink-0 px-2 pb-2 pt-1 sm:px-6 sm:pb-3" onSubmit={(e) => { e.preventDefault(); send(); }}>
           <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-surface shadow-sm transition-colors focus-within:border-accent/60">
           {atts.length > 0 && <div className="flex flex-wrap gap-1.5 px-3 pt-3">{atts.map((a) => <AttachmentChip key={a.file_id} a={a} onRemove={() => setAtts((x) => x.filter((y) => y.file_id !== a.file_id))} />)}</div>}
             <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
@@ -645,11 +645,11 @@ function Chat() {
         {drag && <div className="pointer-events-none absolute inset-0 grid place-items-center bg-accent/10 text-sm font-medium text-accent">{L("Suelta para adjuntar", "Drop to attach")}</div>}
       </Card>
 
-      {canvas && <Card className="fixed inset-0 z-[62] flex min-h-0 flex-col overflow-hidden rounded-none lg:static lg:z-auto lg:rounded-2xl">
+      {canvas && <Card className="fixed inset-0 z-[62] flex min-h-0 min-w-0 flex-col overflow-hidden rounded-none pb-[env(safe-area-inset-bottom)] lg:static lg:pb-0 lg:z-auto lg:rounded-2xl">
         <CanvasPanel id={canvas.id} version={canvas.v} onClose={() => setCanvas(null)} busy={!!status} onAsk={(text) => { send(text); }} />
       </Card>}
-      {options && <div className={cx("fixed inset-0 z-[60] bg-black/30", !canvas && "xl:hidden")} onClick={() => setOptions(false)} />}
-      <Card className={cx("overflow-y-auto p-4", !options ? "hidden" : cx("fixed inset-y-0 right-0 z-[61] block w-[min(340px,92vw)] rounded-none", !canvas && "xl:static xl:z-auto xl:w-auto xl:rounded-2xl"))}>
+      {options && <div className={cx("fixed inset-0 z-[60] bg-black/30", !canvas && "min-[1700px]:hidden")} onClick={() => setOptions(false)} />}
+      <Card className={cx("overflow-y-auto p-4", !options ? "hidden" : cx("fixed inset-y-0 right-0 z-[61] block w-[min(340px,92vw)] rounded-none pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))]", !canvas && "min-[1700px]:static min-[1700px]:z-auto min-[1700px]:w-auto min-[1700px]:rounded-2xl min-[1700px]:p-4"))}>
         <div className="space-y-4">
           <div className="flex items-center justify-between"><span className="text-sm font-semibold">{L("Opciones del chat", "Chat options")}</span><Button size="icon" variant="ghost" aria-label={t("common.close")} onClick={() => setOptions(false)}><X className="h-4 w-4" /></Button></div>
           <Field label={t("play.system")} hint={L("Se suma a tus instrucciones personales y a las del proyecto", "Added to your personal and project instructions")}><Textarea rows={5} value={system} onChange={(e) => setSystem(e.target.value)} /></Field>

@@ -248,7 +248,8 @@ def decide(ask: Ask, complete: Callable[[list[dict]], str] | None = None) -> Dec
     def finish(want: set[str], source: str, reason: str) -> Decision:
         use = forced | (want & candidates)
         if ask.workspace:  # a workspace task runs on its commands and delegates: none of that is taken away mid-task
-            use |= {c for c in ("code", "skills", "agents") if c in avail and allow[c] != "off"}
+            # (the web too: a report needs real pictures and references, and a bare «continúa» must not switch it off)
+            use |= {c for c in ("code", "skills", "agents", "web") if c in avail and allow[c] != "off"}
         d.think = "think" in use
         for c in ("docs", "web", "research", "skills", "agents", "code"):
             setattr(d, c, c in use)

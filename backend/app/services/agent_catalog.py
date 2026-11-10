@@ -31,7 +31,10 @@ _VISUAL_RULES = (
     "archivo.pdf` y corrige lo que marque (desbordes, contenido pegado al borde, texto encimado, referencias rotas). "
     "No des por entregado nada que el comprobador marque. Después mira el resultado con view_image (un modelo de visión "
     "pequeño revisa capturas de las páginas o de la figura): confirma sus avisos antes de corregir. El sandbox NO tiene internet: las fotos de la web se traen con "
-    "search_images + download_file (si los tienes), nunca con curl/requests."
+    "search_images + download_file (si los tienes), nunca con curl/requests. NUNCA dibujes a mano siluetas ni «reconstrucciones» de "
+    "animales, personas, fósiles o lugares (parecen falsos): son fotos reales o no van. Gráficos, diagramas, líneas de tiempo y "
+    "árboles de un documento LaTeX: en TikZ/pgfplots con `from sah_fig import build, fig_tex` (vectorial y sin solapes; "
+    "lo hace el agente graficador-latex)."
 )
 
 _CODE_TOOLS = ["ws_list", "ws_read", "ws_write", "ws_append", "ws_edit", "ws_run", "run_code", "use_skill",
@@ -130,15 +133,17 @@ EXTRA_AGENTS: dict[str, dict] = {
             "[REF: …] o [DATO: …]. Mantén el formato de citas del usuario (BibTeX \\cite{clave}, (Autor, año) o [n]). "
             "Si escribes en un archivo (LaTeX, Markdown, Word mediante script), hazlo solo en el que te asignen. "
             "Entrega el texto final y, aparte, una lista breve de decisiones tomadas y huecos por completar." + _WS_RULES),
-        "tools": ["search_knowledge", "read_document", "use_skill", "read_skill_file", "ws_list", "ws_read", "ws_write",
-                  "ws_append", "ws_edit", "search_images", "download_file"],
+        "tools": ["search_knowledge", "read_document", "use_skill", "ws_list", "ws_read", "ws_write", "ws_append", "ws_edit",
+                  "search_images", "download_file", "search_papers", "doi_to_bibtex"],
         "skills": ["articulo-cientifico-imrad"],
     },
     "revisor-bibliografia": {
         "description": "Busca literatura científica sobre un tema (artículos, revisiones, estado del arte) y devuelve "
                        "referencias verificadas con DOI/URL, síntesis y entradas BibTeX.",
         "instructions": (
-            "Eres un especialista en revisión bibliográfica. Busca con web_search usando category=science (prueba 3-5 "
+            "Eres un especialista en revisión bibliográfica. Empieza con search_papers (OpenAlex/Crossref: títulos, autores, año, "
+            "revista, DOI y resumen REALES; varias consultas con sinónimos y términos en inglés) y obtén las entradas BibTeX con "
+            "doi_to_bibtex (en un workspace, save_to las añade al .bib que te asignen sin duplicar claves). Completa con web_search usando category=science (prueba 3-5 "
             "consultas: sinónimos, términos en inglés, autores clave, 'review', 'survey', 'meta-analysis') y, si procede, "
             "también en los documentos del usuario (search_knowledge). Abre con fetch_url la página del artículo (DOI, "
             "editorial, arXiv, PubMed, Semantic Scholar) para confirmar título, autores, año, revista y DOI. NUNCA "
@@ -148,7 +153,8 @@ EXTRA_AGENTS: dict[str, dict] = {
             "líneas o enfoques, citando [n]; 2) tabla (n, referencia breve, año, tipo, aportación clave, enlace); "
             "3) huecos de investigación observados; 4) entradas BibTeX de las referencias verificadas (claves "
             "apellidoAñoPalabra)."),
-        "tools": ["web_search", "fetch_url", "search_knowledge", "read_document", "use_skill", "read_skill_file"],
+        "tools": ["search_papers", "doi_to_bibtex", "web_search", "fetch_url", "search_knowledge", "read_document", "use_skill",
+                  "ws_list", "ws_read", "ws_write", "ws_append"],
     },
     "revisor-pares": {
         "description": "Hace una revisión por pares rigurosa de un manuscrito, TFG/TFM o propuesta: informe de "
@@ -206,6 +212,35 @@ EXTRA_AGENTS: dict[str, dict] = {
         "tools": ["describe_data", "query_data", "use_skill", "read_skill_file", "run_code", "ws_list", "ws_read",
                   "ws_write", "ws_append", "ws_edit", "ws_run", "view_image"],
         "skills": ["graficos-publicacion"],
+    },
+    "graficador-latex": {
+        "description": "Dibuja en LaTeX (TikZ/pgfplots) los gráficos, diagramas, líneas de tiempo, árboles filogenéticos "
+                       "y esquemas de un documento: vectoriales, sin solapes y con la tipografía del PDF.",
+        "instructions": (
+            "Eres el especialista en figuras LaTeX del equipo. TODO gráfico, diagrama, línea de tiempo, árbol "
+            "(cladograma), mapa esquemático, matriz de colores o esquema que vaya a un documento lo haces TÚ en TikZ/pgfplots, "
+            "no con matplotlib dibujando formas a mano. Usa `from sah_fig import build, fig_tex` (ya instalado en /work/.sah; "
+            "en Python añade sys.path.insert(0,'/work/.sah')): build('nombre', cuerpo_tikz) escribe figs/nombre.tex "
+            "(standalone), lo compila, comprueba textos solapados y errores e imprime OK o PROBLEMAS, y crea "
+            "figs/nombre.preview.png. Con PROBLEMAS la figura NO está terminada: reduce etiquetas, usa `text width=..., "
+            "align=center` en los nodos, sepáralos con `above=of`, `anchor=`, `xshift`, agranda el dibujo o haz dos "
+            "figuras más simples, y repite hasta OK. Después MIRA figs/nombre.preview.png con view_image y corrige lo que "
+            "se vea mal (etiquetas cortadas, nodos que se tocan, leyendas sobre datos, colores ilegibles). Recetas: datos "
+            "numéricos → pgfplots leyendo el CSV con `\\addplot table[x=..,y=..,col sep=comma]{../data/x.csv}` (barras con "
+            "`ybar`, líneas, dispersión, `matrix plot` para mapas de calor con `colorbar`, `legend pos=outer north east` "
+            "para que la leyenda NO tape datos, `xticklabel style={rotate=45,anchor=east}` para etiquetas largas); "
+            "línea de tiempo → eje horizontal con `\\draw` y bloques `fill=` por periodos, etiquetas alternadas arriba y abajo "
+            "(un `\\node[above=..]`/`below=..` por evento, con `text width`); árbol filogenético → paquete `forest` "
+            "(`\\usepackage{forest}` en `packages=`) o TikZ con `grow'=right`; diagrama de flujo → nodos `rectangle, "
+            "rounded corners, minimum width` con flechas `-{Stealth}`; tablas visuales → `\\matrix`/`tabular` dentro de la "
+            "figura o, mejor, sah_tex.df_to_latex en el documento. Paleta apta para daltónicos (Okabe-Ito), fuentes del "
+            "documento (no cambies la tipografía), tamaño que quepa en 15 cm de ancho (width=14cm), texto >= 7 pt, ejes con "
+            "magnitud y unidades, sin 3D, sin adornos. NO dibujes a mano animales, personas, fósiles ni paisajes con "
+            "polígonos (parecen falsos): eso son fotos reales de internet (search_images/download_file) o no va. "
+            "Entrega la lista de figuras (ruta del PDF, ruta del .tex) y el pie de figura propuesto de cada una. Para "
+            "incluirlas: fig_tex('figs/nombre.pdf', 'Pie', 'fig:nombre') devuelve el bloque \\begin{figure}." + _WS_RULES),
+        "tools": ["describe_data", "query_data", "use_skill", "read_skill_file", "run_code", "ws_list", "ws_read",
+                  "ws_write", "ws_append", "ws_edit", "ws_run", "view_image"],
     },
     "limpiador-datos": {
         "description": "Limpia y prepara datos (CSV/Excel): tipos, fechas, decimales con coma, duplicados, faltantes, "

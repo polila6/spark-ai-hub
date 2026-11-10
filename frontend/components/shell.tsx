@@ -60,7 +60,8 @@ const GROUPS: { key: string; label?: [string, string]; items: Item[] }[] = [
   ] },
 ];
 
-function Nav({ onNavigate }: { onNavigate?: () => void }) {
+/** `rail`: icons only (laptops 1024-1279 px); the labels come back from xl up. */
+function Nav({ onNavigate, rail }: { onNavigate?: () => void; rail?: boolean }) {
   const path = usePathname();
   const { t } = useI18n();
   const L = useL();
@@ -69,24 +70,26 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
   const { data: pending } = useSWR(isManager(me) ? "/api/v1/downloads?pending=true" : null, { refreshInterval: 30000 });
   const { data: signups } = useSWR(isManager(me) ? "/api/v1/users?status=pending" : null, { refreshInterval: 30000 });
   return (
-    <nav aria-label="Main" className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
+    <nav aria-label="Main" className={cx("flex-1 overflow-y-auto overscroll-contain", rail ? "space-y-2 px-2 py-3 xl:space-y-5 xl:px-3 xl:py-4" : "space-y-5 px-3 py-3")}>
       {GROUPS.map((g) => (
         <div key={g.key || "root"}>
-          {g.key && <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-wider text-subtle">{g.label ? L(...g.label) : t(g.key)}</p>}
+          {g.key && <p className={cx("mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-wider text-subtle", rail && "hidden xl:block")}>{g.label ? L(...g.label) : t(g.key)}</p>}
+          {rail && g.key && <div className="mx-2 mb-2 border-t border-border xl:hidden" />}
           <ul className="space-y-0.5">
             {g.items.filter((i) => !i.admin || isManager(me)).map((i) => {
               const active = i.href === "/" ? path === "/" : path.startsWith(i.href);
               const Icon = i.icon;
               return (
                 <li key={i.href}>
-                  <Link href={i.href} onClick={onNavigate} aria-current={active ? "page" : undefined}
-                    className={cx("group flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition",
+                  <Link href={i.href} onClick={onNavigate} aria-current={active ? "page" : undefined} title={i.label ? L(...i.label) : t(i.key)}
+                    className={cx("group relative flex items-center gap-2.5 rounded-lg text-sm transition",
+                      rail ? "justify-center px-0 py-2 xl:justify-start xl:px-3" : "px-3 py-2.5 lg:py-2",
                       active ? "bg-accent/12 font-medium text-fg" : "text-muted hover:bg-elevated hover:text-fg")}>
-                    <Icon className={cx("h-4 w-4 shrink-0", active ? "text-accent" : "text-subtle group-hover:text-muted")} />
-                    <span className="truncate">{i.label ? L(...i.label) : t(i.key)}</span>
-                    {i.href === "/jobs" && jobs?.total > 0 && <Badge tone="info" className="ml-auto">{jobs.total}</Badge>}
-                    {i.href === "/requests" && pending?.length > 0 && <Badge tone="warn" className="ml-auto">{pending.length}</Badge>}
-                    {i.href === "/users" && signups?.length > 0 && <Badge tone="warn" className="ml-auto">{signups.length}</Badge>}
+                    <Icon className={cx("h-[18px] w-[18px] shrink-0 lg:h-4 lg:w-4", rail && "lg:h-[18px] lg:w-[18px] xl:h-4 xl:w-4", active ? "text-accent" : "text-subtle group-hover:text-muted")} />
+                    <span className={cx("truncate", rail && "hidden xl:inline")}>{i.label ? L(...i.label) : t(i.key)}</span>
+                    {i.href === "/jobs" && jobs?.total > 0 && <Badge tone="info" className={cx("ml-auto", rail && "absolute right-0.5 top-0.5 !px-1 !py-0 text-[9px] xl:static")}>{jobs.total}</Badge>}
+                    {i.href === "/requests" && pending?.length > 0 && <Badge tone="warn" className={cx("ml-auto", rail && "absolute right-0.5 top-0.5 !px-1 !py-0 text-[9px] xl:static")}>{pending.length}</Badge>}
+                    {i.href === "/users" && signups?.length > 0 && <Badge tone="warn" className={cx("ml-auto", rail && "absolute right-0.5 top-0.5 !px-1 !py-0 text-[9px] xl:static")}>{signups.length}</Badge>}
                   </Link>
                 </li>
               );
@@ -98,14 +101,14 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-function Brand() {
+function Brand({ rail }: { rail?: boolean }) {
   const { t } = useI18n();
   return (
-    <Link href="/" className="flex items-center gap-2.5 px-5 py-4">
+    <Link href="/" className={cx("flex items-center gap-2.5", rail ? "justify-center px-2 py-3 xl:justify-start xl:px-5 xl:py-4" : "px-5 py-4")}>
       <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-accent to-emerald-600 text-white shadow-sm"><Cpu className="h-4 w-4" /></div>
-      <div className="leading-tight">
-        <p className="text-sm font-semibold text-fg">{t("app.name")}</p>
-        <p className="text-[10px] text-subtle">{t("app.tagline")}</p>
+      <div className={cx("min-w-0 leading-tight", rail && "hidden xl:block")}>
+        <p className="truncate text-sm font-semibold text-fg">{t("app.name")}</p>
+        <p className="truncate text-[10px] text-subtle">{t("app.tagline")}</p>
       </div>
     </Link>
   );
@@ -118,13 +121,13 @@ function Bell_() {
   return (
     <DM.Root onOpenChange={(o) => { if (o) mutate(); }}>
       <DM.Trigger asChild>
-        <button aria-label={L("Notificaciones", "Notifications")} className="relative grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-elevated hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
+        <button aria-label={L("Notificaciones", "Notifications")} className="relative grid h-10 w-10 place-items-center rounded-lg text-muted sm:h-9 sm:w-9 hover:bg-elevated hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
           <Bell className="h-4 w-4" />
           {data?.unread > 0 && <span className="absolute right-1.5 top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-danger px-1 text-[9px] font-bold text-white">{data.unread > 9 ? "9+" : data.unread}</span>}
         </button>
       </DM.Trigger>
       <DM.Portal>
-        <DM.Content align="end" sideOffset={6} className="z-[90] max-h-[70vh] w-[340px] overflow-y-auto rounded-xl border border-border bg-surface p-1 shadow-card">
+        <DM.Content align="end" sideOffset={6} className="z-[90] max-h-[70vh] w-[min(340px,calc(100vw-1rem))] overflow-y-auto rounded-xl border border-border bg-surface p-1 shadow-card">
           <div className="flex items-center justify-between px-3 py-2">
             <span className="text-sm font-semibold">{L("Notificaciones", "Notifications")}</span>
             {data?.unread > 0 && <button className="text-xs text-accent" onClick={async () => { await api("/api/v1/notifications/read-all", { method: "POST" }); mutate(); }}>{L("Marcar todo como leído", "Mark all read")}</button>}
@@ -181,7 +184,7 @@ function ChatActivity() {
         </button>
       </DM.Trigger>
       <DM.Portal>
-        <DM.Content align="end" sideOffset={6} className="z-[90] w-[340px] rounded-xl border border-border bg-surface p-1 shadow-card">
+        <DM.Content align="end" sideOffset={6} collisionPadding={8} className="z-[90] w-[min(340px,calc(100vw-1rem))] rounded-xl border border-border bg-surface p-1 shadow-card">
           <p className="px-2.5 py-1.5 text-[11px] text-muted">{L("Siguen trabajando aunque cambies de página. Ábrelos para ver el progreso o páralos.", "They keep working when you change page. Open them to see progress, or stop them.")}</p>
           {data.map((t: any) => (
             <div key={t.conversation_id} className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-elevated">
@@ -223,30 +226,37 @@ function UserMenu() {
   const { theme, setTheme } = useTheme();
   const { setPrefs } = useMe();
   const router = useRouter();
+  const L = useL();
+  const toggleLang = () => { const l = lang === "es" ? "en" : "es"; setLang(l); setPrefs({ language: l }).catch(() => {}); };
+  const cycleTheme = () => setTheme(theme === "dark" ? "light" : theme === "light" ? "system" : "dark");
+  const themeIcon = theme === "dark" ? <Moon className="h-4 w-4" /> : theme === "light" ? <Sun className="h-4 w-4" /> : <Monitor className="h-4 w-4" />;
   if (!me) return <Skeleton className="h-8 w-28" />;
   return (
     <div className="flex items-center gap-1">
       <ChatActivity />
-      <MemoryPill />
+      <div className="hidden sm:block"><MemoryPill /></div>
       <Bell_ />
-      <Button variant="ghost" size="sm" aria-label={t("settings.language")} onClick={() => { const l = lang === "es" ? "en" : "es"; setLang(l); setPrefs({ language: l }).catch(() => {}); }}>
+      <Button variant="ghost" size="sm" className="max-sm:hidden" aria-label={t("settings.language")} onClick={toggleLang}>
         {lang.toUpperCase()}
       </Button>
-      <Button variant="ghost" size="icon" aria-label={t("settings.theme")} onClick={() => setTheme(theme === "dark" ? "light" : theme === "light" ? "system" : "dark")}>
-        {theme === "dark" ? <Moon className="h-4 w-4" /> : theme === "light" ? <Sun className="h-4 w-4" /> : <Monitor className="h-4 w-4" />}
+      <Button variant="ghost" size="icon" className="max-sm:hidden" aria-label={t("settings.theme")} onClick={cycleTheme}>
+        {themeIcon}
       </Button>
       <DM.Root>
         <DM.Trigger asChild>
-          <button className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
+          <button aria-label={me.display_name} className="flex h-10 items-center gap-2 rounded-lg px-1.5 text-sm hover:bg-elevated sm:h-auto sm:px-2 sm:py-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
             <span className="grid h-7 w-7 place-items-center rounded-full bg-accent/15 text-xs font-semibold text-accent">{me.display_name?.[0]?.toUpperCase() ?? "?"}</span>
             <span className="hidden text-left leading-tight sm:block"><span className="block text-xs font-medium text-fg">{me.display_name}</span><span className="block text-[10px] text-subtle">{me.role}</span></span>
           </button>
         </DM.Trigger>
         <DM.Portal>
-          <DM.Content align="end" sideOffset={6} className="z-[90] min-w-[180px] rounded-xl border border-border bg-surface p-1 shadow-card">
-            <DM.Item onSelect={() => router.push("/settings")} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm text-fg outline-none data-[highlighted]:bg-elevated"><Settings className="h-4 w-4" />{t("nav.settings")}</DM.Item>
+          <DM.Content align="end" sideOffset={6} collisionPadding={8} className="z-[90] min-w-[200px] rounded-xl border border-border bg-surface p-1 shadow-card">
+            <div className="px-3 py-2 sm:hidden"><p className="text-sm font-medium text-fg">{me.display_name}</p><p className="text-[11px] text-subtle">{me.role}</p></div>
+            <DM.Item onSelect={toggleLang} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-fg outline-none data-[highlighted]:bg-elevated sm:hidden"><span className="grid h-4 w-4 place-items-center text-[10px] font-bold">{lang.toUpperCase()}</span>{L("Cambiar idioma", "Switch language")}</DM.Item>
+            <DM.Item onSelect={cycleTheme} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-fg outline-none data-[highlighted]:bg-elevated sm:hidden">{themeIcon}{t("settings.theme")}</DM.Item>
+            <DM.Item onSelect={() => router.push("/settings")} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-fg outline-none data-[highlighted]:bg-elevated sm:py-2"><Settings className="h-4 w-4" />{t("nav.settings")}</DM.Item>
             <DM.Item onSelect={async () => { await api("/api/v1/auth/logout", { method: "POST" }).catch(() => {}); window.location.href = "/login"; }}
-              className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm text-danger outline-none data-[highlighted]:bg-danger/10"><LogOut className="h-4 w-4" />{t("auth.logout")}</DM.Item>
+              className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-danger outline-none sm:py-2 data-[highlighted]:bg-danger/10"><LogOut className="h-4 w-4" />{t("auth.logout")}</DM.Item>
           </DM.Content>
         </DM.Portal>
       </DM.Root>
@@ -267,26 +277,41 @@ function MobileTabs({ onMore }: { onMore: () => void }) {
     : [{ href: "/playground", label: L("Chat", "Chat"), icon: MessagesSquare }, { href: "/projects", label: L("Proyectos", "Projects"), icon: FolderKanban },
        { href: "/files", label: L("Archivos", "Files"), icon: FolderOpen }, { href: "/image", label: L("Imágenes", "Images"), icon: ImageIcon }];
   return (
-    <nav aria-label="Mobile" className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-5 border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
+    <nav aria-label="Mobile" className="mobile-tabs fixed inset-x-0 bottom-0 z-50 grid grid-cols-5 border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
       {items.map((i) => {
         const active = path.startsWith(i.href);
         const Icon = i.icon;
         return (
-          <Link key={i.href} href={i.href} className={cx("relative flex flex-col items-center gap-0.5 py-2 text-[10px]", active ? "text-accent" : "text-muted")}>
+          <Link key={i.href} href={i.href} className={cx("relative flex min-h-[3.5rem] flex-col items-center justify-center gap-0.5 text-[10px] font-medium active:bg-elevated", active ? "text-accent" : "text-muted")}>
             <Icon className="h-5 w-5" />{i.label}
-            {!!i.badge && <span className="absolute right-[22%] top-1 grid h-4 min-w-4 place-items-center rounded-full bg-danger px-1 text-[9px] font-bold text-white">{i.badge}</span>}
+            {!!i.badge && <span className="absolute right-[22%] top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-danger px-1 text-[9px] font-bold text-white">{i.badge}</span>}
           </Link>
         );
       })}
-      <button onClick={onMore} className="flex flex-col items-center gap-0.5 py-2 text-[10px] text-muted"><Menu className="h-5 w-5" />{L("Más", "More")}</button>
+      <button onClick={onMore} className="flex min-h-[3.5rem] flex-col items-center justify-center gap-0.5 text-[10px] font-medium text-muted active:bg-elevated"><Menu className="h-5 w-5" />{L("Más", "More")}</button>
     </nav>
   );
+}
+
+/** While a text field has focus on a phone the on-screen keyboard is up: hide the bottom tab bar so the composer is not squeezed. */
+function useKeyboardFlag() {
+  useEffect(() => {
+    const root = document.documentElement;
+    const isField = (el: EventTarget | null) => el instanceof HTMLElement && (el.matches("textarea, select") || (el.matches("input") && !["checkbox", "radio", "button", "submit", "file", "range"].includes((el as HTMLInputElement).type)));
+    const on = (e: FocusEvent) => { if (isField(e.target) && window.matchMedia("(max-width: 1023px) and (pointer: coarse)").matches) root.dataset.kb = "1"; };
+    const off = () => { delete root.dataset.kb; };
+    document.addEventListener("focusin", on);
+    document.addEventListener("focusout", off);
+    return () => { document.removeEventListener("focusin", on); document.removeEventListener("focusout", off); delete root.dataset.kb; };
+  }, []);
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { me, loading } = useMe();
   const [open, setOpen] = useState(false);
   const path = usePathname();
+  const fill = path.startsWith("/workspace") || path.startsWith("/playground");
+  useKeyboardFlag();
   useEffect(() => {
     if (!loading && !me) window.location.href = `/login?next=${encodeURIComponent(path)}`;
   }, [loading, me, path]);
@@ -295,33 +320,36 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const myLang = me?.preferences?.language;
   useEffect(() => { if (myLang === "es" || myLang === "en") setLang(myLang); }, [myLang, setLang]);
   if (!me) {
-    return <div className="grid min-h-screen place-items-center"><Skeleton className="h-10 w-48" /></div>;
+    return <div className="grid min-h-dvh place-items-center"><Skeleton className="h-10 w-48" /></div>;
   }
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-dvh">
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-[200] focus:rounded-lg focus:bg-accent focus:px-3 focus:py-2 focus:text-accent-fg">Skip to content</a>
-      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-border bg-surface/70 backdrop-blur lg:flex">
-        <Brand />
-        <Nav />
+      {/* laptops (1024-1279 px): an icon rail; wide screens: the full menu; phones/tablets: the drawer below */}
+      <aside className="sticky top-0 hidden h-dvh w-[4.25rem] shrink-0 flex-col border-r border-border bg-surface/70 backdrop-blur lg:flex xl:w-64">
+        <Brand rail />
+        <Nav rail />
       </aside>
       {open && (
         <div className="fixed inset-0 z-[70] lg:hidden" role="dialog" aria-modal="true">
           <div className="absolute inset-0 bg-black/40" onClick={() => setOpen(false)} />
-          <aside className="absolute left-0 top-0 flex h-full w-72 flex-col border-r border-border bg-surface shadow-2xl">
-            <div className="flex items-center justify-between pr-3"><Brand /><Button variant="ghost" size="icon" aria-label="Close menu" onClick={() => setOpen(false)}><X className="h-4 w-4" /></Button></div>
+          <aside className="absolute left-0 top-0 flex h-dvh w-[min(20rem,86vw)] flex-col border-r border-border bg-surface pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] shadow-2xl">
+            <div className="flex items-center justify-between pr-2"><Brand /><Button variant="ghost" size="icon" aria-label="Close menu" onClick={() => setOpen(false)}><X className="h-5 w-5" /></Button></div>
             <Nav onNavigate={() => setOpen(false)} />
           </aside>
         </div>
       )}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-40 flex h-14 items-center justify-between gap-3 border-b border-border bg-bg/80 px-4 backdrop-blur sm:px-6">
-          <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open menu" onClick={() => setOpen(true)}><Menu className="h-5 w-5" /></Button>
-          <div className="hidden text-xs text-subtle lg:block"><HostLabel /> · DGX Spark</div>
-          <Link href="/" className="text-sm font-semibold lg:hidden">Spark AI Hub</Link>
+        <header className="sticky top-0 z-40 flex h-12 items-center justify-between gap-2 border-b border-border bg-bg/85 px-2 pt-[env(safe-area-inset-top)] backdrop-blur sm:px-6 lg:h-14 lg:gap-3 lg:px-6">
+          <Button variant="ghost" size="icon" className="shrink-0 lg:hidden" aria-label="Open menu" onClick={() => setOpen(true)}><Menu className="h-5 w-5" /></Button>
+          <div className="hidden min-w-0 truncate text-xs text-subtle lg:block"><HostLabel /> · DGX Spark</div>
+          <Link href="/" className="mr-auto min-w-0 truncate whitespace-nowrap text-sm font-semibold lg:hidden">Spark AI Hub</Link>
           <UserMenu />
         </header>
-        {/* the workspace uses the whole window; every other page keeps the centred, width-limited column */}
-        <main id="main" className={path.startsWith("/workspace") ? "w-full flex-1 px-2 pb-24 pt-3 sm:px-3 sm:py-3 lg:pb-3" : "mx-auto w-full max-w-[1500px] flex-1 px-3 pb-24 pt-4 sm:px-6 sm:py-6 lg:pb-6"}>{children}</main>
+        {/* chat-like pages (Chat, Workspace) fill the screen edge to edge on phones; every other page keeps the centred, width-limited column */}
+        <main id="main" className={fill
+          ? "w-full min-w-0 flex-1 px-0 pb-[var(--tabbar)] pt-0 sm:px-3 sm:pt-3 lg:px-4 lg:pb-4 lg:pt-4"
+          : "mx-auto w-full min-w-0 max-w-[1500px] flex-1 px-3 pb-[calc(var(--tabbar)+1rem)] pt-4 sm:px-6 sm:py-6 lg:pb-6"}>{children}</main>
         <MobileTabs onMore={() => setOpen(true)} />
         <TermsGate />
         <SetupGate />

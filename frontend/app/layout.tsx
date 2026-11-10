@@ -11,7 +11,7 @@ export const metadata: Metadata = {
   description: "Plataforma de IA privada en NVIDIA DGX Spark",
   robots: { index: false, follow: false },
 };
-export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#0a0c10" };
+export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", interactiveWidget: "resizes-content", themeColor: "#0a0c10" };
 
 const themeBoot = `try{var t=localStorage.getItem('sah-theme')||'system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.classList.add('dark')}catch(e){}`;
 
@@ -21,7 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeBoot }} />
       </head>
-      <body className="min-h-screen font-sans">
+      <body className="min-h-dvh font-sans">
         <Providers>{children}</Providers>
       </body>
     </html>

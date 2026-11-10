@@ -73,7 +73,7 @@ function ModelsTab() {
       {data && data.length === 0 && <Card><Empty hint={tr("Instala modelos desde «Descubrir modelos»", "Install models from “Discover models”")} action={<Link href="/discover"><Button variant="primary" size="sm">{t("nav.discover")}</Button></Link>} /></Card>}
       {data && data.length > 0 && (
         <Card>
-          <Table head={[<SelectBox key="all" checked={sel.all} indeterminate={sel.some} onChange={() => sel.toggleAll()} label={L("Seleccionar todos", "Select all")} />, "", t("common.model"), t("common.status"), t("models.backend"), t("models.memory"), t("common.size"), t("common.visibility"), t("common.actions")]}>
+          <Table head={[<SelectBox key="all" checked={sel.all} indeterminate={sel.some} onChange={() => sel.toggleAll()} label={L("Seleccionar todos", "Select all")} />, "", t("common.model"), t("common.status"), t("models.backend"), t("models.memory"), t("common.size"), t("common.visibility"), t("common.actions")]} hide={[2, 5, 6, 7, 8]}>
             {data.map((m: any) => {
               const inst = mem?.instances?.find((i: any) => i.model_id === m.id);
               const loaded = !!m.runtime;

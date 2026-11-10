@@ -51,7 +51,7 @@ export default function KnowledgePage() {
               {docs && !docs.length ? (
                 <StepsEmpty icon={<Upload className="h-5 w-5" />} title={L("Colección vacía", "Empty collection")} steps={[L("Pulsa «Subir documentos» (PDF, Word, Markdown, código…).", "Click “Upload documents” (PDF, Word, Markdown, code…)."), L("Espera a que el estado sea «ready».", "Wait until the status is “ready”."), L("Pregunta en el chat: el asistente buscará aquí.", "Ask in the chat: the assistant will search here.")]} />
               ) : (
-                <Table head={[L("Documento", "Document"), L("Tamaño", "Size"), L("Estado", "Status"), L("Fragmentos", "Chunks"), L("Búsqueda", "Search"), L("Añadido", "Added"), ""]}>
+                <Table head={[L("Documento", "Document"), L("Tamaño", "Size"), L("Estado", "Status"), L("Fragmentos", "Chunks"), L("Búsqueda", "Search"), L("Añadido", "Added"), ""]} hide={[2, 4, 5, 6]}>
                   {docs?.map((d: any) => (
                     <tr key={d.id}><Td className="max-w-[320px]"><p className="truncate font-medium">{d.filename}</p>{d.source_path && <p className="truncate text-[10px] text-muted" title={d.source_path}>{d.source_path}</p>}</Td><Td className="text-xs">{bytes(d.size_bytes)}{d.index_only && <p className="text-[10px] text-muted">{L("original no almacenado", "original not stored")}</p>}</Td>
                       <Td><Badge tone={d.status === "ready" ? "ok" : d.status === "failed" ? "danger" : "info"} title={d.error}>{d.status}</Badge>{d.error && <p className="mt-1 max-w-[220px] text-[10px] text-danger">{d.error}</p>}</Td>

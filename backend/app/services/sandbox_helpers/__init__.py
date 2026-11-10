@@ -1,6 +1,7 @@
 """Helper modules copied into every workspace (.sah/) and chat sandbox run so the model's code can use them:
 
-sah_plot (legible figures and tables), sah_tex (LaTeX tables/figures that fit) and sah_check (PDF/figure quality check).
+sah_plot (legible figures and tables), sah_tex (LaTeX tables/figures that fit), sah_fig (TikZ/pgfplots figures) and sah_check
+(PDF/figure quality check).
 They are plain files, never imported by the backend; the sandbox image already has everything they need."""
 from __future__ import annotations
 
@@ -8,12 +9,13 @@ import hashlib
 from pathlib import Path
 
 HERE = Path(__file__).parent
-FILES = ("sah_plot.py", "sah_tex.py", "sah_check.py")
+FILES = ("sah_plot.py", "sah_tex.py", "sah_check.py", "sah_fig.py")
 PATH_IN_SANDBOX = "/work/.sah"
 README = """# .sah — ayudantes del Spark AI Hub (no los borres; se reinstalan solos)
 sah_plot.py   gráficas y tablas legibles: new_fig / save_fig / table_image   (import sah_plot)
 sah_tex.py    tablas y figuras LaTeX que caben en la página                    (import sah_tex)
 sah_check.py  revisa un PDF o una imagen:  python .sah/sah_check.py informe.pdf
+sah_fig.py    figuras en LaTeX (TikZ/pgfplots) que no se solapan: build / fig_tex   (import sah_fig)
 """
 
 
