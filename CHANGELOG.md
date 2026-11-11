@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.23.1 — 2026-11-11
+Comfort and speed: a mobile viewer, a floating activity window, a thread that follows the work, and faster long tasks.
+
+* **Messages sent while it works no longer interrupt it.** «Leer al instante» is now off by default (your message joins the task at
+  the next step). Sub-agents read the new messages too (they used to ignore them for minutes); the main assistant still receives them.
+* **Floating «Actividad» window** (chat and workspace): a pill that opens a card (bottom sheet on phones) with three tabs — Tareas
+  (plan + steps), Agentes (one card per delegated agent: task, live steps, report), Comandos (terminal and code runs with output).
+* **The thread follows the work.** The assistant's comments between steps are kept in order (`parts` of type `say`) and shown next to
+  the steps they belong to; only the conclusion (the text after the last step) stays in the chat. When the answer ends, the whole
+  trail folds into «Trabajo realizado» with a «where the time went» line. Older messages show as before.
+* **Mobile viewer and canvas.** Full-screen file viewer with swipe between files, bigger touch targets, safe-area aware; PDF pages use
+  the whole width; the canvas has a one-row scrolling toolbar and 16 px fields (no zoom on focus in iOS).
+* **A restart no longer loses a long task.** The progress of a turn (comments, steps, plan) is saved every 6 steps or 4 minutes
+  (new table `turn_checkpoints`, migration `a8c2e5d7b913`, one row per chat, deleted when the turn ends by itself). After a deploy
+  or a crash the chat and the workspace show «La tarea se interrumpió» with **Reanudar** (the saved progress becomes a message —
+  flagged `interrupted`, with its plan — and a new turn carries on from the real state of the files) or **Descartar**.
+* **Faster long tasks.** (1) `view_image` uses the main model when it sees and is loaded (the 4B helper took ~128 s per call;
+  an admin-chosen helper still wins). (2) In workspaces, after plain successful steps (write, read, download, search, a clean build)
+  the next step skips reasoning — every fourth step thinks again, and any failure, picture check, agent report or plan brings it back.
+  (3) The assistant is told to launch independent parts (chapters, figures, batches) as several `delegate_task` in the same step;
+  `max_parallel_agents` defaults to 4 (the vLLM engines take 8 requests).
+* **Pages that need JavaScript (isolated browser).** New tool `browse_url` and an automatic fallback of `fetch_url`/`fetch_urls`:
+  when a page comes back empty, blocked or as a bare frame, it is opened in a real Chromium (dynamic sites, galleries, maps), and the
+  text, links, images and (optionally) a screenshot come back as DATA. It runs in its own `browser` container: no volumes, no
+  secrets, no capabilities, read-only root, memory/CPU/pids limits, a NEW Chromium process and an empty profile for every page
+  (nothing survives a request), downloads/popups/dialogs/permissions/service workers refused. It has no route to the internet except
+  the `webproxy` container, which resolves every name itself and only connects to PUBLIC addresses on ports 80/443/8080/8443 (no
+  private, loopback, link-local, tailnet/CGNAT or Docker addresses; the connection is pinned to the checked IP). Verified from inside:
+  127.0.0.1, 10/8, 192.168/16, 169.254.169.254, 100.64/10, `backend:8000` and `localhost:5432` are all refused; direct connections
+  (1.1.1.1, the Docker gateway) have no route. Chromium runs with `--no-sandbox` (user namespaces need capabilities this container
+  does not have): the container is the sandbox.
+* **Thread grouped by plan step.** Each time the plan moves to a new step, the steps and comments that follow fold under that step
+  (`phase` parts; collapsed when done, the current one open) with its count, errors and time.
+* **Pause.** «Pausar» stops the task at the END of the step it is in (nothing is cut), saves the work as a message flagged
+  `paused`/`interrupted` with its plan, and «Reanudar» continues. A paused chat has no running turn, so it is the safe moment to
+  deploy. `POST /conversations/{cid}/pause`.
+* **Copy and export only the conclusion.** Copy gives the closing text of a long task (a second button copies the whole message);
+  the sidebar has «Exportar solo las conclusiones» (`export?fmt=md&view=conclusion`).
+* **Measured speed.** The saved message records seconds inside the model, steps without reasoning and cached tokens; the finished
+  «Trabajo realizado» shows s/step, tok/s, cache % and «N de M pasos sin razonamiento» next to where the time went.
+
 ## 0.23.0 — 2026-11-10
 Review of the «ballenas» workspace (two turns of 4 h each: 263 pages, but photographs drawn by hand, charts with overlapping text, the
 task cut off twice with «escribe continúa», minutes of looping reasoning) and what it teaches.

@@ -39,6 +39,7 @@ RETRY_STATUSES = {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
 BLOCK_STATUSES = {401, 403, 405, 406, 429, 451, 999}  # 999: LinkedIn
 MAX_RETRY_WAIT = 8.0  # longer Retry-After values are not waited for: the model should try another source
 PDF_PAGES = 60
+THIN_TEXT = 400  # fewer characters than this on a page with scripts: try the isolated browser too
 ARCHIVE_PAUSE = 60  # seconds without asking the Wayback Machine after it refused us
 ARCHIVE = "https://web.archive.org/web/2id_/"  # id_: original bytes, without the Wayback toolbar or rewritten links
 TEXT_TYPES = ("text/html", "application/xhtml+xml", "text/plain", "text/markdown", "application/json",
@@ -700,6 +701,22 @@ def wayback_page(url: str, date: str) -> dict:
             "archive_url": snap["url"], "snapshot_date": when}
 
 
+def _browser_page(url: str, reason: str) -> dict | None:
+    """The page rendered by the isolated browser (JavaScript executed) when the static reader got nothing useful."""
+    try:
+        from . import browser
+        if not browser.available():
+            return None
+        d = browser.render(url)
+    except WebError:
+        return None
+    if len(d["text"]) < 150 or browser.looks_blocked(d["text"], d["status"]):
+        return None
+    host = urlsplit(url).hostname or ""
+    note = f"[Nota: {host} no se pudo leer sin ejecutar JavaScript ({reason}); este texto es la página ya renderizada en un navegador aislado.]"
+    return {"url": d["final_url"], "title": d["title"], "text": d["text"], "content_type": "text/html", "via": "browser", "note": note}
+
+
 # ------------------------------------------------------------------ the page reader used by the agent
 
 
@@ -711,7 +728,7 @@ def read_page(url: str) -> dict:
     what failed and what to try instead."""
     host = urlsplit(url).hostname or ""
     jar = CookieJar()
-    reason, body, archive = "", b"", True
+    reason, body, archive, tried = "", b"", True, False
     try:
         _check_url(url)
         profiles = profiles_for(host)
@@ -731,13 +748,27 @@ def read_page(url: str) -> dict:
         reason = blocked_reason(r) or ""
         if not reason:
             page = _to_page(r)
-            if page["text"]:
+            if page["text"] and not (len(page["text"]) < THIN_TEXT and page["content_type"] == "text/html" and b"<script" in body.lower()):
+                return {**page, "via": "direct"}
+            if page["text"]:  # a few lines and scripts: probably the frame of a page that fills itself with JavaScript
+                rendered = _browser_page(url, "solo se veía el marco de la página (contenido cargado con JavaScript)")
+                tried = True
+                if rendered and len(rendered["text"]) > 2 * len(page["text"]) + 100:
+                    return rendered
                 return {**page, "via": "direct"}
             reason = "la página no tiene texto legible sin ejecutar JavaScript"
+            tried = True
+            rendered = _browser_page(url, reason)
+            if rendered:
+                return rendered
             archive = False  # the archived copy is the same empty shell
             break
         if r["status"] not in BLOCK_STATUSES and not is_challenge(body):
             break  # 404, 5xx after retries...: another User-Agent will not help
+    if not tried and (body or reason):
+        rendered = _browser_page(url, reason or "bloqueada")
+        if rendered:
+            return rendered
     ids = paper_ids(url, body)
     if ids:
         try:

@@ -170,13 +170,52 @@ services:
       retries: 3
     logging: *logging
 
+  webproxy:
+    # Filtering proxy for the page browser: resolves every name itself and only connects to PUBLIC addresses.
+    build: ./infrastructure/webproxy
+    image: spark-ai-hub/webproxy:${SAH_VERSION:-0.1.0}
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    tmpfs: ["/tmp"]
+    networks: [webout, browsernet]
+    mem_limit: 256m
+    pids_limit: 512
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    logging: *logging
+
+  browser:
+    # Chromium for pages that need JavaScript, isolated from everything: no volumes, no secrets, no capabilities, no
+    # route to the internet except the webproxy. A fresh browser process and an empty profile per page.
+    build: ./infrastructure/browser
+    image: spark-ai-hub/browser:${SAH_VERSION:-0.1.0}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp:size=512m,mode=1777", "/home/pwuser:uid=1001,gid=1001,size=64m"]
+    shm_size: "512m"
+    init: true
+    networks: [webctl, webout]
+    mem_limit: 3g
+    cpus: 3
+    pids_limit: 768
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *logging
+
   backend:
     <<: *backend-common
     build: ./backend
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    networks: [frontnet, data, control, engines, egress]
+    networks: [frontnet, data, control, engines, egress, webctl]
     mem_limit: 3g
 
   worker:
@@ -184,7 +223,7 @@ services:
     command: ["python", "-m", "app.worker.main"]
     depends_on:
       backend: {condition: service_healthy}
-    networks: [data, control, engines, egress]
+    networks: [data, control, engines, egress, webctl]
     mem_limit: 6g
     stop_grace_period: 30s
     healthcheck:
@@ -258,6 +297,9 @@ networks:
   data: {internal: true}           # postgres, redis — no egress, no published ports
   control: {internal: true}        # engine-manager API
   engines: {internal: true}        # inference engines — no egress
+  webctl: {internal: true}         # backend ↔ page browser
+  webout: {internal: true}         # page browser ↔ filtering proxy (no direct route out)
+  browsernet: {}                   # filtering proxy → internet (only the proxy is here)
 
 secrets:
   postgres_password: {file: "${SAH_DATA_ROOT:-/srv/spark-ai-hub}/config/secrets/postgres_password"}

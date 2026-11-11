@@ -9,11 +9,13 @@ import { Badge, Button, cx } from "@/components/ui";
 import { api, streamGet, streamPost } from "@/lib/api";
 import { useL } from "@/lib/i18n";
 import { useToast } from "@/lib/providers";
-import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markInjected, QueuedChip, toMs, type Activity } from "@/components/live-activity";
+import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markInjected, QueuedChip, threadOf, toMs, type Activity } from "@/components/live-activity";
 import { CodeBlock, MessageActions, MessageEditor, MSG_GROUP, quoteMarkdown, quoteStart, SelectionQuote, USER_BUBBLE_SELECTION } from "@/components/message-actions";
 import { JumpToEnd, useStickToBottom } from "@/components/stick-to-bottom";
 import { effortBody, EffortSlider, PermChips, useEffort } from "@/components/effort";
 import { SteerToggle, useSteer } from "@/components/steer";
+import { ActivityDock } from "@/components/activity-dock";
+import { CONTINUE_TEXT, type Checkpoint, PauseButton, PausedNotice, RESUME_TEXT, ResumeBanner } from "@/components/resume-banner";
 import { useAutoGrow, useConfirm } from "./common";
 import { PanelHeader } from "./layout";
 
@@ -24,11 +26,13 @@ const MD = { pre: CodeBlock };
 /** One chat message (user bubble, or the assistant's live activity panel + markdown). */
 export function WsMessage({ m, onOpen, queued }: { m: ChatMsg; onOpen: (p: string) => void; queued?: number }) {
   if (m.role === "user") return <><div className={cx("ml-8 whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent px-3 py-2 text-accent-fg", USER_BUBBLE_SELECTION)}>{m.content}</div><QueuedChip state={m.queued} /></>;
+  const th = threadOf(m, !!m.pending);
+  const body = th ? th.body : m.content;
   return (
     <div>
-      <LiveActivity tools={m.tools} reasoning={m.reasoning} activity={m.activity} running={!!m.pending} queued={queued} onOpen={onOpen}
+      <LiveActivity tools={m.tools} reasoning={m.reasoning} activity={m.activity} thread={th?.items} running={!!m.pending} queued={queued} onOpen={onOpen}
         seconds={m.metrics?.latency_ms != null ? m.metrics.latency_ms / 1000 : undefined} />
-      {m.content && <div className="prose-chat" data-quote-scope><AnswerMarkdown content={m.content} streaming={!!m.pending} tools={m.tools} components={MD} onWs={onOpen} /></div>}
+      {body && <div className="prose-chat" data-quote-scope><AnswerMarkdown content={body} streaming={!!m.pending} tools={m.tools} components={MD} onWs={onOpen} /></div>}
     </div>
   );
 }
@@ -41,6 +45,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [ckpt, setCkpt] = useState<Checkpoint | null>(null);
   const [effort, setEffort] = useEffort("sah-effort-ws");
   const [steer, setSteer] = useSteer();
   const [editing, setEditing] = useState<number | null>(null);
@@ -81,6 +86,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
     const r = await api(`/api/v1/workspaces/${wid}/conversation${fresh ? "?new=true" : ""}`, { method: "POST" });
     setCid(r.conversation_id); setModel(r.model_alias ?? "");
     const c = await api(`/api/v1/playground/conversations/${r.conversation_id}`);
+    setCkpt(c.checkpoint ?? null);
     const history: ChatMsg[] = c.messages.map((m: any) => ({ id: m.id, role: m.role, content: m.content, metrics: m.metrics, ...(m.role === "assistant" ? liveFromSaved(m) : {}) }));
     if (c.active_turn) {
       setMsgs((prev) => keepQueued(prev, [...history, { role: "assistant", content: "", tools: [], pending: true, activity: { t0: toMs(c.active_turn.started_at) } }], true));
@@ -90,11 +96,11 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
   reload.current = () => { load().catch(() => {}); };
   useEffect(() => { load().catch((e) => push("error", e.message)); return () => abort.current?.abort(); }, [load, push]);
   const { away, jump } = useStickToBottom(list, msgs, msgs.length);
-  async function send() {
-    const content = input.trim();
+  async function send(text?: string) {
+    const content = (text ?? input).trim();
     if (!content || !cid) return;
     if (busy) return addToTask(content);
-    setInput("");
+    if (text === undefined) setInput("");
     setMsgs((x) => [...x, { role: "user", content }, { role: "assistant", content: "", tools: [], pending: true, activity: { t0: Date.now() } }]);
     await follow((signal) => streamPost(`/api/v1/playground/conversations/${cid}/messages`, { content, ...turnBody() }, onEvent, signal));
   }
@@ -194,7 +200,8 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
             return (
               <div key={i} className={cx("flex flex-col", MSG_GROUP, isUser ? "items-end" : "items-stretch")}>
                 <WsMessage m={m} onOpen={onOpen} queued={last && m.pending ? queuedCount : undefined} />
-                {!m.pending && <MessageActions role={m.role} text={m.content} busy={busy}
+                {last && !isUser && !m.pending && !busy && (m as any).metrics?.paused && <PausedNotice steps={(m as any).metrics?.steps} onResume={() => send(L(CONTINUE_TEXT.es, CONTINUE_TEXT.en))} />}
+                {!m.pending && <MessageActions role={m.role} text={(!isUser && threadOf(m, false)?.body.trim()) || m.content} full={m.content} busy={busy}
                   onReply={isUser ? undefined : () => quote(quoteStart(m.content))}
                   onEdit={isUser && m.id != null ? () => setEditing(i) : undefined}
                   onRegenerate={m.id == null ? undefined : isUser ? (last ? () => regenerate(i) : undefined)
@@ -208,6 +215,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
       <JumpToEnd show={away} onClick={jump} />
       <SelectionQuote root={list} onQuote={quote} />
       {confirmElement}
+      {ckpt && !busy && cid && <ResumeBanner cid={cid} ckpt={ckpt} onDone={() => setCkpt(null)} onResume={async () => { await load(); await send(L(RESUME_TEXT.es, RESUME_TEXT.en)); }} />}
       <form className="shrink-0 px-3 pb-3 pt-2 sm:px-6" onSubmit={(e) => { e.preventDefault(); send(); }}>
         <div className="mx-auto w-full max-w-3xl space-y-1.5 rounded-2xl border border-border bg-bg p-2 shadow-card transition focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/25">
           <textarea ref={box} rows={2} value={input} onChange={(e) => setInput(e.target.value)} placeholder={busy ? (steer ? L("Escribe aunque esté pensando: lo lee al instante sin perder lo razonado…", "Type even while it thinks: it reads it at once without losing its reasoning…") : L("Añade indicaciones a la tarea en curso (las lee al terminar el paso)…", "Add instructions to the running task (read when the step ends)…")) : L("¿Qué hacemos en este workspace?", "What shall we do in this workspace?")}
@@ -219,6 +227,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
             <EffortSlider value={effort} onChange={setEffort} compact />
             <span className="hidden text-[10.5px] text-subtle xl:inline">{L("Mayús+Enter: nueva línea", "Shift+Enter: new line")}</span>
             {busy && <SteerToggle on={steer} onChange={setSteer} className="ml-auto" />}
+            {busy && <PauseButton cid={cid} busy={busy} />}
             {busy && <Button type="button" size="sm" variant="danger" onClick={stop} title={L("Detiene la tarea", "Stops the task")}><Square className="h-3.5 w-3.5" />{L("Parar", "Stop")}</Button>}
             <Button type="submit" size="sm" variant="primary" className={busy ? undefined : "ml-auto"} disabled={!input.trim() || !cid}
               title={busy ? (steer ? L("Interrumpe su pensamiento actual (se conserva) y lo lee ya", "Interrupts its current thinking (kept) and reads it now") : L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it")) : undefined}>
@@ -226,6 +235,7 @@ export function Assistant({ wid, onFiles, onOpen, actions }: { wid: string; onFi
           </div>
         </div>
       </form>
+      {(() => { const lm = msgs[msgs.length - 1]; return lm?.role === "assistant" && lm.pending ? <ActivityDock tools={lm.tools} activity={lm.activity} running onOpen={onOpen} /> : null; })()}
     </div>
   );
 }

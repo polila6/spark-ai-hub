@@ -18,7 +18,7 @@ from ..db import SessionLocal, get_db
 from ..deps import Principal, current_principal, not_found, require_researcher, visible_filter
 from ..engines import LLM_ENGINES, EngineError
 from ..models import Conversation, Message, RegisteredModel, SavedPrompt, SharedResource, Visibility
-from ..services import llm, memory, sandbox, scheduler, turns
+from ..services import checkpoint, llm, memory, sandbox, scheduler, turns
 from ..settings_store import branding
 from .openai_gateway import _record
 
@@ -198,9 +198,34 @@ def get_conversation(cid: uuid.UUID, p: Principal = Depends(current_principal), 
     c = _conv(db, p, cid)
     msgs = db.scalars(select(Message).where(Message.conversation_id == c.id).order_by(Message.id)).all()
     t = turns.active(c.id) if c.owner_id == p.id else None
-    return {**_conv_pub(c), "active_turn": t if t and t.get("status") == "running" else None, "messages": [{"id": m.id, "role": m.role, "content": m.content, "model_alias": m.model_alias,
+    running = bool(t and t.get("status") == "running")
+    return {**_conv_pub(c), "active_turn": t if running else None,
+            "checkpoint": checkpoint.info(db, c.id) if c.owner_id == p.id and not running else None, "messages": [{"id": m.id, "role": m.role, "content": m.content, "model_alias": m.model_alias,
                                           "metrics": m.metrics, "attachments": m.attachments, "parts": m.parts,
                                           "created_at": m.created_at} for m in msgs]}
+
+
+@router.post("/conversations/{cid}/resume")
+def resume_conversation(cid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """After a restart interrupted a long task: turn its saved progress into the assistant message it was going to be. The page
+    then sends the «continúa» message with its usual settings, and the assistant reads that progress in the history."""
+    c = _conv(db, p, cid, write=True)
+    _refuse_if_running(cid)
+    msg = checkpoint.materialize(db, c.id)
+    if msg is None:
+        raise HTTPException(404, detail={"code": "no_checkpoint", "message": "No hay progreso guardado de esta conversación"})
+    c.updated_at = time_now()
+    db.commit()
+    log.info("chat resume: user=%s conversation=%s message=%s", p.id, cid, msg.id)
+    return {"ok": True, "message_id": msg.id}
+
+
+@router.delete("/conversations/{cid}/checkpoint")
+def discard_checkpoint(cid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    c = _conv(db, p, cid, write=True)
+    _refuse_if_running(cid)
+    checkpoint.discard(c.id)
+    return {"ok": True}
 
 
 @router.patch("/conversations/{cid}")
@@ -242,14 +267,24 @@ def delete_conversation(cid: uuid.UUID, p: Principal = Depends(current_principal
     return {"ok": True}
 
 
+def conclusion_of(m: dict) -> str:
+    """The closing text of an assistant message that interleaves comments with tool calls (the last «say» part when nothing
+    came after it); the whole content for any other message."""
+    parts = m.get("parts") or []
+    if m.get("role") == "assistant" and parts and parts[-1].get("type") == "say" and (parts[-1].get("text") or "").strip():
+        return parts[-1]["text"].strip()
+    return m["content"]
+
+
 @router.get("/conversations/{cid}/export")
 def export_conversation(cid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db),
-                        fmt: str = "json"):
+                        fmt: str = "json", view: str = "full"):
     data = get_conversation(cid, p, db)
     if fmt == "md":
         lines = [f"# {data['title']}", ""]
         for m in data["messages"]:
-            lines += [f"**{m['role']}**" + (f" ({m['model_alias']})" if m.get("model_alias") else ""), "", m["content"], ""]
+            text = conclusion_of(m) if view == "conclusion" else m["content"]
+            lines += [f"**{m['role']}**" + (f" ({m['model_alias']})" if m.get("model_alias") else ""), "", text, ""]
         return PlainTextResponse("\n".join(lines), media_type="text/markdown",
                                  headers={"Content-Disposition": f'attachment; filename="conversation-{cid}.md"'})
     return PlainTextResponse(json.dumps(data, default=str, ensure_ascii=False, indent=2), media_type="application/json",
@@ -303,7 +338,7 @@ def _launch(c: Conversation, p: Principal, body: SendIn, model: RegisteredModel,
                       research=body.research, effort=body.effort, director=body.director,
                       allow={k: v for k, v in (body.allow or {}).items() if v in ("auto", "on", "off")},
                       workspace_id=body.workspace_id, preferred_agent=body.preferred_agent,
-                      user_message_id=user_mid)
+                      user_message_id=user_mid, checkpoint=True)
     turns.emit(c.id, {"type": "user_message", "message_id": user_mid})  # the UI needs it to edit/rewind this message
     threading.Thread(target=_run_turn, args=(turn, p, body.model_alias, c.title), daemon=True).start()
     return StreamingResponse(_tail(c.id, request, 0), media_type="text/event-stream",
@@ -465,12 +500,13 @@ def _run_one_turn(turn, p: Principal, model_alias: str, title: str):
     status = "done"
     leftover: list[int] = []
     cancelled = False
+    turn.pause_check = turns.pause_checker(cid)
     stop_beat = turns.heartbeat(cid, p.id)
 
     def drain() -> list[int]:
         """Close the inbox (later messages get a turn of their own) and collect what was never injected."""
         nonlocal cancelled
-        cancelled = cancelled or turns.cancelled_checker(cid)()
+        cancelled = cancelled or turns.cancelled_checker(cid)() or turn.pause_check()  # a pause keeps queued messages for the resume
         try:
             leftover.extend(x for x in turns.close_inbox(cid, final=True) if x not in leftover)
         except Exception:  # noqa: BLE001
@@ -517,6 +553,7 @@ def _run_one_turn(turn, p: Principal, model_alias: str, title: str):
     finally:
         stop_beat()
         drain()
+        checkpoint.discard(cid)  # the turn ended by itself: nothing to resume (a killed process never gets here)
         turns.finish(cid, p.id, status)
         if time.perf_counter() - t0 > 30:  # long turns (images, model loads): leave a notice in the bell
             try:
@@ -606,6 +643,17 @@ async def stream_turn(cid: uuid.UUID, request: Request, p: Principal = Depends(c
         raise HTTPException(404, detail={"code": "no_turn", "message": "No running answer for this chat"})
     return StreamingResponse(_tail(cid, request, max(0, start)), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/conversations/{cid}/pause")
+def pause_turn(cid: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Stop the running task at the end of its current step; the work done is saved as a message that «Reanudar» continues."""
+    _conv(db, p, cid, write=True)
+    info = turns.active(cid)
+    if not info or info.get("status") != "running":
+        return {"ok": False, "paused": False}
+    turns.pause(cid)
+    return {"ok": True, "paused": True}
 
 
 @router.post("/conversations/{cid}/cancel")

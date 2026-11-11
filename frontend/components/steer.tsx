@@ -1,7 +1,7 @@
 "use client";
 // «Leer al instante»: a message sent while the assistant is still thinking interrupts that generation (what it had reasoned
-// so far is kept and handed back to it) and is read at once, instead of waiting for the step to end. Off = it joins the
-// task at the next step, as before. The choice is remembered in this browser.
+// so far is kept and handed back to it) and is read at once, instead of waiting for the step to end. Off (the default) = it joins the
+// task at the next step without stopping the model. The choice is remembered in this browser.
 import { Zap } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { cx } from "@/components/ui";
@@ -10,7 +10,7 @@ import { useL } from "@/lib/i18n";
 const KEY = "sah-steer";
 
 export function useSteer(): [boolean, (v: boolean) => void] {
-  const [on, setOn] = useState(true);
+  const [on, setOn] = useState(false);
   useEffect(() => { try { const v = localStorage.getItem(KEY); if (v != null) setOn(v === "1"); } catch { /* private mode */ } }, []);
   const set = useCallback((v: boolean) => { setOn(v); try { localStorage.setItem(KEY, v ? "1" : "0"); } catch { /* private mode */ } }, []);
   return [on, set];

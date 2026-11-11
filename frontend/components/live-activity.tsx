@@ -7,7 +7,7 @@
 // it degrades to tools + reasoning with an older backend.
 import {
   Activity as ActivityIcon, Bot, Brain, CalendarClock, Check, ChevronDown, ChevronRight, Circle, Code2, Compass, FilePen, FileText, FolderOpen, Globe,
-  Image as ImageIcon, ListChecks, Loader2, MessageSquarePlus, Minus, Puzzle, Search, Shrink, Table2, Telescope, Terminal, TriangleAlert, Wrench, X,
+  Image as ImageIcon, ListChecks, Loader2, MessageSquare, MessageSquarePlus, Minus, Puzzle, Search, Shrink, Table2, Telescope, Terminal, TriangleAlert, Wrench, X,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { AgentReport, CodeRun, kTok, WebSources } from "@/components/assistant";
@@ -39,7 +39,9 @@ export const runningLabel = (t: { name?: string; label?: string }): string => {
 
 export type PlanItem = { content: string; status: string };
 export type ActivityNote = { kind: "compacted" | "warning" | "user"; text: string; at: number };  // at = number of tools before it
-export type Activity = { plan?: PlanItem[]; step?: number; status?: string; phase?: "thinking" | "writing" | "tool"; ctx?: { used: number; limit?: number };
+export type ThreadItem = { k: "x"; text: string } | { k: "t"; id: string };  // a comment of the assistant / a tool call, in order
+export type Perf = { gen_s?: number; steps?: number; calm?: number; prompt?: number; cached?: number; out?: number };
+export type Activity = { perf?: Perf; phases?: { at: number; title: string }[]; marks?: { id: string; at: number }[]; thread?: ThreadItem[]; plan?: PlanItem[]; step?: number; status?: string; phase?: "thinking" | "writing" | "tool"; ctx?: { used: number; limit?: number };
   notes?: ActivityNote[]; t0?: number; t1?: number; preparing?: { label: string; chars: number }; director?: any };
 type LiveMsg = { tools?: any[]; reasoning?: string; activity?: Activity };
 
@@ -58,16 +60,26 @@ export function reduceTools(tools: any[] | undefined, ev: any): any[] | undefine
 }
 
 /** Fold one event into the activity (returns the same object when nothing changed, so memoized panels skip renders). */
-export function reduceActivity(a: Activity | undefined, ev: any, toolCount: number): Activity | undefined {
+export function reduceActivity(a: Activity | undefined, ev: any, toolCount: number, contentLen = 0): Activity | undefined {
   const x = a ?? {};
   const note = (kind: ActivityNote["kind"], text: string): Activity => ({ ...x, notes: [...(x.notes ?? []), { kind, text, at: toolCount }] });
   switch (ev.type) {
-    case "plan": return Array.isArray(ev.items) ? { ...x, plan: ev.items } : a;
+    case "plan": {
+      if (!Array.isArray(ev.items)) return a;
+      // each plan step that becomes the current one opens a group of the thread (at = tools done so far)
+      const cur = (ev.items as PlanItem[]).find((i) => i.status === "in_progress")?.content;
+      const phases = x.phases ?? [];
+      return cur && phases[phases.length - 1]?.title !== cur ? { ...x, plan: ev.items, phases: [...phases, { at: toolCount, title: cur }] } : { ...x, plan: ev.items };
+    }
     case "step": return typeof ev.n === "number" && ev.n !== x.step ? { ...x, step: ev.n } : a;
     case "status": return ev.status === x.status ? a : { ...x, status: ev.status };
     case "reasoning": return x.phase === "thinking" && !x.preparing ? a : { ...x, phase: "thinking", preparing: undefined };
     case "delta": return x.phase === "writing" && !x.preparing ? a : { ...x, phase: "writing", preparing: undefined };
-    case "tool_start": return x.phase === "tool" && !x.preparing ? a : { ...x, phase: "tool", preparing: undefined };
+    case "tool_start": {
+      // where in the streamed text this call began: what was written before it is a comment on the steps, not the answer
+      const marks = (x.marks ?? []).some((k) => k.id === ev.id) ? x.marks : [...(x.marks ?? []), { id: ev.id, at: contentLen }];
+      return x.phase === "tool" && !x.preparing && marks === x.marks ? a : { ...x, phase: "tool", preparing: undefined, marks };
+    }
     case "tool_writing": return { ...x, phase: "tool", preparing: { label: ev.label || ev.name || "", chars: ev.chars ?? 0 } };
     case "context": return typeof ev.used === "number" ? { ...x, ctx: { used: ev.used, limit: ev.limit ?? x.ctx?.limit } } : a;
     case "context_compacted": return note("compacted", `${kTok(ev.before)} → ${kTok(ev.after)}`);
@@ -83,7 +95,7 @@ export function reduceActivity(a: Activity | undefined, ev: any, toolCount: numb
 export function applyLive<M extends LiveMsg>(m: M, ev: any): M {
   const tools = reduceTools(m.tools, ev);
   const reasoning = ev.type === "reasoning" ? (m.reasoning ?? "") + (ev.content ?? "") : m.reasoning;
-  const activity = reduceActivity(m.activity, ev, (tools ?? []).length);
+  const activity = reduceActivity(m.activity, ev, (tools ?? []).length, ((m as any).content ?? "").length);
   return tools === m.tools && reasoning === m.reasoning && activity === m.activity ? m : { ...m, tools, reasoning, activity };
 }
 
@@ -94,21 +106,81 @@ export function liveFromSaved(m: any, label?: (name: string) => string | undefin
   const tools = parts.filter((p) => p.type === "tool").map((p, i) => ({ id: `p${i}`, label: label?.(p.name), ...p, done: true }));
   const reasoning = m.reasoning ?? m.metrics?.reasoning ?? undefined;
   const items = plan?.items ?? plan?.plan;
-  const activity: Activity | undefined = Array.isArray(items) || m.metrics?.steps || m.metrics?.director ? { plan: Array.isArray(items) ? items : undefined, step: m.metrics?.steps, director: m.metrics?.director } : undefined;
+  let ti = 0;
+  const phases: { at: number; title: string }[] = [];
+  const thread: ThreadItem[] = parts.flatMap((p): ThreadItem[] => {
+    if (p.type === "phase" && p.title) phases.push({ at: ti, title: p.title });
+    return p.type === "tool" ? [{ k: "t", id: `p${ti++}` }] : p.type === "say" && p.text ? [{ k: "x", text: p.text }] : [];
+  });
+  const hasThread = thread.some((x) => x.k === "x") && thread.some((x) => x.k === "t");
+  const activity: Activity | undefined = Array.isArray(items) || m.metrics?.steps || m.metrics?.director || hasThread
+    ? { perf: m.metrics?.gen_s ? { gen_s: m.metrics.gen_s, steps: m.metrics.steps, calm: m.metrics.calm_steps, prompt: m.metrics.prompt_tokens, cached: m.metrics.cached_tokens, out: m.metrics.completion_tokens } : undefined, plan: Array.isArray(items) ? items : undefined, phases: phases.length ? phases : undefined, step: m.metrics?.steps, director: m.metrics?.director, thread: hasThread ? thread : undefined } : undefined;
   return { tools, reasoning: reasoning || undefined, activity };
+}
+
+// ------------------------------------------------------------------ the thread: steps and comments in the order they happened
+
+const liveHead = new WeakMap<object, { items: ThreadItem[]; at: number }>();
+const doneCache = new WeakMap<object, { items: ThreadItem[]; body: string }>();
+
+/** Split an answer into the timeline (steps, with the comments written between them) and the conclusion (the text after the
+ *  last step). null = nothing to separate (no steps yet, or an older message): show `content` as it is. Results are cached so
+ *  the timeline does not re-render on every streamed token. */
+export function threadOf(m: { content: string; activity?: Activity }, running: boolean): { items: ThreadItem[]; body: string } | null {
+  const a = m.activity;
+  if (a?.thread && !a.marks?.length) {
+    const hit = doneCache.get(a.thread);
+    if (hit) return hit;
+    const items = [...a.thread];
+    let at = items.length - 1;
+    while (at >= 0 && items[at].k === "t") at--;  // ended on a step with no closing text: the last comment is the conclusion
+    if (at < 0) return null;
+    const body = (items[at] as { text: string }).text;
+    if (!m.content.includes(body.trim().slice(0, 120))) return null;
+    items.splice(at, 1);
+    const r = { items, body };
+    doneCache.set(a.thread, r);
+    return r;
+  }
+  const marks = a?.marks;
+  if (!marks?.length) return null;
+  let head = liveHead.get(marks);
+  if (!head) {
+    const items: ThreadItem[] = [];
+    let prev = 0;
+    for (const k of marks) {
+      const text = m.content.slice(prev, k.at).trim();
+      if (text) items.push({ k: "x", text });
+      items.push({ k: "t", id: k.id });
+      prev = k.at;
+    }
+    head = { items, at: prev };
+    liveHead.set(marks, head);
+  }
+  const tail = m.content.slice(head.at);
+  if (tail.trim() || running) return { items: head.items, body: tail };
+  const key = marks as object;
+  const hit = doneCache.get(key);
+  if (hit) return hit;
+  const items = [...head.items];
+  let at = items.length - 1;
+  while (at >= 0 && items[at].k === "t") at--;
+  const r = at < 0 ? { items, body: "" } : { items: items.filter((_, i) => i !== at), body: (items[at] as { text: string }).text };
+  doneCache.set(key, r);
+  return r;
 }
 
 // ------------------------------------------------------------------ helpers
 
-function useNow(active: boolean) {
+export function useNow(active: boolean) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { if (!active) return; setNow(Date.now()); const h = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(h); }, [active]);
   return now;
 }
 
-const dur = (s?: number | null) => (s == null || !isFinite(s) ? "" : s < 10 ? `${s.toFixed(1)} s` : s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`);
+export const dur = (s?: number | null) => (s == null || !isFinite(s) ? "" : s < 10 ? `${s.toFixed(1)} s` : s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`);
 
-function toolIcon(name = "") {
+export function toolIcon(name = "") {
   if (name === "web_search" || name === "fetch_url" || name === "search_images" || name === "fetch_urls" || name === "http_request" || name === "crawl_site" || name === "download_file" || name === "extract_images" || name === "search_papers" || name === "doi_to_bibtex") return Globe;
   if (name === "ws_write" || name === "ws_append" || name === "ws_edit" || name.startsWith("canvas_")) return FilePen;
   if (name === "ws_read" || name === "read_document" || name === "read_skill_file") return FileText;
@@ -145,7 +217,7 @@ function toolSeconds(t: any): number | undefined {
 
 // ------------------------------------------------------------------ pieces
 
-const StepRow = memo(function StepRow({ t, n, now, live, onOpen }: { t: any; n: number; now: number; live: boolean; onOpen?: (p: string) => void }) {
+export const StepRow = memo(function StepRow({ t, n, now, live, onOpen }: { t: any; n: number; now: number; live: boolean; onOpen?: (p: string) => void }) {
   const L = useL();
   const [open, setOpen] = useState(false);
   const running = !t.done && live;
@@ -204,6 +276,21 @@ function FileChip({ p, onOpen }: { p: string; onOpen?: (p: string) => void }) {
     : <span className="rounded border border-border px-1.5 font-mono text-[10.5px]">{p}</span>;
 }
 
+function SayRow({ text }: { text: string }) {
+  const L = useL();
+  const [open, setOpen] = useState(false);
+  const long = text.length > 220 || text.split("\n").length > 3;
+  return (
+    <li className="ml-7 flex items-start gap-2 rounded-lg border-l-2 border-accent/40 bg-accent/5 px-2 py-1.5 text-[11.5px] text-fg">
+      <MessageSquare className="mt-0.5 h-3 w-3 shrink-0 text-accent" />
+      <span className="min-w-0 flex-1">
+        <span className={cx("block whitespace-pre-wrap break-words", long && !open && "line-clamp-3")}>{text}</span>
+        {long && <button type="button" className="mt-0.5 text-[10.5px] text-accent" onClick={() => setOpen(!open)}>{open ? L("Ver menos", "Show less") : L("Ver todo", "Show all")}</button>}
+      </span>
+    </li>
+  );
+}
+
 function NoteRow({ n }: { n: ActivityNote }) {
   const L = useL();
   const Icon = n.kind === "warning" ? TriangleAlert : n.kind === "compacted" ? Shrink : MessageSquarePlus;
@@ -241,7 +328,7 @@ function Thinking({ text, live }: { text: string; live: boolean }) {
   );
 }
 
-function Plan({ items }: { items: PlanItem[] }) {
+export function Plan({ items }: { items: PlanItem[] }) {
   const L = useL();
   const done = items.filter((i) => i.status === "completed").length;
   return (
@@ -258,10 +345,10 @@ function Plan({ items }: { items: PlanItem[] }) {
 
 // ------------------------------------------------------------------ the panel
 
-type Props = { tools?: any[]; reasoning?: string; activity?: Activity; running: boolean; seconds?: number; queued?: number; onOpen?: (p: string) => void };
+type Props = { tools?: any[]; reasoning?: string; activity?: Activity; thread?: ThreadItem[]; running: boolean; seconds?: number; queued?: number; onOpen?: (p: string) => void };
 const STEP_PAGE = 100;
 
-function LiveActivityInner({ tools: toolsIn, reasoning, activity: a, running, seconds, queued = 0, onOpen }: Props) {
+function LiveActivityInner({ tools: toolsIn, reasoning, activity: a, thread, running, seconds, queued = 0, onOpen }: Props) {
   const L = useL();
   const tools = useMemo(() => toolsIn ?? [], [toolsIn]);
   const runningTools = running ? tools.filter((t) => !t.done) : [];
@@ -277,11 +364,25 @@ function LiveActivityInner({ tools: toolsIn, reasoning, activity: a, running, se
   const rows = useMemo(() => {
     const byAt = new Map<number, ActivityNote[]>();
     for (const n of notes) byAt.set(n.at, [...(byAt.get(n.at) ?? []), n]);
-    const out: ({ k: "t"; t: any; n: number } | { k: "n"; n: ActivityNote })[] = [];
-    tools.forEach((t, i) => { for (const n of byAt.get(i) ?? []) out.push({ k: "n", n }); out.push({ k: "t", t, n: i + 1 }); });
-    for (const [at, ns] of byAt) if (at >= tools.length) for (const n of ns) out.push({ k: "n", n });
+    type Row = ({ k: "t"; t: any; n: number } | { k: "n"; n: ActivityNote } | { k: "s"; text: string }) & { ph: number };
+    const out: Row[] = [];
+    let ti = 0;
+    const phases = a?.phases ?? [];
+    const phaseAt = (i: number) => { let k = -1; for (let j = 0; j < phases.length; j++) if (phases[j].at <= i) k = j; return k; };
+    const place = (t: any) => { for (const n of byAt.get(ti) ?? []) out.push({ k: "n", n, ph: phaseAt(ti) }); out.push({ k: "t", t, n: ti + 1, ph: phaseAt(ti) }); ti++; };
+    if (thread) {
+      const byId = new Map(tools.map((t) => [t.id, t] as const));
+      const used = new Set<string>();
+      for (const it of thread) {
+        if (it.k === "x") out.push({ k: "s", text: it.text, ph: phaseAt(ti) });
+        else { const t = byId.get(it.id); if (t && !used.has(t.id)) { used.add(t.id); place(t); } }
+      }
+      for (const t of tools) if (!used.has(t.id)) place(t);
+    } else tools.forEach(place);
+    for (const [at, ns] of byAt) if (at >= ti) for (const n of ns) out.push({ k: "n", n, ph: phaseAt(ti) });
     return out;
-  }, [tools, notes]);
+  }, [tools, notes, thread, a?.phases]);
+  const [shut, setShut] = useState<Record<number, boolean>>({});  // plan-step groups the person opened or closed by hand
   if (!running && !tools.length && !reasoning && !plan.length && !notes.length) return null;
   const hidden = Math.max(0, rows.length - shown);
   const failed = tools.filter((t) => t.done && t.ok === false).length;
@@ -294,6 +395,13 @@ function LiveActivityInner({ tools: toolsIn, reasoning, activity: a, running, se
     : a?.preparing ? L(`Preparando: ${a.preparing.label} · ${kChars(a.preparing.chars)}`, `Preparing: ${a.preparing.label} · ${kChars(a.preparing.chars)}`)
     : a?.phase === "thinking" ? L("Pensando…", "Thinking…") : a?.phase === "writing" ? L("Generando respuesta…", "Writing the answer…")
     : a?.phase === "tool" ? L("Pensando el siguiente paso…", "Working out the next step…") : L("Empezando…", "Starting…");
+  const split = (() => {  // (plain computation: this sits after the early return, where hooks may not go)
+    if (running || !total || total < 60) return null;
+    const own = tools.filter((t) => t.name !== "delegate_task").reduce((n, t) => n + (toolSeconds(t) ?? 0), 0);
+    const ag = Math.min(total, tools.filter((t) => t.name === "delegate_task").reduce((n, t) => n + (toolSeconds(t) ?? 0), 0));
+    const gm = a?.perf?.gen_s;  // measured when the server reports it (otherwise: what is left after tools and agents)
+    return { tools: Math.min(own, total), agents: ag, gen: gm != null ? Math.min(gm, total) : Math.max(0, total - Math.min(own, total) - ag), measured: gm != null };
+  })();
   const ctxPct = a?.ctx?.limit ? Math.min(100, (a.ctx.used / a.ctx.limit) * 100) : null;
   const hasBody = tools.length > 0 || !!reasoning || plan.length > 0 || notes.length > 0;
   const summary = [
@@ -308,7 +416,7 @@ function LiveActivityInner({ tools: toolsIn, reasoning, activity: a, running, se
     <div className={cx("my-2 overflow-hidden rounded-xl border bg-bg/60 text-xs", running ? "border-info/40" : "border-border")}>
       <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-elevated/50" onClick={() => hasBody && setOpen(!isOpen)} aria-expanded={isOpen}>
         {running ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" /> : <ActivityIcon className={cx("h-3.5 w-3.5 shrink-0", failed || warnings ? "text-warn" : "text-accent")} />}
-        <span className="shrink-0 font-medium text-fg">{running ? L("Actividad en directo", "Live activity") : L("Actividad", "Activity")}</span>
+        <span className="shrink-0 font-medium text-fg">{running ? L("Actividad en directo", "Live activity") : tools.length ? L("Trabajo realizado", "Work done") : L("Actividad", "Activity")}</span>
         <span className={cx("min-w-0 truncate", running ? "text-info" : "text-muted")}>{running ? statusText : summary}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-[10.5px] tabular-nums text-subtle">
           {running && queued > 0 && <span className="rounded bg-accent/12 px-1.5 text-accent">{L(`${queued} en cola`, `${queued} queued`)}</span>}
@@ -323,14 +431,56 @@ function LiveActivityInner({ tools: toolsIn, reasoning, activity: a, running, se
       {running && ctxPct != null && <div className="flex items-center gap-2 px-3 pb-1.5 text-[10px] text-subtle" title={L("Uso de la ventana de contexto", "Context window use")}>
         <span>{L("Contexto", "Context")}</span><span className="h-1 flex-1 overflow-hidden rounded bg-elevated"><span className={cx("block h-full transition-all", ctxPct > 85 ? "bg-warn" : "bg-info")} style={{ width: `${ctxPct}%` }} /></span>
         <span className="tabular-nums">{kTok(a!.ctx!.used)} / {kTok(a!.ctx!.limit)}</span></div>}
+      {isOpen && !running && split && <p className="border-t border-border/60 px-3 py-1.5 text-[10.5px] text-subtle" title={L("Aproximado: las herramientas y los agentes pueden solaparse", "Approximate: tools and agents can overlap")}>
+        {L("Dónde se fue el tiempo", "Where the time went")}: {L("generación y razonamiento", "generation and reasoning")} ≈ {dur(split.gen)} · {L("herramientas", "tools")} ≈ {dur(split.tools)}{split.agents > 0 && <> · {L("agentes", "agents")} ≈ {dur(split.agents)}</>}
+        {a?.perf && total && (() => {
+          const pf = a.perf!;
+          const bits = [
+            pf.steps ? `${(total / pf.steps).toFixed(1)} s/${L("paso", "step")}` : null,
+            pf.out && pf.gen_s ? `${Math.round(pf.out / pf.gen_s)} tok/s` : null,
+            pf.cached && pf.prompt ? `${L("caché", "cache")} ${Math.round((pf.cached / pf.prompt) * 100)} %` : null,
+            pf.calm && pf.steps ? L(`${pf.calm} de ${pf.steps} pasos sin razonamiento`, `${pf.calm} of ${pf.steps} steps without reasoning`) : null,
+          ].filter(Boolean);
+          return bits.length ? <span className="mt-0.5 block">{L("Rendimiento", "Performance")}: {bits.join(" · ")}</span> : null;
+        })()}</p>}
       {isOpen && hasBody && <>
         {plan.length > 0 && <Plan items={plan} />}
         {reasoning && <Thinking text={reasoning} live={running && a?.phase === "thinking"} />}
         {rows.length > 0 && <div className="border-t border-border/60 py-1">
           {hidden > 0 && <button type="button" className="mx-3 my-1 text-[11px] text-accent" onClick={() => setShown((s) => s + STEP_PAGE * 2)}>{L(`Ver ${Math.min(hidden, STEP_PAGE * 2)} anteriores (de ${hidden})`, `Show ${Math.min(hidden, STEP_PAGE * 2)} earlier (of ${hidden})`)}</button>}
-          <ol className="space-y-px px-1">{rows.slice(hidden).map((r, i) => r.k === "t"
-            ? <StepRow key={r.t.id ?? `t${r.n}`} t={r.t} n={r.n} live={running} now={running && !r.t.done ? now : 0} onOpen={onOpen} />
-            : <NoteRow key={`n${hidden + i}`} n={r.n} />)}</ol>
+          {(() => {
+            const grouped = (a?.phases?.length ?? 0) >= 2;
+            const lastPh = (a?.phases?.length ?? 0) - 1;
+            const view = rows.slice(hidden);
+            const row = (r: typeof rows[number], i: number) => r.k === "t"
+              ? <StepRow key={r.t.id ?? `t${r.n}`} t={r.t} n={r.n} live={running} now={running && !r.t.done ? now : 0} onOpen={onOpen} />
+              : r.k === "s" ? <SayRow key={`s${hidden + i}`} text={r.text} /> : <NoteRow key={`n${hidden + i}`} n={r.n} />;
+            if (!grouped) return <ol className="space-y-px px-1">{view.map(row)}</ol>;
+            const segs: { ph: number; from: number; rows: typeof view }[] = [];
+            view.forEach((r, i) => { const l = segs[segs.length - 1]; if (l && l.ph === r.ph) l.rows.push(r); else segs.push({ ph: r.ph, from: i, rows: [r] }); });
+            return <div className="space-y-px px-1">{segs.map((g) => {
+              if (g.ph < 0) return <ol key={`g${g.ph}-${g.from}`} className="space-y-px">{g.rows.map((r, i) => row(r, g.from + i))}</ol>;
+              const title = a!.phases![g.ph].title;
+              const open = shut[g.ph] ?? g.ph === lastPh;
+              const ts = g.rows.flatMap((r) => (r.k === "t" ? [r.t] : []));
+              const bad = ts.filter((t) => t.done && t.ok === false).length;
+              const secs = ts.reduce((n, t) => n + (toolSeconds(t) ?? 0), 0);
+              const finished = plan.find((i) => i.content === title)?.status === "completed";
+              return (
+                <div key={`g${g.ph}`} className="rounded-lg">
+                  <button type="button" onClick={() => setShut((m) => ({ ...m, [g.ph]: !open }))} aria-expanded={open}
+                    className={cx("flex min-h-8 w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left hover:bg-elevated/60", g.ph === lastPh && running && "bg-info/8")}>
+                    {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-subtle" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-subtle" />}
+                    {finished ? <Check className="h-3 w-3 shrink-0 text-ok" /> : g.ph === lastPh && running ? <Loader2 className="h-3 w-3 shrink-0 animate-spin text-info" /> : <Circle className="h-3 w-3 shrink-0 text-subtle" />}
+                    <span className="min-w-0 flex-1 truncate font-medium text-fg">{title}</span>
+                    <span className="shrink-0 text-[10.5px] tabular-nums text-subtle">
+                      {ts.length === 1 ? L("1 paso", "1 step") : L(`${ts.length} pasos`, `${ts.length} steps`)}{bad ? <span className="text-warn"> · {L(`${bad} con error`, `${bad} failed`)}</span> : null}{secs >= 1 ? ` · ${dur(secs)}` : ""}</span>
+                  </button>
+                  {open && <ol className="ml-3 space-y-px border-l border-border/60 pl-1">{g.rows.map((r, i) => row(r, g.from + i))}</ol>}
+                </div>
+              );
+            })}</div>;
+          })()}
         </div>}
       </>}
     </div>
@@ -338,7 +488,7 @@ function LiveActivityInner({ tools: toolsIn, reasoning, activity: a, running, se
 }
 
 // `onOpen` is left out of the comparison: pages pass inline callbacks, and the panel must not re-render on every token.
-export const LiveActivity = memo(LiveActivityInner, (p, n) => p.tools === n.tools && p.reasoning === n.reasoning && p.activity === n.activity
+export const LiveActivity = memo(LiveActivityInner, (p, n) => p.tools === n.tools && p.reasoning === n.reasoning && p.activity === n.activity && p.thread === n.thread
   && p.running === n.running && p.seconds === n.seconds && p.queued === n.queued);
 
 /** Chip on a user message sent while the task was running. */

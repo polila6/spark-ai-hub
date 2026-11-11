@@ -36,7 +36,7 @@ from ..settings_store import branding, get_setting
 from . import canvas as canvas_svc
 from . import director
 from . import memory as memory_svc
-from . import dataq, kb, llm, loopguard, media_fetch, remote_db, research_tools, sandbox, scheduler, vision, web, web_tools, workflows
+from . import checkpoint as ckpt_svc, dataq, kb, llm, loopguard, media_fetch, remote_db, research_tools, sandbox, scheduler, vision, web, web_tools, workflows
 from . import skills as skills_svc
 from . import files as files_svc
 from . import turns as turns_svc
@@ -136,6 +136,8 @@ class Turn:
     user_message_id: int | None = None  # the message being answered: history = messages before it (queued ones after)
     history_upto: int | None = None  # follow-up turns: history = messages with id < this (default user_message_id)...
     history_exclude: list[int] = field(default_factory=list)  # ...except these (the queued messages being answered)
+    checkpoint: bool = False  # save the progress every few steps (services/checkpoint.py): chats of the playground and workspaces
+    pause_check: Callable[[], bool] | None = None  # «pause at the end of this step» (services/turns.pause)
 
     def history_bounds(self) -> tuple[int | None, set[int]]:
         return (self.history_upto or self.user_message_id), set(self.history_exclude)
@@ -446,6 +448,22 @@ PERMISSION_Q_RE = re.compile(
     re.I)
 
 
+ROUTINE_TOOLS = frozenset({"ws_write", "ws_append", "ws_edit", "ws_read", "ws_list", "ws_run", "download_file", "search_images",
+                           "extract_images", "search_papers", "doi_to_bibtex", "fetch_url", "fetch_urls", "web_search", "browse_url"})
+CALM_MAX = 3  # consecutive steps that may skip thinking
+
+
+def is_routine_result(name: str, res: dict) -> bool:
+    """A step that needs no deliberation afterwards: a plain tool that worked (a build counts only if it exited cleanly)."""
+    if name not in ROUTINE_TOOLS or not res.get("ok", True):
+        return False
+    if name == "ws_run":
+        t = res.get("terminal") or {}
+        out = f"{t.get('stdout') or ''}\n{t.get('stderr') or ''}"
+        return t.get("exit_code") in (0, None) and not t.get("timed_out") and not re.search(r"PROBLEMAS|Traceback|Error|error:|FAIL|✗", out)
+    return True
+
+
 def hands_off(text: str) -> bool:
     """The step ends by asking the user to say «continúa» / by asking permission to go on (the user does not want that:
     in a workspace the model goes on by itself and only stops for a decision only the user can take)."""
@@ -711,6 +729,22 @@ WEB_TOOLS = [
             "query": {"type": "string", "description": "What to look for in each page (picks the most relevant passages)"},
             "save_dir": {"type": "string", "description": "Workspace folder where to save each page's FULL text as .md (optional)"}},
             "required": ["urls"]}}},
+    {"type": "function", "function": {
+        "name": "browse_url",
+        "description": "Open a page in a real browser (JavaScript runs) isolated from the system: for pages that fetch_url reads empty "
+                       "(dynamic sites, galleries, dashboards, maps) or that block simple clients. Returns the visible text, the links and "
+                       "the images of the page; with screenshot it also saves a picture of the page (look at it with view_image). "
+                       "Slower than fetch_url (several seconds): use fetch_url first, this when it fails or the page is dynamic. "
+                       "Public addresses only; downloads and logins are not possible.",
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string"},
+            "wait_for": {"type": "string", "description": "CSS selector to wait for before reading (optional)"},
+            "query": {"type": "string", "description": "What to look for in the page (picks the most relevant passages)"},
+            "screenshot": {"type": "boolean", "description": "Also save a screenshot"},
+            "full_page": {"type": "boolean", "description": "Screenshot of the whole page, not just the top"},
+            "save_to": {"type": "string", "description": "Workspace file for the FULL text (.md) (optional)"},
+            "save_screenshot_to": {"type": "string", "description": "Workspace path for the screenshot (default screenshots/<site>.jpg)"}},
+            "required": ["url"]}}},
     {"type": "function", "function": {
         "name": "http_request",
         "description": "Call a public web API or download a data endpoint (GET or POST): JSON, CSV, XML… Public addresses only. "
@@ -1009,7 +1043,7 @@ BUILTIN_AGENTS = {
                                      "fuentes más fiables y contrasta los datos. Devuelve un informe estructurado con "
                                      "los hallazgos, cifras y fechas, citando cada dato con su URL. Indica lo que no "
                                      "hayas podido verificar.",
-                     "tools": ["web_search", "fetch_url", "fetch_urls", "search_images", "extract_images", "search_papers"]},
+                     "tools": ["web_search", "fetch_url", "fetch_urls", "browse_url", "search_images", "extract_images", "search_papers"]},
     "documentalista": {"description": "Busca y lee en los documentos del usuario (base de conocimiento y adjuntos).",
                        "instructions": "Eres un documentalista. Empieza con una consulta precisa a search_knowledge y "
                                        "haz una segunda solo si los primeros resultados son insuficientes. Lee con "
@@ -1036,13 +1070,13 @@ BUILTIN_AGENTS = {
     "general": {"description": "Agente de propósito general con las instrucciones que le des (campo instructions).",
                 "instructions": "Eres un agente auxiliar. Cumple la tarea con las herramientas disponibles y devuelve "
                                 "un resultado completo y conciso.",
-                "tools": ["web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "extract_images",
+                "tools": ["web_search", "fetch_url", "fetch_urls", "browse_url", "http_request", "crawl_site", "search_images", "extract_images",
                           "search_papers", "doi_to_bibtex", "download_file", "search_knowledge", "read_document",
                           "describe_data", "query_data", "use_skill", "read_skill_file", "ws_list", "ws_read", "ws_write",
                           "ws_append", "ws_edit", "ws_run", "view_image"]},
 }
-WEB_SAVE_TOOLS = {"fetch_url", "fetch_urls", "http_request", "crawl_site", "doi_to_bibtex"}  # write into the workspace only when given save_to/save_dir
-SUB_AGENT_TOOLS = {"web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "extract_images", "search_papers",
+WEB_SAVE_TOOLS = {"fetch_url", "fetch_urls", "browse_url", "http_request", "crawl_site", "doi_to_bibtex"}  # write into the workspace only when given save_to/save_dir
+SUB_AGENT_TOOLS = {"web_search", "fetch_url", "fetch_urls", "browse_url", "http_request", "crawl_site", "search_images", "extract_images", "search_papers",
                    "doi_to_bibtex", "download_file", "view_image", "search_knowledge", "read_document", "describe_data", "query_data",
                    "use_skill", "read_skill_file", "run_code"} | WS_TOOLS  # ws_* only inside a workspace
 from .agent_catalog import EXTRA_AGENTS  # noqa: E402 - specialised agents (programador, tester, estadistico…)
@@ -1051,7 +1085,7 @@ BUILTIN_AGENTS.update({k: v for k, v in EXTRA_AGENTS.items() if k not in BUILTIN
 
 TOOL_LABELS = {"generate_image": "Generando imagen", "edit_image": "Editando imagen", "search_knowledge": "Buscando en tus documentos",
                "read_document": "Leyendo documento", "describe_data": "Analizando datos", "query_data": "Consultando datos",
-               "save_memory": "Guardando en memoria", "web_search": "Buscando en internet", "fetch_url": "Leyendo página web", "fetch_urls": "Leyendo varias páginas", "http_request": "Consultando una API", "crawl_site": "Rastreando un sitio", "search_images": "Buscando imágenes", "extract_images": "Buscando imágenes en la página", "search_papers": "Buscando artículos", "doi_to_bibtex": "Obteniendo referencias", "download_file": "Descargando archivo", "view_image": "Mirando la imagen",
+               "save_memory": "Guardando en memoria", "web_search": "Buscando en internet", "fetch_url": "Leyendo página web", "fetch_urls": "Leyendo varias páginas", "browse_url": "Abriendo la página en un navegador", "http_request": "Consultando una API", "crawl_site": "Rastreando un sitio", "search_images": "Buscando imágenes", "extract_images": "Buscando imágenes en la página", "search_papers": "Buscando artículos", "doi_to_bibtex": "Obteniendo referencias", "download_file": "Descargando archivo", "view_image": "Mirando la imagen",
                "use_skill": "Cargando skill", "read_skill_file": "Leyendo archivo de skill", "find_skills": "Buscando skills",
                "install_skill": "Instalando skill", "delegate_task": "Agente trabajando", "compact_context": "Contexto compactado",
                "run_code": "Ejecutando código", "canvas_write": "Escribiendo en el lienzo",
@@ -1161,6 +1195,7 @@ class Runner:
         self.plan: list[dict] = []
         self.plan_part: dict | None = None  # the {"type": "plan"} entry of self.parts (latest plan, kept after reload)
         self.protected: set[int] = set()  # id() of injected user messages: compaction keeps them verbatim
+        self._inbox_state()
         self.task_summary: str | None = None  # summary of this turn's older steps (mid-turn compaction)
         self.task_summary_msg: dict | None = None
         self.unverified = False  # workspace files written and not run/checked since
@@ -1264,6 +1299,7 @@ class Runner:
                          "personales o confidenciales del usuario en una búsqueda. Más herramientas: fetch_urls lee hasta 10 "
                          "páginas a la vez (úsala tras buscar en vez de abrirlas una a una); web_search admite site, filetype, "
                          "page y limit (hasta 20); fetch_url con as_of lee la copia del Internet Archive de una fecha; "
+                         "browse_url abre la página en un navegador aislado (con JavaScript) cuando fetch_url la devuelve vacía o la web es dinámica (galerías, mapas, buscadores internos); "
                          "http_request llama a APIs públicas (GET/POST) y crawl_site recorre varias páginas de un sitio. "
                          "Con save_to/save_dir guardas lo descargado como archivo para procesarlo después con un script "
                          "(el código no tiene internet). Si una página no tiene texto porque necesita JavaScript, busca su API "
@@ -1273,7 +1309,7 @@ class Runner:
                          "reads pages/PDFs. Use them for current facts; read sources before answering and cite as "
                          "[title](url). Never put personal or confidential data in a query. More tools: fetch_urls reads up to 10 pages at "
                          "once (use it after searching instead of opening them one by one); web_search takes site, filetype, page and "
-                         "limit (up to 20); fetch_url with as_of reads the Internet Archive copy of a date; http_request calls public "
+                         "limit (up to 20); fetch_url with as_of reads the Internet Archive copy of a date; browse_url opens a page in an isolated browser (JavaScript on) when fetch_url returns it empty or the site is dynamic; http_request calls public "
                          "APIs (GET/POST) and crawl_site walks several pages of a site. save_to/save_dir keep what was downloaded as a "
                          "file for a script (code has no internet). If a page has no text because it needs JavaScript, find its data "
                          "API with http_request or an alternative version. Never send the user's private data to third parties with "
@@ -1389,6 +1425,19 @@ class Runner:
                           "no para preguntas simples. Disponibles:\n" if es else
                           "Sub-agents (delegate_task) work in parallel with their own context. Available:\n")
                          + "\n".join(f"- {k}: {v['description'][:200]}" for k, v in self.agents.items()))
+            if self.workspace is not None:
+                lines.append(
+                    ("VELOCIDAD: el servidor genera varias peticiones a la vez casi al mismo coste que una, y tú, en serie, eres lo "
+                     "más lento. Cuando el trabajo tenga partes independientes (capítulos, secciones, figuras, un lote de "
+                     "descargas o de revisiones), LLAMA A delegate_task VARIAS VECES EN EL MISMO PASO (hasta "
+                     f"{self.max_parallel}), cada agente con su propia carpeta o archivos en write_paths, en lugar de hacerlo tú "
+                     "uno tras otro. Tú coordinas, integras y compilas. No delegues lo que son dos líneas."
+                     if es else
+                     "SPEED: the server runs several requests at once for about the cost of one, and you, working in series, are "
+                     "the slowest part. When the work has independent parts (chapters, sections, figures, a batch of downloads "
+                     f"or reviews), CALL delegate_task SEVERAL TIMES IN THE SAME STEP (up to {self.max_parallel}), each agent "
+                     "with its own folder or files in write_paths, instead of doing them one after another yourself. You "
+                     "coordinate, integrate and compile. Do not delegate two-line jobs."))
             if self.preferred_agent:
                 lines.append(
                     (f"Agente preferido de esta conversación: «{self.preferred_agent}». Para cada petición sustantiva "
@@ -1543,6 +1592,10 @@ class Runner:
                         extra.append(f"[{ref_by_id.get(part['image']['id'], 'img')}: imagen generada y mostrada]")
                     elif part.get("summary"):
                         extra.append(f"[{part.get('name')}: {part['summary'][:300]}]")
+                    elif part.get("type") == "plan" and (m.metrics or {}).get("interrupted"):
+                        mark = {"completed": "hecho", "in_progress": "en curso"}
+                        extra.append("[Plan cuando se interrumpió: " + "; ".join(
+                            f"{i.get('content', '')[:120]} ({mark.get(i.get('status'), 'pendiente')})" for i in part.get("items") or []) + "]")
                 out.append({"role": "assistant", "content": (m.content or "") + ("\n" + "\n".join(extra) if extra else "")})
         # Drop the oldest turns when the history does not fit.
         total = 0
@@ -1943,6 +1996,40 @@ class Runner:
             raise AgentError("No se pudo leer ninguna: " + "; ".join(f"{p['url']}: {p['error']}" for p in pages)[:600])
         res = {"ok": True, "summary": f"{ok}/{len(pages)} páginas leídas" + (f" · {len(saved)} guardadas" if saved else ""),
                "sources": sources, "content": "\n\n".join(blocks)}
+        return self._attach_saved(res, saved)
+
+    def tool_browse_url(self, call_id: str, args: dict) -> dict:
+        from . import browser
+        url = str(args.get("url", "")).strip()
+        self.emit({"type": "tool_progress", "id": call_id, "message": "Abriendo la página en el navegador aislado…"})
+        try:
+            d = browser.render(url, str(args.get("wait_for") or "") or None, bool(args.get("screenshot")), bool(args.get("full_page")))
+        except web.WebError as e:
+            raise AgentError(str(e))
+        text = d["text"]
+        if not text and not d["images"]:
+            raise AgentError("La página se abrió pero no muestra texto ni imágenes (¿requiere iniciar sesión o es un bloqueo?)")
+        title = d["title"] or url
+        saved = []
+        if args.get("save_to"):
+            saved.append(self._store(str(args["save_to"]).strip(), f"# {title}\nURL: {d['final_url']}\n\n{text}".encode()))
+        if d["screenshot"]:
+            host = re.sub(r"[^a-z0-9]+", "-", (urlsplit_host(d["final_url"]) or "pagina").lower()).strip("-")
+            saved.append(self._store(str(args.get("save_screenshot_to") or f"screenshots/{host}.jpg").strip(), d["screenshot"]))
+        q = str(args.get("query") or "")
+        body = web_tools.excerpt(text, q, TOOL_RESULT_CHARS) if text else "(sin texto visible)"
+        links = [l for l in d["links"] if l.get("text")][:40]
+        imgs = d["images"][:20]
+        extra = ""
+        if links:
+            extra += "\n\n## Enlaces\n" + "\n".join(f"- {l['text'][:80]} → {l['href']}" for l in links)
+        if imgs:
+            extra += "\n\n## Imágenes (usa download_file para guardarlas)\n" + "\n".join(
+                f"- {i['src']} ({i['w']}×{i['h']}) {i['alt'][:80]}" for i in imgs)
+        res = {"ok": True, "summary": f"{title[:90]} ({len(text):,} caracteres, navegador aislado)".replace(",", "."),
+               "sources": [{"title": title, "url": d["final_url"], "kind": "web", "snippet": text[:240]}],
+               "content": f"# {title}\nURL: {d['final_url']} (renderizada con JavaScript en un navegador aislado)\n"
+                          + "".join(f"{s['where']}\n" for s in saved) + f"\n{body}{extra}"}
         return self._attach_saved(res, saved)
 
     def tool_http_request(self, call_id: str, args: dict) -> dict:
@@ -2573,10 +2660,19 @@ class Runner:
                 self.ws_claims.pop(call_id, None)
             raise
         scheduler.begin_request(inst.id)
+        self._inbox_state()
+        notes_seen: set[int] = set(self._inbox_buf)
         try:
             for step in range(max_steps):
                 if self.stop():
                     raise AgentError("Cancelado por el usuario")
+                notes = self._sub_notes(notes_seen)
+                for nt in notes:
+                    messages.append({"role": "user", "content": (
+                        f"[El usuario ha escrito mientras trabajabas]: {nt}\n(Si afecta a tu tarea, tenlo en cuenta; si no, "
+                        "ignóralo y sigue.)" if es else
+                        f"[The user wrote while you were working]: {nt}\n(If it affects your task take it into account; "
+                        "otherwise ignore it and carry on.)")})
                 self._fit(messages, max_out)
                 last = step == max_steps - 1
                 active_specs = specs
@@ -3006,7 +3102,7 @@ class Runner:
             return False  # the director left the person's documents out of this answer
         if name in ("db_schema", "db_query"):
             return bool(self.db_names)
-        if name in ("web_search", "fetch_url", "fetch_urls", "http_request", "crawl_site", "search_images", "download_file",
+        if name in ("web_search", "fetch_url", "fetch_urls", "browse_url", "http_request", "crawl_site", "search_images", "download_file",
                     "extract_images", "search_papers", "doi_to_bibtex"):
             return self.flags["web"]
         if name == "view_image":
@@ -3155,6 +3251,7 @@ class Runner:
             if chunk.get("usage") and usage is not None:
                 for k in ("prompt_tokens", "completion_tokens"):
                     usage[k] = usage.get(k, 0) + (chunk["usage"].get(k) or 0)
+                usage["cached_tokens"] = usage.get("cached_tokens", 0) + ((chunk["usage"].get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
                 usage["last_prompt"] = chunk["usage"].get("prompt_tokens") or 0
                 usage["last_completion"] = chunk["usage"].get("completion_tokens") or 0
             for ch in chunk.get("choices") or []:
@@ -3206,12 +3303,58 @@ class Runner:
                 self.parts.append(self.plan_part)
             else:
                 self.plan_part["items"] = items
+            cur = next((i["content"] for i in items if i["status"] == "in_progress"), None)
+            if cur and cur != getattr(self, "_phase", None):  # the thread groups the steps under the plan step they belong to
+                self._phase = cur
+                self.parts.append({"type": "phase", "title": cur[:160]})
         self.emit({"type": "plan", "items": items})
         done = sum(1 for i in items if i["status"] == "completed")
         rest = plan_open(items)
         return {"ok": True, "content": f"Plan saved ({done}/{len(items)} completed)." + (
             f" Next: {rest[0]['content']}. Keep working; do not stop until every item is completed." if rest else
             " Everything is completed: give the final summary to the user.")}
+
+    def _inbox_state(self) -> None:
+        """ids a sub-agent took from the inbox and the main loop still owes the user an answer to (lazy: also for runners
+        built without __init__ in tests)."""
+        d = self.__dict__
+        d.setdefault("_inbox_buf", [])
+        d.setdefault("_inbox_lock", threading.Lock())
+        d.setdefault("_inbox_text", {})
+
+    def _say(self, text: str, glue: bool = False) -> None:
+        """Remember what the assistant wrote between two tool calls, in order, so the chat can show each comment next to the
+        steps it belongs to (parts of type «say»); `glue`: continuation of the previous piece."""
+        if not (text or "").strip():
+            return
+        with self.lock:
+            if glue and self.parts and self.parts[-1].get("type") == "say":
+                self.parts[-1]["text"] += text
+            else:
+                self.parts.append({"type": "say", "text": text})
+
+    def _sub_notes(self, seen: set[int]) -> list[str]:
+        """Messages the user wrote while a sub-agent works: it reads them too (without taking them from the main assistant,
+        which still receives them afterwards). `seen` = ids it has read (updated); returns the new texts."""
+        self._inbox_state()
+        try:
+            ids = turns_svc.take_inbox(self.t.conversation_id)
+        except Exception:  # noqa: BLE001
+            ids = []
+        with self._inbox_lock:
+            self._inbox_buf = list(dict.fromkeys(self._inbox_buf + list(ids)))
+            new = [i for i in self._inbox_buf if i not in seen]
+        seen.update(new)
+        out: list[str] = []
+        if new:
+            with SessionLocal() as db:
+                for mid in new:
+                    if mid not in self._inbox_text:
+                        m = db.get(Message, mid)
+                        self._inbox_text[mid] = (m.content or "")[:3000] if m and m.role == "user" else ""
+                    if self._inbox_text[mid]:
+                        out.append(self._inbox_text[mid])
+        return out
 
     def _absorb_inbox(self, messages: list[dict], closing: bool = False, partial_reasoning: str = "") -> int:
         """Append the messages the user sent while the turn runs (see services/turns.py) as user messages.
@@ -3222,7 +3365,11 @@ class Runner:
         try:
             ids = turns_svc.close_inbox(cid) if closing else turns_svc.take_inbox(cid)
         except Exception:  # noqa: BLE001  (Redis hiccup: the messages stay queued for the follow-up turn)
-            return 0
+            ids = []
+        self._inbox_state()
+        with self._inbox_lock:  # what a sub-agent already read is still owed to the main assistant
+            ids = list(dict.fromkeys(self._inbox_buf + list(ids)))
+            self._inbox_buf = []
         if not ids:
             return 0
         es = self.t.lang != "en"
@@ -3510,6 +3657,9 @@ class Runner:
         think_retries = 0  # steps cut while still reasoning (no text, no tool call)
         loops = 0  # streams cut because the model was going round in circles (loopguard)
         think_off = 0  # steps left without thinking after a loop
+        calm_run = 0  # steps in a row that skipped thinking because the last one was routine
+        gen_s, calm_steps = 0.0, 0  # measured: seconds inside the model, steps that skipped reasoning
+        ckpt_step, ckpt_at = 0, time.monotonic()  # last saved checkpoint
         nudges = nudges_in_row = 0
         glue = False
         last = False
@@ -3572,9 +3722,12 @@ class Runner:
                 if preferred_agent_completed and specs:
                     step_specs = [s for s in specs if s["function"]["name"] not in
                                   {"delegate_task", "search_knowledge", "read_document"}]
+                g0 = time.monotonic()
                 text, calls, finish = self._llm_step(messages, step_specs if not last else None, fit_tokens,
                                                      step_thinking, on_delta, on_reasoning, usage_total,
                                                      interruptible=not last, main=True)
+                gen_s += time.monotonic() - g0
+                calm_steps += 0 if step_thinking or not self.t.thinking else 1
             except EngineError as e:
                 if ctx_retries < 3 and is_context_error(e.message):
                     # the estimate was too optimistic: be stricter, compact the turn's steps and retry
@@ -3599,6 +3752,7 @@ class Runner:
                     text_out[-1] += text
                 elif text.strip():
                     text_out.append(text)
+                self._say(text, glue)
                 glue = False
                 if text.strip():
                     messages.append({"role": "assistant", "content": text})
@@ -3619,6 +3773,7 @@ class Runner:
                         text_out[-1] += text
                     else:
                         text_out.append(text)
+                    self._say(text, glue)
                     glue = False
                     messages.append({"role": "assistant", "content": text})
                 think_off = 3 if loops < 3 else 10 ** 6  # the third loop of a turn: no more thinking until it ends
@@ -3667,6 +3822,7 @@ class Runner:
                 text_out[-1] += text  # seamless continuation of the previous piece
             else:
                 text_out.append(text)
+            self._say(text, glue)
             glue = False
             if not calls and finish == "length" and text.strip() and continuations < 3 and not self.stop() and not last:
                 continuations += 1
@@ -3721,6 +3877,7 @@ class Runner:
             self.emit({"type": "status", "status": "tool"})
             delegated = [r for r in results if r[1] == "delegate_task"]
             outputs: dict[str, dict] = {}
+            routine = True
             if len(delegated) > 1:  # sub-agents in parallel; the rest in order
                 with ThreadPoolExecutor(max_workers=max(1, min(self.max_parallel, len(delegated)))) as ex:
                     futs = {cid: ex.submit(self.run_tool, cid, name, args) for cid, name, args in delegated}
@@ -3739,7 +3896,26 @@ class Runner:
                     elif name == "ws_run":
                         self.unverified = False
                 messages.append({"role": "tool", "tool_call_id": cid, "content": str(res.get("content") or res.get("summary"))[:TOOL_RESULT_CHARS]})
+                routine = routine and is_routine_result(name, res)
+            # Reasoning is a third of what a long task generates: after plain, successful steps (write, read, download, search,
+            # a clean build) the next step acts without it; every fourth step thinks again, and any failure or any judgement
+            # (a look at a picture, an agent's report, the plan) brings it back at once.
+            if routine and self.workspace is not None and self.t.thinking and calm_run < CALM_MAX:
+                think_off = max(think_off, 1)
+                calm_run += 1
+            else:
+                calm_run = 0
+            if self.t.checkpoint and not self.stop() and (step - ckpt_step >= ckpt_svc.EVERY_STEPS
+                                                          or time.monotonic() - ckpt_at >= ckpt_svc.EVERY_SECONDS):
+                ckpt_step, ckpt_at = step, time.monotonic()  # a restart now would not lose the task: see services/checkpoint.py
+                with self.lock:
+                    snap = list(self.parts)
+                ckpt_svc.save(self.t.conversation_id, self.t.user_id, self.t.user_message_id, self.model.alias, step,
+                              "\n\n".join(x for x in text_out if x.strip()), snap, {"steps": step, "partial": True})
             if self.stop():
+                break
+            if self.t.pause_check is not None and not last and self.t.pause_check():
+                self.paused = True  # the step finished: stop here, nothing is lost, «Reanudar» continues from the saved state
                 break
             if model.backend == "vllm":
                 with SessionLocal() as db:  # tools may have changed memory; refresh runtime config
@@ -3776,7 +3952,9 @@ class Runner:
                    "prompt_tokens": usage_total["prompt_tokens"] or None, "completion_tokens": ct or None,
                    "tokens_per_s": round((ct - 1) / decode, 2) if ct and ct > 1 and decode > 0 and not self.parts else None,
                    "token_count_source": "engine_usage", "finish_reason": finish, "steps": step,
+                   "gen_s": round(gen_s, 1) or None, "calm_steps": calm_steps or None, "cached_tokens": usage_total.get("cached_tokens") or None,
                    "nudges": nudges or None, "compactions": self.compactions or None, "injected": self.injected or None,
+                   **({"paused": True, "interrupted": True} if getattr(self, "paused", False) else {}),
                    "limit_hit": limit_hit, "plan_open": len(plan_open(self.plan)) if self.plan else None,
                    "tools": [p["name"] for p in self.parts if p.get("type") == "tool"],
                    "context_used": (usage_total.get("last_prompt") or 0) + (usage_total.get("last_completion") or 0) or None,
@@ -3798,7 +3976,7 @@ class Runner:
             self.run_tool(cid, "generate_image", {"prompt": self.t.content, "aspect": self.t.params.get("aspect", "square")})
         total = time.perf_counter() - t0
         ok = all(p.get("ok") for p in self.parts)
-        return {"text": "" if ok else (self.parts[-1].get("summary") if self.parts else ""), "reasoning": None,
+        return {"text": "" if ok else next((p.get("summary") for p in reversed(self.parts) if p.get("summary")), ""), "reasoning": None,
                 "parts": self.parts, "metrics": {"latency_ms": round(total * 1000, 1), "tools": [p["name"] for p in self.parts if p.get("type") == "tool"],
                                                  "mode": "image"}}
 

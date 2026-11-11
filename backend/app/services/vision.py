@@ -3,7 +3,8 @@
 The main model of a workspace may be a text model, or too busy and too large to spend on screenshots: a helper of a few billion
 parameters reads the page and says what is wrong (text cut off or overprinted, tables outside the margin, legends over data,
 placeholder pictures, blurry images) so the assistant can fix it. The helper is chosen by the admin setting
-`vision_helper_model`; "auto" picks a small installed vision model, else a loaded one, else any installed vision model."""
+`vision_helper_model`; "auto" picks the main model when it sees (already loaded), else a small installed vision model, else a
+loaded one, else any installed vision model."""
 from __future__ import annotations
 
 import base64
@@ -50,6 +51,9 @@ def choose(models: list, setting: str = "auto", current=None):
             return named
     if not cands:
         return None
+    # the model that is already working here and sees: loaded, faster to ask and better than a few-billion helper
+    if current is not None and current in cands and current.status in (ModelStatus.ready, ModelStatus.busy):
+        return current
     small = sorted((m for m in cands if (m.estimated_memory_gb or 99) <= SMALL_GB), key=lambda m: m.estimated_memory_gb or 99)
     if small:
         return small[0]

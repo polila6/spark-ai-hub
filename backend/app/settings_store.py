@@ -77,7 +77,7 @@ DEFAULTS: dict[str, Any] = {
     "skills_auto_install": True,  # the model may install skills from the internet without asking first
     "skill_sources": ["anthropics/skills"],  # GitHub repos (owner/repo[/path]) offered as the skill catalog
     "agents_enabled": True,
-    "max_parallel_agents": 3,
+    "max_parallel_agents": 4,
     # Safety net of the run-until-done agent loop (the user can always press Stop); a turn that reaches it reports
     # what is done and what is left, and "continúa" resumes it
     "agent_max_steps_chat": 40,

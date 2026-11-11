@@ -56,19 +56,19 @@ export function CanvasPanel({ id, version, onClose, onAsk, busy }: { id: string;
   }
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))] lg:pt-2">
         <FileText className="h-4 w-4 shrink-0 text-accent" />
         <span className="min-w-0 flex-1 truncate text-sm font-semibold" title={d.title}>{d.title}</span>
         <Badge>v{d.version}</Badge>
         {d.versions?.length > 1 && (
-          <Select className="h-7 w-auto text-xs" aria-label={L("Versiones", "Versions")} value="" onChange={(e) => e.target.value && restore(Number(e.target.value))}>
+          <Select className="h-9 w-auto text-xs lg:h-7" aria-label={L("Versiones", "Versions")} value="" onChange={(e) => e.target.value && restore(Number(e.target.value))}>
             <option value="">{L("Versiones…", "Versions…")}</option>
             {[...d.versions].reverse().filter((v: any) => v.version !== d.version).map((v: any) => <option key={v.version} value={v.version}>v{v.version} · {v.author === "user" ? L("tú", "you") : L("asistente", "assistant")} · {dt(v.at, lang)}</option>)}
           </Select>
         )}
         <Button size="icon" variant="ghost" aria-label={L("Cerrar lienzo", "Close canvas")} onClick={onClose}><X className="h-4 w-4" /></Button>
       </div>
-      <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-1.5 text-xs">
+      <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap border-b border-border px-2 py-1.5 text-xs sm:px-3 lg:flex-wrap lg:overflow-visible [&>*]:shrink-0 [&_button]:!h-9 lg:[&_button]:!h-8">
         {edit ? (
           <>
             <Button size="sm" variant="primary" loading={working === "save"} onClick={save}><Save className="h-3.5 w-3.5" />{L("Guardar", "Save")}</Button>
@@ -81,13 +81,13 @@ export function CanvasPanel({ id, version, onClose, onAsk, busy }: { id: string;
           : ["docx", "pdf", "md", "html"].map((f) => <Button key={f} size="sm" variant="ghost" loading={working === f} onClick={() => exp(f)}><Download className="h-3.5 w-3.5" />{f === "docx" ? "Word" : f.toUpperCase()}</Button>)}
         <Button size="sm" variant="ghost" loading={working === "drive"} onClick={() => saveToDrive(isCode ? "code" : "docx")} title={L("Guardar una copia en Mis archivos", "Save a copy to My files")}><History className="h-3.5 w-3.5" />{L("A Mis archivos", "To My files")}</Button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {edit ? <Textarea className="h-full min-h-[60vh] font-mono text-xs" value={draft} onChange={(e) => setDraft(e.target.value)} />
-          : isCode ? <pre className="overflow-x-auto rounded-lg bg-elevated p-3 font-mono text-xs leading-relaxed">{d.content}</pre>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
+        {edit ? <Textarea className="h-full min-h-[50dvh] font-mono text-base lg:text-xs" value={draft} onChange={(e) => setDraft(e.target.value)} />
+          : isCode ? <pre className="overflow-x-auto rounded-lg bg-elevated p-3 font-mono text-[12.5px] lg:text-xs leading-relaxed">{d.content}</pre>
             : <div className="prose-chat max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm]}>{d.content}</ReactMarkdown></div>}
       </div>
       <form className="flex gap-2 border-t border-border p-2" onSubmit={(e) => { e.preventDefault(); if (ask.trim()) { onAsk(L(`En el lienzo «${d.title}»: ${ask.trim()}`, `In the canvas “${d.title}”: ${ask.trim()}`)); setAsk(""); } }}>
-        <input className={cx("h-9 min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 text-sm outline-none focus:ring-2 focus:ring-accent/40")} value={ask} onChange={(e) => setAsk(e.target.value)}
+        <input className={cx("h-11 min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 text-base lg:h-9 lg:text-sm outline-none focus:ring-2 focus:ring-accent/40")} value={ask} onChange={(e) => setAsk(e.target.value)}
           placeholder={L("Pide un cambio: «hazlo más corto», «añade una tabla»…", "Ask for a change: “make it shorter”, “add a table”…")} />
         <Button type="submit" size="icon" variant="primary" disabled={!ask.trim() || busy} aria-label={L("Enviar", "Send")}><Send className="h-4 w-4" /></Button>
       </form>

@@ -85,7 +85,8 @@ function Act({ label, onClick, disabled, children }: { label: string; onClick: (
 
 export type MessageActionsProps = {
   role: string;              // "user" | "assistant"
-  text: string;              // raw markdown that "Copy" copies
+  text: string;              // raw markdown that "Copy" copies (for a long task: only its conclusion)
+  full?: string;             // the whole message, when `text` is only the conclusion: gets its own button
   onEdit?: () => void;       // user messages: open the inline editor
   onRegenerate?: () => void; // answer again (last answer, or a last user message left without answer)
   onResume?: () => void;     // "resume from here": delete everything after this message (ask first)
@@ -95,12 +96,14 @@ export type MessageActionsProps = {
 };
 
 /** Small icon row under a bubble: always visible on touch screens, on hover (inside MSG_GROUP) with a mouse. */
-export function MessageActions({ role, text, onEdit, onRegenerate, onResume, onReply, busy, className }: MessageActionsProps) {
+export function MessageActions({ role, text, full, onEdit, onRegenerate, onResume, onReply, busy, className }: MessageActionsProps) {
   const L = useL();
   const [done, copy] = useCopied();
+  const [doneAll, copyAll] = useCopied();
   return (
     <div className={cx("mt-0.5 flex items-center gap-0.5 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:group-hover/msg:opacity-100", role === "user" && "justify-end", className)}>
-      {text && <Act label={done ? L("Copiado", "Copied") : L("Copiar mensaje", "Copy message")} onClick={() => copy(text)}>{done ? <Check className="h-3.5 w-3.5 text-ok" /> : <Copy className="h-3.5 w-3.5" />}</Act>}
+      {text && <Act label={done ? L("Copiado", "Copied") : full && full !== text ? L("Copiar la conclusión", "Copy the conclusion") : L("Copiar mensaje", "Copy message")} onClick={() => copy(text)}>{done ? <Check className="h-3.5 w-3.5 text-ok" /> : <Copy className="h-3.5 w-3.5" />}</Act>}
+      {full && full !== text && <Act label={doneAll ? L("Copiado", "Copied") : L("Copiar todo el mensaje (con los pasos intermedios)", "Copy the whole message (with the intermediate comments)")} onClick={() => copyAll(full)}>{doneAll ? <Check className="h-3.5 w-3.5 text-ok" /> : <Copy className="h-3.5 w-3.5 opacity-60" />}</Act>}
       {onReply && text && <Act label={L("Responder citando este mensaje", "Reply quoting this message")} onClick={onReply}><Reply className="h-3.5 w-3.5" /></Act>}
       {onEdit && <Act label={L("Editar y volver a enviar", "Edit and resend")} onClick={onEdit} disabled={busy}><Pencil className="h-3.5 w-3.5" /></Act>}
       {onRegenerate && <Act label={L("Regenerar respuesta", "Regenerate answer")} onClick={onRegenerate} disabled={busy}><RefreshCw className="h-3.5 w-3.5" /></Act>}

@@ -94,7 +94,7 @@ def start(cid, user_id, title: str, accept_messages: bool = True) -> str:
         if cur and cur.get("status") == "running":
             raise RuntimeError("busy")
         r.set(_k(cid), json.dumps(info), ex=TTL_S)
-    r.delete(_k(cid, ":ev"), _k(cid, ":cancel"), _k(cid, ":inbox"))
+    r.delete(_k(cid, ":ev"), _k(cid, ":cancel"), _k(cid, ":inbox"), _k(cid, ":pause"))
     if accept_messages:
         r.set(_k(cid, ":accept"), "1", ex=TTL_S)
     r.set(_k(cid, ":beat"), "1", ex=BEAT_TTL_S)
@@ -126,6 +126,27 @@ def finish(cid, user_id, status: str) -> None:
 
 def cancel(cid) -> None:
     get_redis().set(_k(cid, ":cancel"), "1", ex=TTL_S)
+
+
+def pause(cid) -> None:
+    """Ask the turn to stop at the END of the step it is in (a tool or a generation is never cut), keeping everything done."""
+    get_redis().set(_k(cid, ":pause"), "1", ex=TTL_S)
+
+
+def pause_checker(cid):
+    """Cheap «was a pause asked?» for the agent (looks at Redis at most once per second)."""
+    state = {"t": 0.0, "v": False}
+
+    def check() -> bool:
+        if state["v"]:
+            return True
+        now = time.time()
+        if now - state["t"] >= 1.0:
+            state["t"] = now
+            state["v"] = bool(get_redis().exists(_k(cid, ":pause")))
+        return state["v"]
+
+    return check
 
 
 def forget(cid, user_id) -> None:

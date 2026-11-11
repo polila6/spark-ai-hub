@@ -259,3 +259,60 @@ def test_search_papers_and_bibtex_tools_answer_with_real_fields(monkeypatch):
     assert "@article{K1" in res["content"] and res["ok"]
     with pytest.raises(agent.AgentError):
         r.tool_doi_to_bibtex("c3", {"dois": []})
+
+
+def test_say_parts_keep_the_order_of_comments_and_steps():
+    import threading
+
+    from app.services.agent import Runner
+
+    r = object.__new__(Runner)
+    r.parts, r.lock = [], threading.Lock()
+    r._say("Voy a buscar.")
+    r.parts.append({"type": "tool", "name": "web_search"})
+    r._say("Encontré 3 fuentes.")
+    r._say(" Sigo.", glue=True)
+    r._say("   ")
+    assert [p["type"] for p in r.parts] == ["say", "tool", "say"]
+    assert r.parts[2]["text"] == "Encontré 3 fuentes. Sigo."
+
+
+def test_routine_steps_skip_thinking_but_failures_and_judgements_do_not():
+    from app.services.agent import is_routine_result
+
+    assert is_routine_result("ws_write", {"ok": True})
+    assert is_routine_result("ws_run", {"ok": True, "terminal": {"exit_code": 0, "stdout": "OK figs/a.pdf", "stderr": ""}})
+    assert not is_routine_result("ws_run", {"ok": True, "terminal": {"exit_code": 1, "stdout": "", "stderr": ""}})
+    assert not is_routine_result("ws_run", {"ok": True, "terminal": {"exit_code": 0, "stdout": "PROBLEMAS fig.pdf: texto solapado", "stderr": ""}})
+    assert not is_routine_result("ws_read", {"ok": False})
+    assert not is_routine_result("view_image", {"ok": True})
+    assert not is_routine_result("delegate_task", {"ok": True})
+    assert not is_routine_result("update_plan", {"ok": True})
+
+
+def test_checkpoint_resume_roundtrip(monkeypatch):
+    """A saved checkpoint becomes the interrupted assistant message and disappears."""
+    from types import SimpleNamespace
+
+    from app.services import checkpoint
+
+    row = SimpleNamespace(payload={"text": "Voy bien.\n\nSigo con el capítulo 3.", "parts": [{"type": "tool", "name": "ws_write"}]},
+                          model_alias="m", step=12)
+
+    class DB:
+        added, deleted = [], []
+
+        def get(self, model, cid):
+            return row
+
+        def add(self, x):
+            self.added.append(x)
+
+        def delete(self, x):
+            self.deleted.append(x)
+
+    db = DB()
+    msg = checkpoint.materialize(db, "cid")
+    assert msg.role == "assistant" and "capítulo 3" in msg.content and msg.parts[0]["name"] == "ws_write"
+    assert msg.metrics["interrupted"] is True and msg.metrics["steps"] == 12
+    assert db.deleted == [row] and db.added == [msg]

@@ -151,3 +151,12 @@ def test_view_image_tool_is_offered_only_with_a_vision_model(monkeypatch):
     assert r._tool_allowed("view_image") is True
     r.workspace, r.flags["code"] = None, False
     assert r._tool_allowed("view_image") is False  # a plain chat without code tools does not get it
+
+
+def test_main_model_looks_at_pictures_when_it_sees_and_is_loaded():
+    big = M("main-35b", 53, ModelStatus.ready)
+    small = M("vl-4b", 4.8, ModelStatus.ready, backend="ollama")
+    assert vision.choose([big, small], "auto", big) is big  # no extra model, no swap, better judgement
+    assert vision.choose([big, small], "vl-4b", big) is small  # the admin's choice still wins
+    idle = M("main-35b", 53, ModelStatus.installed)
+    assert vision.choose([idle, small], "auto", idle) is small  # not loaded: the small helper

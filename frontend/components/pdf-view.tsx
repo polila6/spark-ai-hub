@@ -91,18 +91,18 @@ export function PdfView({ url, waiting, fallback }: { url: string; waiting?: str
     return () => ro.disconnect();
   }, []);
   // Fit to the width; a whole slide fits on screen too, so it does not need scrolling to be read.
-  const fit = Math.min(avail - 32, 1000, landscape && availH > 200 ? (availH - 32) / landscape : Infinity);
-  const width = Math.max(240, fit) * zoom;
+  const fit = Math.min(avail - (avail < 560 ? 12 : 32), 1000, landscape && availH > 200 ? (availH - 32) / landscape : Infinity);
+  const width = Math.max(220, fit) * zoom;
   return (
     <div className="flex h-full min-h-0 flex-col bg-elevated/60">
       {doc && <div className="flex shrink-0 items-center justify-center gap-2 border-b border-border bg-surface px-2 py-1 text-xs text-muted">
         <span className="tabular-nums">{L(`Página ${page} de ${doc.numPages}`, `Page ${page} of ${doc.numPages}`)}</span>
         <span className="mx-1 h-4 w-px bg-border" />
-        <Button size="icon" variant="ghost" className="!h-7 !w-7" aria-label={L("Reducir", "Zoom out")} disabled={zoom <= 0.5} onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))}><Minus className="h-3.5 w-3.5" /></Button>
+        <Button size="icon" variant="ghost" className="!h-9 !w-9 sm:!h-7 sm:!w-7" aria-label={L("Reducir", "Zoom out")} disabled={zoom <= 0.5} onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))}><Minus className="h-3.5 w-3.5" /></Button>
         <button type="button" className="w-10 tabular-nums hover:text-fg" title={L("Ajustar al ancho", "Fit to width")} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button>
-        <Button size="icon" variant="ghost" className="!h-7 !w-7" aria-label={L("Ampliar", "Zoom in")} disabled={zoom >= 3} onClick={() => setZoom((z) => Math.min(3, z + 0.25))}><Plus className="h-3.5 w-3.5" /></Button>
+        <Button size="icon" variant="ghost" className="!h-9 !w-9 sm:!h-7 sm:!w-7" aria-label={L("Ampliar", "Zoom in")} disabled={zoom >= 3} onClick={() => setZoom((z) => Math.min(3, z + 0.25))}><Plus className="h-3.5 w-3.5" /></Button>
       </div>}
-      <div ref={list} className="min-h-0 flex-1 space-y-3 overflow-auto p-4">
+      <div ref={list} className="min-h-0 flex-1 space-y-2 overflow-auto p-1.5 sm:space-y-3 sm:p-4">
         {err ? <div className="mx-auto max-w-md pt-10 text-center text-sm text-muted"><p>{err}</p>{fallback && <div className="mt-3">{fallback}</div>}</div>
           : !doc ? <div className="flex flex-col items-center gap-2 pt-16 text-sm text-muted"><Loader2 className="h-5 w-5 animate-spin" />{waiting ?? L("Abriendo el documento…", "Opening the document…")}</div>
           : Array.from({ length: doc.numPages }, (_, i) => <Page key={i} doc={doc} n={i + 1} width={width} onVisible={setPage} />)}

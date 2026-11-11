@@ -107,6 +107,11 @@ scripts/sah.sh backup && git pull --ff-only && scripts/sah.sh build && scripts/s
   Los comandos usan el mismo entorno aislado sin red; límites en «Workspace: tiempo por comando» y «tamaño máximo».
   Si está activado «permitir pip install / npm install», los workspaces pueden descargar paquetes solo de PyPI y npm a
   través del servicio `pkgproxy` (socket local, sin tarjeta de red). Cada persona puede tener 2 programas a la vez.
+* **Navegador para páginas con JavaScript**: los contenedores `browser` (Chromium) y `webproxy` abren las páginas dinámicas que
+  `fetch_url` no puede leer. El navegador no tiene volúmenes, secretos ni permisos, lanza un Chromium nuevo con perfil vacío por
+  página y solo sale a internet por `webproxy`, que rechaza cualquier dirección privada (Spark, tailnet, redes Docker, LAN).
+  Si `browser` está parado, el asistente sigue leyendo páginas como antes. Estado: `docker ps` (healthy) o
+  `docker compose -p spark-ai-hub logs browser webproxy`.
 * **Copias de seguridad**: con «incluir datos de usuario» se guardan también Mis archivos de todos (`users/`) y los
   workspaces (sin `node_modules` ni paquetes instalados, que se pueden reinstalar).
 * **Uso**: página Uso → «Todo el equipo» (solo cifras, nunca contenido).

@@ -519,6 +519,20 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class TurnCheckpoint(Base):
+    """Progress of a long turn saved every few steps (one row per conversation), so that a server restart in the middle of a
+    task does not lose it: the partial answer is restored and the assistant resumes from there (services/checkpoint.py)."""
+    __tablename__ = "turn_checkpoints"
+
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    user_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    model_alias: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    step: Mapped[int] = mapped_column(Integer, default=0)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)  # {text, parts, metrics}
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Message(Base):
     __tablename__ = "messages"
 

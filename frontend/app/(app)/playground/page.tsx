@@ -11,12 +11,14 @@ import { BulkBar, BulkDeleteConfirm, SelectBox, useBulk, useSelection } from "@/
 import { AnswerMarkdown } from "@/components/deliverable-link";
 import { effortBody, effortFrom, EffortSlider, PermChips, useEffort } from "@/components/effort";
 import { SteerToggle, useSteer } from "@/components/steer";
+import { ActivityDock } from "@/components/activity-dock";
+import { CONTINUE_TEXT, type Checkpoint, PauseButton, PausedNotice, RESUME_TEXT, ResumeBanner } from "@/components/resume-banner";
 import remarkGfm from "remark-gfm";
 import useSWR from "swr";
 import { CanvasChip, CanvasPanel } from "@/components/canvas";
 import { AgentReport, ContextMeter, SkillNote, TOOL_ICONS, WebSources, CodeRun, MicButton, SpeakButton, speakText } from "@/components/assistant";
 import { Guide } from "@/components/guide";
-import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markInjected, QueuedChip, toMs, type Activity } from "@/components/live-activity";
+import { applyLive, insertQueued, keepQueued, LiveActivity, liveFromSaved, markInjected, QueuedChip, threadOf, toMs, type Activity } from "@/components/live-activity";
 import { LoadConfirm } from "@/components/memory";
 import { CodeBlock, MSG_GROUP, MessageActions, MessageEditor, SelectionQuote, quoteMarkdown, quoteStart } from "@/components/message-actions";
 import { Badge, Button, Card, Confirm, ErrorBox, Field, Input, Notice, Select, Textarea, Tip, cx } from "@/components/ui";
@@ -180,6 +182,7 @@ function Chat() {
   const autoReadRef = useRef(false);
   autoReadRef.current = autoRead;
   const [canvas, setCanvas] = useState<{ id: string; v?: number } | null>(null);
+  const [ckpt, setCkpt] = useState<Checkpoint | null>(null);
   const [ctxLimit, setCtxLimit] = useState(0);  // 0 = the model's full window
   const [autoCompact, setAutoCompact] = useState(true);
   const [ctxUsed, setCtxUsed] = useState<number | null>(null);
@@ -263,6 +266,7 @@ function Chat() {
     setAutoCompact(c.settings?.auto_compact ?? true);
     setEffort((cur) => effortFrom(c.settings, cur));
     setCanvas(null);
+    setCkpt(c.checkpoint ?? null);
     setCtxUsed([...c.messages].reverse().find((m: any) => m.metrics?.context_used)?.metrics?.context_used ?? null);
     if (c.active_turn) {  // still answering (sent before leaving the page): replay its events and follow live
       setMsgs((prev) => keepQueued(prev, [...history, { role: "assistant", content: "", pending: true, model_alias: c.model_alias, tools: [], activity: { t0: toMs(c.active_turn.started_at) } }], true));
@@ -512,6 +516,7 @@ function Chat() {
               <button className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left" title={c.title}
                 onClick={(e) => { if (selecting) chatSel.toggle(c.id, e.shiftKey); else if (e.ctrlKey || e.metaKey) { setSelecting(true); chatSel.toggle(c.id); } else openConv(c.id); }}>{activeIds.has(c.id) && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-info" />}<span className="truncate">{c.project_id && !projectId ? "📁 " : ""}{c.title}</span></button>
               <a className={cx("opacity-0 group-hover:opacity-100", selecting && "hidden")} href={`/api/v1/playground/conversations/${c.id}/export?fmt=md`} aria-label={t("common.export")}><Download className="h-3.5 w-3.5 text-muted" /></a>
+              <a className={cx("opacity-0 group-hover:opacity-100", selecting && "hidden")} href={`/api/v1/playground/conversations/${c.id}/export?fmt=md&view=conclusion`} title={L("Exportar solo las conclusiones (sin los pasos intermedios)", "Export only the conclusions (no intermediate comments)")} aria-label={L("Exportar solo las conclusiones", "Export only the conclusions")}><FileText className="h-3.5 w-3.5 text-muted" /></a>
               <button className={cx("opacity-0 group-hover:opacity-100", selecting && "hidden")} aria-label={t("common.delete")} onClick={async () => { await api(`/api/v1/playground/conversations/${c.id}`, { method: "DELETE" }); if (cid === c.id) { setCid(null); setMsgs([]); } mutConvs(); }}><Trash2 className="h-3.5 w-3.5 text-muted" /></button>
             </li>
           ))}
@@ -567,6 +572,8 @@ function Chat() {
           {msgs.map((m, i) => {
             const last = i === msgs.length - 1;
             const prevUser = m.role === "assistant" ? msgs.slice(0, i).map((x, j) => [x, j] as const).reverse().find(([x]) => x.role === "user")?.[1] : undefined;
+            const th = m.role === "assistant" ? threadOf(m, !!m.pending) : null;
+            const bodyText = th ? th.body : m.content;
             const canRegen = !m.pending && last && cid && (m.role === "user" ? m.id != null : prevUser != null && msgs[prevUser].id != null);
             return (
             <div key={i} className={cx("flex flex-col", MSG_GROUP, m.role === "user" ? "items-end" : "items-start")}>
@@ -579,17 +586,18 @@ function Chat() {
                   </>
                 ) : (
                   <>
-                    <LiveActivity tools={m.tools} reasoning={m.reasoning} activity={m.activity} running={!!m.pending} queued={last && m.pending ? queuedCount : undefined}
+                    <LiveActivity tools={m.tools} reasoning={m.reasoning} activity={m.activity} thread={th?.items} running={!!m.pending} queued={last && m.pending ? queuedCount : undefined}
                       seconds={m.metrics?.latency_ms != null ? m.metrics.latency_ms / 1000 : undefined} />
                     {m.tools?.filter(hasOutput).map((tr) => <ToolCard key={tr.id} t={tr} onEdit={editImage} onCanvas={(id, v) => setCanvas({ id, v })} />)}
-                    <div className="prose-chat" data-quote-scope>{m.content && <AnswerMarkdown content={m.content} streaming={!!m.pending} tools={m.tools} components={MD_COMPONENTS} onCanvas={(id, v) => setCanvas({ id, v })} />}</div>
+                    <div className="prose-chat" data-quote-scope>{bodyText && <AnswerMarkdown content={bodyText} streaming={!!m.pending} tools={m.tools} components={MD_COMPONENTS} onCanvas={(id, v) => setCanvas({ id, v })} />}</div>
                     {!m.pending && <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:group-hover/msg:opacity-100">
                       {m.model_alias && <span className="text-[10px] text-subtle">{m.model_alias}</span>}<Metrics m={m.metrics} />{voice?.enabled && voice?.read_aloud && m.content && <SpeakButton text={m.content} lang={lang} />}</div>}
                   </>
                 )}
               </div>)}
               {m.role === "user" && editing !== i && <QueuedChip state={m.queued} />}
-              {editing !== i && !m.pending && <MessageActions role={m.role} text={m.content} busy={!!status}
+              {last && m.role === "assistant" && !m.pending && !status && (m as any).metrics?.paused && <PausedNotice steps={(m as any).metrics?.steps} onResume={() => send(L(CONTINUE_TEXT.es, CONTINUE_TEXT.en))} />}
+              {editing !== i && !m.pending && <MessageActions role={m.role} text={(m.role === "assistant" && threadOf(m, false)?.body.trim()) || m.content} full={m.content} busy={!!status}
                 onReply={m.role === "assistant" ? () => quote(quoteStart(m.content)) : undefined}
                 onEdit={m.role === "user" && m.id != null && cid ? () => setEditing(i) : undefined}
                 onRegenerate={canRegen ? () => regenerate(m.role === "user" ? i : prevUser!) : undefined}
@@ -597,6 +605,7 @@ function Chat() {
             </div>
             );
           })}
+          {ckpt && !status && cid && <ResumeBanner cid={cid} ckpt={ckpt} onDone={() => setCkpt(null)} onResume={async () => { await openConv(cid); await send(L(RESUME_TEXT.es, RESUME_TEXT.en)); }} />}
           {err && <ErrorBox error={err} />}
           </div>
         </div>
@@ -636,6 +645,7 @@ function Chat() {
             {status ? <>
               <SteerToggle key="steer" on={steer} onChange={setSteer} />
               <Button key="add" type="submit" size="sm" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)} title={steer ? L("Interrumpe su pensamiento actual (se conserva) y lo lee ya", "Interrupts its current thinking (kept) and reads it now") : L("Se suma a lo que está haciendo, sin pararlo", "Joins what it is doing, without stopping it")}><ListPlus className="h-4 w-4" /><span className="hidden sm:inline">{steer ? L("Enviar ahora", "Send now") : L("Añadir a la tarea", "Add to the task")}</span></Button>
+              <PauseButton key="pause" cid={cid} busy={!!status} />
               <Button key="stop" type="button" size="sm" variant="danger" onClick={stop}><Square className="h-3.5 w-3.5" /><span className="hidden sm:inline">{t("play.stop")}</span></Button></>
               : <Button key="send" type="submit" size="sm" variant="primary" disabled={!model || !input.trim() || atts.some((a) => a.uploading)}>{mode === "image" ? <Sparkles className="h-4 w-4" /> : <Send className="h-4 w-4" />}{mode === "image" ? L("Crear", "Create") : t("play.send")}</Button>}
             </div>
@@ -681,6 +691,7 @@ function Chat() {
         text={rewind == null ? "" : L(`Se borrarán ${msgs.length - 1 - rewind} mensajes posteriores a este (no se puede deshacer). ${msgs[rewind]?.role === "user" ? "Después pulsa «Regenerar» en este mensaje o escribe otro." : "Después escribe tu siguiente mensaje."}`,
           `The ${msgs.length - 1 - rewind} messages after this one will be deleted (cannot be undone). ${msgs[rewind]?.role === "user" ? "Then click “Regenerate” on this message or type another one." : "Then type your next message."}`)}
         onConfirm={() => { if (rewind != null) resumeFrom(rewind); }} />
+      {(() => { const lm = msgs[msgs.length - 1]; return lm?.role === "assistant" && lm.pending ? <ActivityDock tools={lm.tools} activity={lm.activity} running /> : null; })()}
     </div>
   );
 }
